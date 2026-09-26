@@ -18,6 +18,7 @@
     "skills/",
     "templates/",
     "prompts/",
+    "plugin.json",
     "README.md",
     "FAILURE_MODES.md"
   ],
