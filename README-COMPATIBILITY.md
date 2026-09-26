@@ -27,7 +27,7 @@ Skills surface as `/bootstrap`, `/implementer`, etc. **The Reviewer subagent** i
 
 ```bash
 mkdir -p .claude/agents
-cp node_modules/@drix10/agent-flow/skills/reviewer/agents/claude.md .claude/agents/reviewer.md
+cp node_modules/@drix10/agent-flow/.claude/agents/reviewer.md .claude/agents/reviewer.md
 ```
 
 ## Codex CLI
@@ -37,7 +37,21 @@ mkdir -p .agents/skills
 cp -r node_modules/@drix10/agent-flow/skills/* .agents/skills/
 ```
 
-Skills auto-discover. Invoke with `/skills` or `$reviewer`. On Codex the Reviewer's read-only status is **conventional, not enforced** — no subagent definition is shipped. Users who need hard enforcement should use Claude Code or Pi.
+Skills auto-discover. Invoke with `/skills` or `$reviewer`. A Reviewer definition ships at `.codex/agents/reviewer.toml` in this repo — copy it to your project's `.codex/agents/` and declare it:
+
+```bash
+mkdir -p .codex/agents
+cp node_modules/@drix10/agent-flow/.codex/agents/reviewer.toml .codex/agents/reviewer.toml
+```
+
+```toml
+# .codex/config.toml (append)
+[agents.reviewer]
+description = "Read-only code reviewer"
+config_file = "./.codex/agents/reviewer.toml"
+```
+
+**Verify before relying on it:** run `codex --help` or check the agent list for the `reviewer` role. The TOML format is verified; the `config_file` auto-discovery path is not. Until confirmed, treat Codex read-only as conventional.
 
 ## Gemini CLI
 
@@ -48,11 +62,11 @@ cp -r node_modules/@drix10/agent-flow/skills/* .gemini/skills/
 
 **Important:** Gemini CLI requires workspace trust. Run `/trust` in the workspace, then restart the session. Verify with `/skills list`.
 
-Subagents additionally require the experimental flag. Copy `.gemini/settings.json.example` to `.gemini/settings.json` (or merge the `experimental.enableSubagents` key), and copy the reviewer definition into place:
+Subagents additionally require the experimental flag. Copy `.gemini/settings.json.example` to `.gemini/settings.json` (or merge the `experimental.enableAgents` key — older docs call it `enableSubagents`), and copy the reviewer definition into place:
 
 ```bash
 mkdir -p .gemini/agents
-cp node_modules/@drix10/agent-flow/skills/reviewer/agents/gemini.md .gemini/agents/reviewer.md
+cp node_modules/@drix10/agent-flow/.gemini/agents/reviewer.md .gemini/agents/reviewer.md
 ```
 
 ## Cursor

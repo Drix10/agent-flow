@@ -5,3 +5,22 @@ extensions/*.d.ts
 .agent-state.json
 AGENT_STATE.md
 .risk-baseline.json
+
+# Local scratch and build clutter — never ship this to users
+todo*
+TODO*
+*.log
+npm-debug.log*
+.env
+.env.local
+*.tgz
+dist/
+build/
+coverage/
+.nyc_output/
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

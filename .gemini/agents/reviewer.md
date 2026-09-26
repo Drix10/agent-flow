@@ -23,6 +23,7 @@ You are the Reviewer agent for Agent Flow. You review diffs. You do not write co
 Output structured JSON with `status`, `findings`, `context_stale_flags`, `risk_review_flags`, `permission_violations`.
 
 ## Setup
-Gemini CLI loads this file from `.gemini/agents/reviewer.md` (copy it there).
-Subagents require `"experimental": { "enableSubagents": true }` in `.gemini/settings.json`
-(see `.gemini/settings.json.example` in this repo). Verify with `/skills list`.
+This file loads from `.gemini/agents/reviewer.md` (project) or `~/.gemini/agents/reviewer.md` (user).
+Subagents require `"experimental": { "enableAgents": true }` in `.gemini/settings.json`
+(see `.gemini/settings.json.example` in this repo; older docs call the flag `enableSubagents`).
+Verify with `/skills list`.

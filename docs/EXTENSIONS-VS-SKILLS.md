@@ -10,10 +10,13 @@ Instruction-only Markdown. They follow the Agent Skills open standard, so they c
 
 TypeScript tools registered on Pi's `ExtensionAPI` (`bootstrap_scan`, `worktree_create`, `state_update`, `stale_detect`, `risk_audit`, `detect_harness`). They are **Pi-only**. Agent Plugins 1.0.0 standardizes exactly two component types — Agent Skills and MCP servers — so Pi extensions do not travel to other harnesses.
 
-## What this means per harness
+## The rule
+
+**Skills travel through `skills/`; subagents travel through each harness's `agents/` directory.** They are two different discovery mechanisms, and Agent Plugins 1.0.0 only standardizes the first one. Extensions and subagents do not travel — a file under `skills/<name>/agents/` is inert documentation in every harness, no matter how correct its frontmatter is. Every subagent this repo ships lives at its harness-canonical path (`.claude/agents/`, `.codex/agents/`, `.gemini/agents/`) and is copied from there.
 
 - **Pi:** skills + extensions. Full enforcement.
-- **Everywhere else:** skills only. Wherever a skill says "call `state_update`" or "run `risk_audit`", that tool does not exist. The skill bodies tell the agent to fall back to editing `AGENT_STATE.md` and the context files directly — honest, but advisory.
+- **Claude Code / Codex / Gemini CLI:** skills + a Reviewer subagent definition copied to the harness `agents/` dir (read-only enforced where the harness supports tool allowlists). State machine and risk-audit tools do not exist there. Wherever a skill says "call `state_update`" or "run `risk_audit`", the agent falls back to editing `AGENT_STATE.md` and the context files directly — honest, but advisory.
+- **Cursor / VS Code:** skills only.
 
 ## The path to real cross-harness enforcement
 

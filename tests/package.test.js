@@ -48,11 +48,16 @@ test("prompt commands exist with descriptions", () => {
   assert.ok(pkg.pi?.prompts, "pi manifest must list prompts");
 });
 
-test("reviewer agents dir ships loadable definitions", () => {
+test("reviewer subagents live at harness-canonical paths", () => {
+  assert.ok(existsSync(join(root, ".claude", "agents", "reviewer.md")), ".claude/agents/reviewer.md missing");
+  assert.ok(existsSync(join(root, ".gemini", "agents", "reviewer.md")), ".gemini/agents/reviewer.md missing");
+  assert.ok(existsSync(join(root, ".codex", "agents", "reviewer.toml")), ".codex/agents/reviewer.toml missing");
   const agentsDir = join(root, "skills", "reviewer", "agents");
-  assert.ok(existsSync(join(agentsDir, "claude.md")), "claude.md reference missing");
-  assert.ok(existsSync(join(agentsDir, "gemini.md")), "gemini.md missing");
-  assert.ok(!existsSync(join(agentsDir, "codex.yaml")), "unverified codex.yaml must not ship");
+  if (existsSync(agentsDir)) {
+    for (const f of readdirSync(agentsDir)) {
+      assert.ok(!f.endsWith(".yaml"), `unverified ${f} must not ship under skills/`);
+    }
+  }
 });
 
 test("skill frontmatter valid for cross-harness discovery", () => {
