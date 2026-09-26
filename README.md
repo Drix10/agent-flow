@@ -39,7 +39,7 @@ Issue → Implementer → Reviewer → QA → PR
          in parallel)   ≤2 rounds)
 ```
 
-Separate agents, separate permissions. On Pi the Reviewer **cannot write code** — its tool set excludes write and edit, enforced by extension tool registration. On Claude Code the same holds via the Reviewer subagent's `tools` field (`skills/reviewer/agents/claude.md`). On other harnesses read-only review is conventional (instructed, not blocked). See `docs/HARNESS-MATRIX.md` for the per-harness enforcement table. Model matched to risk: mechanical edits run on fast models, money/contracts/auth always reviewed by high-reasoning models.
+Separate agents, separate permissions. The Reviewer is instructed read-only — its skill declares no write tools — but this is convention, not a block: on Pi, `allowed-tools` is a pre-approval list, and a live test (FM-16) confirmed the Reviewer writes when directly asked. Real enforcement exists only on Claude Code via the Reviewer subagent's `tools` field (`.claude/agents/reviewer.md`). See `docs/HARNESS-MATRIX.md` for the per-harness enforcement table. Model matched to risk: mechanical edits run on fast models, money/contracts/auth always reviewed by high-reasoning models.
 
 ### 03 · Sessions File Themselves
 

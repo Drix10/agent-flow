@@ -125,10 +125,12 @@ export default function (pi: ExtensionAPI) {
     description: "Repair stale context files by updating manifests and rebuilding affected files. Requires user confirmation.",
     parameters: Type.Object({
       manifestPath: Type.Optional(Type.String({ default: "CONTEXT_MANIFEST.json" })),
+      repoPath: Type.Optional(Type.String({ description: "Path to the repository root", default: "." })),
       confirmation: Type.String(),
     }),
     execute: async (_toolCallId, params) => {
       const manifestPath = params.manifestPath ?? "CONTEXT_MANIFEST.json";
+      const repoPath = params.repoPath ?? ".";
       if (params.confirmation !== "CONFIRM_REPAIR") {
         throw new Error("Repair rejected: confirmation string required.");
       }
@@ -138,7 +140,7 @@ export default function (pi: ExtensionAPI) {
 
       for (const contextFile of manifest.context_files) {
         for (const ref of contextFile.references) {
-          if (existsSync(ref.path)) {
+          if (existsSync(join(repoPath, ref.path))) {
             ref.last_verified = now;
             ref.exists = true;
           } else {

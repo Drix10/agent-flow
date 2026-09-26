@@ -23,7 +23,7 @@ Or symlink:
 ln -s node_modules/@drix10/agent-flow/skills .claude/skills/agent-flow
 ```
 
-Skills surface as `/bootstrap`, `/implementer`, etc. **The Reviewer subagent** is defined in `skills/reviewer/agents/claude.md` and enforces read-only via Claude Code's `tools` field. That file is a reference — Claude Code only loads subagents from `.claude/agents/`, so copy it into place:
+Skills surface as `/bootstrap`, `/implementer`, etc. **The Reviewer subagent** is defined in `.claude/agents/reviewer.md` and enforces read-only via Claude Code's `tools` field. That file is a reference — Claude Code only loads subagents from `.claude/agents/`, so copy it into place:
 
 ```bash
 mkdir -p .claude/agents

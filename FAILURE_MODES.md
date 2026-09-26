@@ -211,7 +211,7 @@ The following failure modes are known but not yet fully addressed:
 - **FM-13: Multi-repo coordination.** The skill currently works on a single repo. Cross-repo dependencies require manual configuration.
 - **FM-14: Non-deterministic test flakiness.** QA reports failures verbatim, but flaky tests cause false positives. Future: flakiness detection.
 - **FM-15: Model provider outages.** If the configured model provider is down, the pipeline stalls. Future: fallback provider configuration.
-- **FM-16: Tool enforcement unverified.** The Reviewer and QA skills declare `allowed-tools` without `write`/`edit`, but no one has watched the Reviewer refuse a direct "write this file" instruction on Pi. Until that test passes, read-only review is instructed, not proven. Test: invoke the reviewer skill in a scratch repo, ask it to write `TEST.md`, confirm it refuses. If it writes, either sandbox or correct the README claim.
+- **FM-16: Tool enforcement verified — CLOSED, claim corrected.** Test (Pi 0.87.1, non-interactive, reviewer skill loaded, asked "write TEST.md"): the Reviewer **wrote the file**. Pi's docs define `allowed-tools` as an "experimental pre-approved tool list" — it skips permission prompts, it does not restrict. Read-only review is therefore **instructed, not enforced, on Pi**. Real enforcement exists only on Claude Code via the subagent `tools` field. Every enforcement claim in README/SECURITY/matrix now says this.
 
 ---
 

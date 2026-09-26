@@ -4,7 +4,7 @@ Agent Flow touches your repository with autonomous agents. This document explain
 
 ## What is enforced at the harness level
 
-- **Reviewer and QA cannot write code.** Their skills declare `allowed-tools` without `write` or `edit`. Verify: `grep allowed-tools skills/reviewer/SKILL.md skills/qa/SKILL.md`.
+- **Reviewer and QA are instructed read-only, not blocked.** Their skills declare `allowed-tools` without `write` or `edit`, but Pi treats that list as pre-approval, not restriction — a live test confirmed the Reviewer writes a file when directly asked (FM-16). The only hard read-only enforcement is Claude Code's subagent `tools` field.
 - **Bootstrap and repair need confirmation strings.** `bootstrap_write` requires `CONFIRM_BOOTSTRAP`; `stale_repair` requires `CONFIRM_REPAIR`; `risk_baseline_update` requires `CONFIRM_RISK_BASELINE`. Without the exact string, the tool throws. Verify in `extensions/*.ts`.
 - **Implementers work on isolated branches.** Each issue gets its own git worktree and branch (`agent/issue-N`). Nothing lands on your main branch except through a PR you approve.
 
