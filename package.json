@@ -1,7 +1,7 @@
 {
   "name": "@drix10/agent-flow",
-  "version": "1.0.0",
-  "description": "Agent Flow \u2014 a self-healing agent engineering workflow for any repository. Installs tiered context, enforces Implement \u2192 Review \u2192 QA pipeline, and continuously repairs context drift.",
+  "version": "1.0.1",
+  "description": "Agent Flow — a self-healing agent engineering workflow for any repository. Installs tiered context, enforces Implement → Review → QA pipeline, and continuously repairs context drift.",
   "type": "module",
   "main": "extensions/index.js",
   "types": "extensions/index.d.ts",
@@ -44,9 +44,15 @@
     "cursor"
   ],
   "pi": {
-    "skills": ["./skills"],
-    "extensions": ["./extensions"],
-    "prompts": ["./prompts"]
+    "skills": [
+      "./skills"
+    ],
+    "extensions": [
+      "./extensions"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^0.87.0"
