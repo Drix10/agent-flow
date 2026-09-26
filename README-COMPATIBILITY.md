@@ -23,7 +23,12 @@ Or symlink:
 ln -s node_modules/@drix10/agent-flow/skills .claude/skills/agent-flow
 ```
 
-Skills surface as `/bootstrap`, `/implementer`, etc. **The Reviewer subagent** is defined in `skills/reviewer/agents/claude.md` and enforces read-only via Claude Code's `tools` field.
+Skills surface as `/bootstrap`, `/implementer`, etc. **The Reviewer subagent** is defined in `skills/reviewer/agents/claude.md` and enforces read-only via Claude Code's `tools` field. That file is a reference — Claude Code only loads subagents from `.claude/agents/`, so copy it into place:
+
+```bash
+mkdir -p .claude/agents
+cp node_modules/@drix10/agent-flow/skills/reviewer/agents/claude.md .claude/agents/reviewer.md
+```
 
 ## Codex CLI
 
@@ -32,7 +37,7 @@ mkdir -p .agents/skills
 cp -r node_modules/@drix10/agent-flow/skills/* .agents/skills/
 ```
 
-Skills auto-discover. Invoke with `/skills` or `$reviewer`.
+Skills auto-discover. Invoke with `/skills` or `$reviewer`. On Codex the Reviewer's read-only status is **conventional, not enforced** — no subagent definition is shipped. Users who need hard enforcement should use Claude Code or Pi.
 
 ## Gemini CLI
 
@@ -42,6 +47,13 @@ cp -r node_modules/@drix10/agent-flow/skills/* .gemini/skills/
 ```
 
 **Important:** Gemini CLI requires workspace trust. Run `/trust` in the workspace, then restart the session. Verify with `/skills list`.
+
+Subagents additionally require the experimental flag. Copy `.gemini/settings.json.example` to `.gemini/settings.json` (or merge the `experimental.enableSubagents` key), and copy the reviewer definition into place:
+
+```bash
+mkdir -p .gemini/agents
+cp node_modules/@drix10/agent-flow/skills/reviewer/agents/gemini.md .gemini/agents/reviewer.md
+```
 
 ## Cursor
 

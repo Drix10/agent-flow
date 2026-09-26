@@ -1,10 +1,20 @@
 {
-  "$schema": "https://agent-plugins.org/schema/v1.0.0/plugin.json",
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-flow",
   "version": "1.0.0",
   "description": "Self-healing agent engineering workflow. Bootstrap, implement, review, QA, and maintain any repository.",
-  "author": "Drix10",
+  "author": {
+    "name": "Drix10",
+    "url": "https://github.com/Drix10"
+  },
+  "homepage": "https://github.com/Drix10/agent-flow",
+  "repository": "https://github.com/Drix10/agent-flow",
   "license": "MIT",
-  "skills": "skills/",
-  "homepage": "https://github.com/Drix10/agent-flow"
+  "keywords": [
+    "agent-skills",
+    "multi-agent",
+    "code-review",
+    "context-management",
+    "trust-loop"
+  ]
 }

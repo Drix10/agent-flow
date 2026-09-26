@@ -1,9 +1,0 @@
-name: reviewer
-description: Read-only code reviewer. Reviews diffs, checks risk rules, flags context staleness.
-model: gemini-2.5-pro
-tools:
-  - read_file
-  - search_files
-  - run_shell_command
-# No write_file or edit_file — Reviewer is read-only by omission.
-max_turns: 15

@@ -17,6 +17,8 @@
 
 ## v2.0 — Scale the team
 
+- [ ] Ship extensions as an MCP server (`mcp.json` at plugin root) so `state_update`, `risk_audit`, etc. exist on every harness, not just Pi. This is the only path to genuine cross-harness enforcement. See `docs/EXTENSIONS-VS-SKILLS.md`.
+
 - [ ] FM-13: multi-repo coordination (cross-repo dependencies)
 - [ ] FM-15: model provider fallback configuration
 - [ ] Claude Code native support (verified permission mapping, not just copied skills)

@@ -48,6 +48,13 @@ test("prompt commands exist with descriptions", () => {
   assert.ok(pkg.pi?.prompts, "pi manifest must list prompts");
 });
 
+test("reviewer agents dir ships loadable definitions", () => {
+  const agentsDir = join(root, "skills", "reviewer", "agents");
+  assert.ok(existsSync(join(agentsDir, "claude.md")), "claude.md reference missing");
+  assert.ok(existsSync(join(agentsDir, "gemini.md")), "gemini.md missing");
+  assert.ok(!existsSync(join(agentsDir, "codex.yaml")), "unverified codex.yaml must not ship");
+});
+
 test("skill frontmatter valid for cross-harness discovery", () => {
   const skillsDir = join(root, "skills");
   for (const dir of readdirSync(skillsDir)) {

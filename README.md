@@ -39,7 +39,7 @@ Issue → Implementer → Reviewer → QA → PR
          in parallel)   ≤2 rounds)
 ```
 
-Separate agents, separate permissions. The Reviewer **physically cannot write code**—its tool set excludes write and edit. Model matched to risk: mechanical edits run on fast models, money/contracts/auth always reviewed by high-reasoning models.
+Separate agents, separate permissions. On Pi the Reviewer **cannot write code** — its tool set excludes write and edit, enforced by extension tool registration. On Claude Code the same holds via the Reviewer subagent's `tools` field (`skills/reviewer/agents/claude.md`). On other harnesses read-only review is conventional (instructed, not blocked). See `docs/HARNESS-MATRIX.md` for the per-harness enforcement table. Model matched to risk: mechanical edits run on fast models, money/contracts/auth always reviewed by high-reasoning models.
 
 ### 03 · Sessions File Themselves
 
@@ -124,9 +124,11 @@ Agent skills introducing executable scripts are 2.12× more likely to contain vu
 
 Works with any Agent Skills–compatible harness:
 
-- **Pi** — native
-- **Claude Code** — copy `skills/` to `~/.claude/skills/`
-- **Codex / Gemini CLI / Cursor** — copy to `~/.agents/skills/`
+- **Pi** — native, full enforcement
+- **Claude Code** — copy `skills/` to `.claude/skills/`; Reviewer read-only enforced via subagent `tools` field
+- **Codex / Gemini CLI / Cursor** — copy to the harness skills dir; skills only, enforcement is conventional
+
+Enforcement differs per harness — Pi: full. Claude Code: Reviewer read-only enforced, state machine and risk audit advisory. Codex/Gemini/Cursor: skills only. Details in [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md).
 
 See [README-COMPATIBILITY.md](./README-COMPATIBILITY.md) for per-harness install instructions.
 

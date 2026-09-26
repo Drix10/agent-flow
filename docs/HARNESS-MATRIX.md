@@ -7,10 +7,11 @@ Not all harnesses enforce tool restrictions the same way. This document tells yo
 | Skill discovery | ✅ `pi.skills` | ✅ `.claude/skills/` | ✅ `.agents/skills/` | ✅ `.gemini/skills/` | ✅ `.cursor/skills/` | ✅ `.github/skills/` |
 | Frontmatter `name` required | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `allowed-tools` enforcement | ✅ (experimental) | ⚠️ Advisory only | ❌ | ❌ | ❌ | ❌ |
-| Subagent tool restriction | ✅ (extension) | ✅ (`tools` field) | ✅ (tool list) | ✅ (tool list) | ✅ (permission config) | ✅ (agent profile) |
+| Subagent tool restriction | ✅ (extension) | ✅ (`tools` field) | ❌ conventional only | ✅ (tool list, needs `enableSubagents`) | ✅ (permission config) | ✅ (agent profile) |
 | Workspace trust required | ❌ | ✅ (project skills) | ❌ | ✅ (`/trust`) | ❌ | ✅ |
 | Auto-discovery | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Slash command from skill | ✅ `/skill:name` | ✅ `/name` (dir name) | ✅ `/skills` | ✅ `/skills list` | ✅ `/` menu | ✅ chat slash |
+| Pi extensions available | ✅ native | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 ## Key Takeaway
 
