@@ -1,0 +1,107 @@
+# Root AGENT.md
+
+> **Confidence markers:** `[HIGH CONFIDENCE]` = verified by reading code. `[INFERRED]` = guessed. `[NEEDS VERIFICATION]` = unknown.
+> **Last verified:** {{TIMESTAMP}}
+> **Manifest:** See `CONTEXT_MANIFEST.json` for machine-readable path references.
+
+---
+
+## Repository Map
+
+```
+{{REPO_NAME}}/
+├── {{TOP_LEVEL_DIR_1}}/    # {{DESCRIPTION_1}}
+├── {{TOP_LEVEL_DIR_2}}/    # {{DESCRIPTION_2}}
+├── {{TOP_LEVEL_DIR_3}}/    # {{DESCRIPTION_3}}
+├── tests/                  # {{TEST_FRAMEWORK}} test suite
+├── docs/                   # Design docs and runbooks
+└── .github/workflows/      # CI/CD pipelines
+```
+
+`[HIGH CONFIDENCE]` — verified by directory scan on {{DATE}}.
+
+---
+
+## Build & Test Commands
+
+| Command | What it does | Confidence |
+|---------|-------------|-----------|
+| `{{BUILD_COMMAND}}` | Build the project | `[HIGH CONFIDENCE]` |
+| `{{TEST_COMMAND}}` | Run the test suite | `[HIGH CONFIDENCE]` |
+| `{{LINT_COMMAND}}` | Run the linter | `[HIGH CONFIDENCE]` |
+| `{{TYPECHECK_COMMAND}}` | Run type checking | `[INFERRED]` |
+
+---
+
+## Global Rules
+
+### Must Never
+
+- **Modify protected paths without escalation:** `{{PROTECTED_PATHS}}`
+- **Commit directly to `{{MAIN_BRANCH}}`:** all changes via PR
+- **Add comments that justify workarounds:** fix the root cause instead
+- **Introduce new dependencies without risk review:** run `/audit-risk` first
+- **Write to files outside your worktree:** sandbox enforced
+
+### Must Always
+
+- **Run tests before declaring done:** `{{TEST_COMMAND}}`
+- **Run type checks before declaring done:** `{{TYPECHECK_COMMAND}}`
+- **Update `DOCS_INDEX.md`** if you add or remove a design doc
+- **Flag `[CONTEXT_STALE]`** if code changes contradict any context file claim
+- **Use the single paved path** for common patterns: `{{PAVED_PATH_EXAMPLES}}`
+
+---
+
+## Risk Boundaries
+
+| Path | Risk Level | Reviewer Model | Rationale |
+|------|-----------|---------------|-----------|
+| `{{HIGH_RISK_PATH_1}}` | Critical | High-reasoning | {{RATIONALE_1}} |
+| `{{HIGH_RISK_PATH_2}}` | Critical | High-reasoning | {{RATIONALE_2}} |
+| `{{MEDIUM_RISK_PATH}}` | Medium | Fast model | {{RATIONALE_3}} |
+| `{{MECHANICAL_PATH}}` | Low | Fast model | {{RATIONALE_4}} |
+
+`[INFERRED]` — user must confirm risk boundaries during bootstrap.
+
+**Risk rule:** Changes to Critical paths require high-reasoning review. Changes to Medium/Low paths can be reviewed by fast models but must pass QA.
+
+---
+
+## Hierarchy of Corrections
+
+When an agent makes a mistake, fix it at the highest leverage level first:
+
+1. **Architecture** — make the mistake impossible
+2. **Static analysis** — linter, compiler, CI
+3. **Rules** — pre-commit, pre-push hooks
+4. **Skills** — agent instructions
+5. **Style guide** — weakest, human review only
+
+---
+
+## Private Memory (Not Committed)
+
+This section is for personal preferences. Promote to the shared file when stable.
+
+```yaml
+# Add private preferences here
+# Example:
+# preferred_model: anthropic/claude-opus-4-8
+# auto_approve_low_risk: true
+```
+
+---
+
+## Manifest
+
+```json
+{
+  "references": [
+    {"path": "{{REFERENCED_PATH_1}}", "last_verified": "{{DATE}}"},
+    {"path": "{{REFERENCED_PATH_2}}", "last_verified": "{{DATE}}"}
+  ],
+  "last_full_scan": "{{TIMESTAMP}}",
+  "staleness_threshold_days": 30
+}
+```

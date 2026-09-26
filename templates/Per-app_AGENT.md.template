@@ -1,0 +1,80 @@
+# Per-app AGENT.md: {{MODULE_NAME}}
+
+> **Scope:** `{{MODULE_PATH}}/`
+> **Parent context:** `Root_AGENT.md`
+> **Confidence markers:** `[HIGH CONFIDENCE]` | `[INFERRED]` | `[NEEDS VERIFICATION]`
+> **Last verified:** {{TIMESTAMP}}
+
+---
+
+## Module Overview
+
+`{{MODULE_DESCRIPTION}}`
+
+`[HIGH CONFIDENCE]` — verified by reading `{{ENTRY_POINT_FILE}}`.
+
+---
+
+## Local Traps
+
+Things that look like they should work but don't. Things that will bite you if you're not careful.
+
+| Trap | Why it's a trap | What to do instead |
+|------|----------------|-------------------|
+| `{{TRAP_1}}` | {{WHY_1}} | {{ALTERNATIVE_1}} |
+| `{{TRAP_2}}` | {{WHY_2}} | {{ALTERNATIVE_2}} |
+
+`[INFERRED]` — based on pattern analysis. User must confirm.
+
+---
+
+## Local Rules
+
+### Must Never
+
+- **{{LOCAL_NEVER_1}}**
+- **{{LOCAL_NEVER_2}}**
+
+### Must Always
+
+- **{{LOCAL_ALWAYS_1}}**
+- **{{LOCAL_ALWAYS_2}}**
+
+---
+
+## Dependencies
+
+| Dependency | Version | Purpose | Risk |
+|-----------|---------|---------|------|
+| `{{DEP_1}}` | `{{VERSION_1}}` | {{PURPOSE_1}} | {{RISK_1}} |
+| `{{DEP_2}}` | `{{VERSION_2}}` | {{PURPOSE_2}} | {{RISK_2}} |
+
+`[HIGH CONFIDENCE]` — verified from `{{MANIFEST_FILE}}`.
+
+---
+
+## Test Commands
+
+```bash
+# Unit tests for this module
+{{MODULE_TEST_COMMAND}}
+
+# Integration tests (if applicable)
+{{MODULE_INTEGRATION_TEST_COMMAND}}
+```
+
+`[INFERRED]` — user must confirm.
+
+---
+
+## Manifest
+
+```json
+{
+  "module_path": "{{MODULE_PATH}}",
+  "references": [
+    {"path": "{{REFERENCED_PATH}}", "last_verified": "{{DATE}}"}
+  ],
+  "last_full_scan": "{{TIMESTAMP}}"
+}
+```

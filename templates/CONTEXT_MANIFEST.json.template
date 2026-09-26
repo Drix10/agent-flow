@@ -1,0 +1,66 @@
+{
+  "$schema": "https://agentskills.io/schemas/context-manifest.json",
+  "version": "1.0.0",
+  "repo": "{{REPO_NAME}}",
+  "generated_at": "{{TIMESTAMP}}",
+  "generated_by": "agent-team-workflow@{{VERSION}}",
+  "last_full_scan": "{{TIMESTAMP}}",
+  "staleness_threshold_days": 30,
+  "context_files": [
+    {
+      "path": "Root_AGENT.md",
+      "references": [
+        {
+          "path": "{{REFERENCED_PATH_1}}",
+          "type": "directory",
+          "last_verified": "{{DATE}}",
+          "exists": true
+        },
+        {
+          "path": "{{REFERENCED_PATH_2}}",
+          "type": "file",
+          "last_verified": "{{DATE}}",
+          "exists": true
+        }
+      ],
+      "confidence_markers": {
+        "high_confidence": 12,
+        "inferred": 4,
+        "needs_verification": 2
+      }
+    },
+    {
+      "path": "Per-app_AGENT.md",
+      "references": [
+        {
+          "path": "{{MODULE_PATH}}",
+          "type": "directory",
+          "last_verified": "{{DATE}}",
+          "exists": true
+        }
+      ],
+      "confidence_markers": {
+        "high_confidence": 8,
+        "inferred": 3,
+        "needs_verification": 1
+      }
+    }
+  ],
+  "risk_boundaries": [
+    {
+      "path": "{{HIGH_RISK_PATH}}",
+      "risk_level": "critical",
+      "reviewer_model": "high-reasoning",
+      "rationale": "{{RATIONALE}}"
+    }
+  ],
+  "protected_paths": [
+    "{{PROTECTED_PATH_1}}",
+    "{{PROTECTED_PATH_2}}"
+  ],
+  "ci": {
+    "ctxlint": true,
+    "stale_detection": true,
+    "risk_audit": true
+  }
+}
