@@ -39,7 +39,7 @@ Issue → Implementer → Reviewer → QA → PR
          in parallel)   ≤2 rounds)
 ```
 
-Separate agents, separate permissions. The Reviewer is instructed read-only — its skill declares no write tools — but this is convention, not a block: on Pi, `allowed-tools` is a pre-approval list, and a live test (FM-16) confirmed the Reviewer writes when directly asked. Real enforcement exists only on Claude Code via the Reviewer subagent's `tools` field (`.claude/agents/reviewer.md`). See `docs/HARNESS-MATRIX.md` for the per-harness enforcement table. Model matched to risk: mechanical edits run on fast models, money/contracts/auth always reviewed by high-reasoning models.
+Separate agents, separate permissions. The Reviewer is instructed read-only — its skill declares no write tools — but this is convention, not a block: on Pi, `allowed-tools` is a pre-approval list, and a live test (FM-16) confirmed the Reviewer writes when directly asked. Real enforcement exists only on Claude Code via the Reviewer subagent's `tools` field (`.claude/agents/reviewer.md`). Role isolation has the same caveat: in non-interactive (`-p`) mode one model process plays every role, so separation is by artifact handoff, not by process boundary (FM-18). See `docs/HARNESS-MATRIX.md` for the per-harness enforcement table. Model matched to risk: mechanical edits run on fast models, money/contracts/auth always reviewed by high-reasoning models.
 
 ### 03 · Sessions File Themselves
 
