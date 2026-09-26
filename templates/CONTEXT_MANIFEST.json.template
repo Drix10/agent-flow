@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "repo": "{{REPO_NAME}}",
   "generated_at": "{{TIMESTAMP}}",
-  "generated_by": "agent-team-workflow@{{VERSION}}",
+  "generated_by": "agent-flow@{{VERSION}}",
   "last_full_scan": "{{TIMESTAMP}}",
   "staleness_threshold_days": 30,
   "context_files": [

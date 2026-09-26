@@ -1,4 +1,4 @@
-# Agent Team Workflow
+# Agent Flow
 
 **Run your agents like a small team.**
 
@@ -53,7 +53,7 @@ The sidebar sorts every session by what it's waiting on:
 
 ```bash
 # Install the package
-pi install npm:agent-team-workflow
+pi install npm:@drix10/agent-flow
 
 # Bootstrap your repository (interactive)
 /bootstrap
@@ -127,6 +127,8 @@ Works with any Agent Skills–compatible harness:
 - **Pi** — native
 - **Claude Code** — copy `skills/` to `~/.claude/skills/`
 - **Codex / Gemini CLI / Cursor** — copy to `~/.agents/skills/`
+
+See [README-COMPATIBILITY.md](./README-COMPATIBILITY.md) for per-harness install instructions.
 
 ## License
 

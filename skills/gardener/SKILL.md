@@ -1,6 +1,6 @@
 ---
 name: gardener
-description: Maintenance agent for agent-team-workflow. Syncs docs, audits risk boundaries, detects stale context, repairs affected files, and prunes anti-patterns. Use on schedule or when the Reviewer flags CONTEXT_STALE.
+description: Maintenance agent for agent-flow. Syncs docs, audits risk boundaries, detects stale context, repairs affected files, and prunes anti-patterns. Use on schedule or when the Reviewer flags CONTEXT_STALE.
 allowed-tools: read write edit bash grep find ls
 ---
 

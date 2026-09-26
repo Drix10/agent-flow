@@ -1,6 +1,6 @@
 ---
 name: invoking-agents
-description: Orchestration layer for agent-team-workflow. Chains Implementer → Reviewer → QA with fresh-context boundaries, enforces the ≤2 rounds constraint, and escalates to Needs Me when deadlocked. Use when running the full pipeline on an issue.
+description: Orchestration layer for agent-flow. Chains Implementer → Reviewer → QA with fresh-context boundaries, enforces the ≤2 rounds constraint, and escalates to Needs Me when deadlocked. Use when running the full pipeline on an issue.
 allowed-tools: read bash grep find ls
 ---
 

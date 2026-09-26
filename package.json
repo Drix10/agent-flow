@@ -1,7 +1,7 @@
 {
-  "name": "agent-team-workflow",
+  "name": "@drix10/agent-flow",
   "version": "1.0.0",
-  "description": "Bootstrap and maintain a self-healing agent engineering team in any repository. Installs tiered context, enforces Implement → Review → QA pipeline, and continuously repairs context drift.",
+  "description": "Agent Flow \u2014 a self-healing agent engineering workflow for any repository. Installs tiered context, enforces Implement \u2192 Review \u2192 QA pipeline, and continuously repairs context drift.",
   "type": "module",
   "main": "extensions/index.js",
   "types": "extensions/index.d.ts",
@@ -28,7 +28,11 @@
     "multi-agent",
     "code-review",
     "context-management",
-    "trust-loop"
+    "trust-loop",
+    "claude-code",
+    "codex",
+    "gemini-cli",
+    "cursor"
   ],
   "pi": {
     "skills": ["./skills"],

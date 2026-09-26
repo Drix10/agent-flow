@@ -4,6 +4,7 @@ import worktree from "./worktree.js";
 import stateMachine from "./state-machine.js";
 import staleDetector from "./stale-detector.js";
 import riskAuditor from "./risk-auditor.js";
+import crossHarness from "./cross-harness.js";
 
 export default function (pi: ExtensionAPI) {
   bootstrap(pi);
@@ -11,4 +12,5 @@ export default function (pi: ExtensionAPI) {
   stateMachine(pi);
   staleDetector(pi);
   riskAuditor(pi);
+  crossHarness(pi);
 }

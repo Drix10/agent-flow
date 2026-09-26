@@ -1,6 +1,6 @@
 ---
 name: bootstrap
-description: Interactive repository bootstrap for agent-team-workflow. Scans the codebase, proposes tiered context files with confidence markers, calibrates risk boundaries, and generates harness-level permission configurations. Use when setting up agent-team-workflow in a new repository or when context files are missing or corrupted.
+description: Interactive repository bootstrap for agent-flow. Scans the codebase, proposes tiered context files with confidence markers, calibrates risk boundaries, and generates harness-level permission configurations. Use when setting up agent-flow in a new repository or when context files are missing or corrupted.
 compatibility: Requires git, node >=20, and write access to the repository root.
 ---
 

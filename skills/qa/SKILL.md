@@ -1,6 +1,6 @@
 ---
 name: qa
-description: Quality assurance for agent-team-workflow. Runs tests and type-checks, reports failures verbatim, and produces a pass/fail signal. Use after the Reviewer approves a diff.
+description: Quality assurance for agent-flow. Runs tests and type-checks, reports failures verbatim, and produces a pass/fail signal. Use after the Reviewer approves a diff.
 allowed-tools: read bash grep find ls
 ---
 

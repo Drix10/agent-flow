@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Read-only code reviewer for agent-team-workflow. Reviews per-chunk and combined diffs with a high-reasoning model, checks against risk rules and context file claims, and outputs APPROVE or REQUEST_CHANGES. Use after the Implementer produces a diff.
+description: Read-only code reviewer for agent-flow. Reviews per-chunk and combined diffs with a high-reasoning model, checks against risk rules and context file claims, and outputs APPROVE or REQUEST_CHANGES. Use after the Implementer produces a diff.
 allowed-tools: read grep find ls bash
 ---
 
