@@ -31,3 +31,11 @@ test("pi manifest keywords", () => {
   assert.ok(pkg.keywords.includes("pi-package"), "pi-package keyword required");
   assert.ok(pkg.pi?.skills && pkg.pi?.extensions, "pi manifest must list skills and extensions");
 });
+
+test("all extensions registered in entry point", () => {
+  const index = readFileSync(join(root, "extensions", "index.ts"), "utf-8");
+  for (const ext of ["bootstrap", "worktree", "state-machine", "stale-detector", "risk-auditor"]) {
+    assert.ok(index.includes(ext), `extensions/index.ts must register ${ext}`);
+    assert.ok(existsSync(join(root, "extensions", `${ext}.ts`)), `extensions/${ext}.ts missing`);
+  }
+});

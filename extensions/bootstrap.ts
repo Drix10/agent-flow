@@ -12,6 +12,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { glob } from "glob";
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import { Type } from "typebox";
+import { text } from "./result.js";
 
 interface ScanResult {
   language: string;
@@ -26,18 +28,13 @@ interface ScanResult {
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "bootstrap_scan",
+    label: "Bootstrap scan",
     description: "Scan the repository structure. Read-only. Returns a scan result.",
-    parameters: {
-      type: "object",
-      properties: {
-        repoPath: {
-          type: "string",
-          description: "Path to the repository root",
-          default: ".",
-        },
-      },
-    },
-    handler: async ({ repoPath }: { repoPath: string }) => {
+    parameters: Type.Object({
+      repoPath: Type.Optional(Type.String({ description: "Path to the repository root", default: "." })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const repoPath = params.repoPath ?? ".";
       const scan: ScanResult = {
         language: "unknown",
         framework: null,
@@ -108,31 +105,28 @@ export default function (pi: ExtensionAPI) {
       const ciFiles = await glob(".github/workflows/*.yml", { cwd: repoPath });
       scan.ciConfig = ciFiles.length > 0 ? ciFiles[0] : null;
 
-      return scan;
+      return text(scan);
     },
   });
 
   pi.registerTool({
     name: "bootstrap_write",
+    label: "Bootstrap write",
     description: "Write a context file after user confirmation. Requires explicit confirmation string.",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "Path to write" },
-        content: { type: "string", description: "File content" },
-        confirmation: { type: "string", description: "User confirmation string: CONFIRM_BOOTSTRAP" },
-      },
-      required: ["path", "content", "confirmation"],
-    },
-    handler: async ({ path, content, confirmation }: { path: string; content: string; confirmation: string }) => {
-      if (confirmation !== "CONFIRM_BOOTSTRAP") {
+    parameters: Type.Object({
+      path: Type.String({ description: "Path to write" }),
+      content: Type.String({ description: "File content" }),
+      confirmation: Type.String({ description: "User confirmation string: CONFIRM_BOOTSTRAP" }),
+    }),
+    execute: async (_toolCallId, params) => {
+      if (params.confirmation !== "CONFIRM_BOOTSTRAP") {
         throw new Error("Write rejected: confirmation string required.");
       }
 
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, content, "utf-8");
+      await mkdir(dirname(params.path), { recursive: true });
+      await writeFile(params.path, params.content, "utf-8");
 
-      return { written: path, size: content.length };
+      return text({ written: params.path, size: params.content.length });
     },
   });
 }

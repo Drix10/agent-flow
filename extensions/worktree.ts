@@ -12,6 +12,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { Type } from "typebox";
+import { text } from "./result.js";
 
 interface WorktreeInfo {
   path: string;
@@ -25,21 +27,19 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "worktree_create",
+    label: "Worktree create",
     description: "Create an isolated git worktree for an issue. Returns the worktree path and branch.",
-    parameters: {
-      type: "object",
-      properties: {
-        issue: { type: "number", description: "Issue number" },
-        baseBranch: { type: "string", description: "Branch to base from", default: "main" },
-      },
-      required: ["issue"],
-    },
-    handler: async ({ issue, baseBranch = "main" }: { issue: number; baseBranch?: string }) => {
-      const branch = `agent/issue-${issue}`;
-      const worktreePath = join(".worktrees", `issue-${issue}`);
+    parameters: Type.Object({
+      issue: Type.Number({ description: "Issue number" }),
+      baseBranch: Type.Optional(Type.String({ description: "Branch to base from", default: "main" })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const baseBranch = params.baseBranch ?? "main";
+      const branch = `agent/issue-${params.issue}`;
+      const worktreePath = join(".worktrees", `issue-${params.issue}`);
 
       if (existsSync(worktreePath)) {
-        return { error: "worktree_exists", path: worktreePath };
+        return text({ error: "worktree_exists", path: worktreePath });
       }
 
       try {
@@ -53,37 +53,34 @@ export default function (pi: ExtensionAPI) {
       const info: WorktreeInfo = {
         path: worktreePath,
         branch,
-        issue,
+        issue: params.issue,
         createdAt: new Date(),
       };
 
       worktrees.set(branch, info);
 
-      return {
+      return text({
         path: worktreePath,
         branch,
-        issue,
+        issue: params.issue,
         message: `Worktree created at ${worktreePath} on branch ${branch}`,
-      };
+      });
     },
   });
 
   pi.registerTool({
     name: "worktree_remove",
+    label: "Worktree remove",
     description: "Remove a worktree after PR is opened. Cleans up the branch.",
-    parameters: {
-      type: "object",
-      properties: {
-        issue: { type: "number", description: "Issue number" },
-      },
-      required: ["issue"],
-    },
-    handler: async ({ issue }: { issue: number }) => {
-      const worktreePath = join(".worktrees", `issue-${issue}`);
-      const branch = `agent/issue-${issue}`;
+    parameters: Type.Object({
+      issue: Type.Number({ description: "Issue number" }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const worktreePath = join(".worktrees", `issue-${params.issue}`);
+      const branch = `agent/issue-${params.issue}`;
 
       if (!existsSync(worktreePath)) {
-        return { error: "worktree_not_found", path: worktreePath };
+        return text({ error: "worktree_not_found", path: worktreePath });
       }
 
       try {
@@ -95,16 +92,17 @@ export default function (pi: ExtensionAPI) {
 
       worktrees.delete(branch);
 
-      return { removed: worktreePath, branch, issue };
+      return text({ removed: worktreePath, branch, issue: params.issue });
     },
   });
 
   pi.registerTool({
     name: "worktree_list",
+    label: "Worktree list",
     description: "List all active worktrees.",
-    parameters: { type: "object", properties: {} },
-    handler: async () => {
-      return { worktrees: Array.from(worktrees.values()) };
+    parameters: Type.Object({}),
+    execute: async () => {
+      return text({ worktrees: Array.from(worktrees.values()) });
     },
   });
 }

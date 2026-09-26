@@ -13,6 +13,8 @@ import { execSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { Type } from "typebox";
+import { text } from "./result.js";
 
 interface ContextManifest {
   context_files: {
@@ -37,25 +39,17 @@ interface StaleReport {
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "stale_detect",
+    label: "Stale detect",
     description: "Detect stale context files by validating references against the filesystem.",
-    parameters: {
-      type: "object",
-      properties: {
-        manifestPath: {
-          type: "string",
-          description: "Path to CONTEXT_MANIFEST.json",
-          default: "CONTEXT_MANIFEST.json",
-        },
-        repoPath: {
-          type: "string",
-          description: "Path to the repository root",
-          default: ".",
-        },
-      },
-    },
-    handler: async ({ manifestPath = "CONTEXT_MANIFEST.json", repoPath = "." }) => {
+    parameters: Type.Object({
+      manifestPath: Type.Optional(Type.String({ description: "Path to CONTEXT_MANIFEST.json", default: "CONTEXT_MANIFEST.json" })),
+      repoPath: Type.Optional(Type.String({ description: "Path to the repository root", default: "." })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const manifestPath = params.manifestPath ?? "CONTEXT_MANIFEST.json";
+      const repoPath = params.repoPath ?? ".";
       if (!existsSync(manifestPath)) {
-        return { error: "manifest_not_found", path: manifestPath };
+        return text({ error: "manifest_not_found", path: manifestPath });
       }
 
       const manifest: ContextManifest = JSON.parse(await readFile(manifestPath, "utf-8"));
@@ -121,23 +115,21 @@ export default function (pi: ExtensionAPI) {
         report.missing_paths.length === 0 &&
         report.dead_commands.length === 0;
 
-      return { healthy: isHealthy, report };
+      return text({ healthy: isHealthy, report });
     },
   });
 
   pi.registerTool({
     name: "stale_repair",
+    label: "Stale repair",
     description: "Repair stale context files by updating manifests and rebuilding affected files. Requires user confirmation.",
-    parameters: {
-      type: "object",
-      properties: {
-        manifestPath: { type: "string", default: "CONTEXT_MANIFEST.json" },
-        confirmation: { type: "string" },
-      },
-      required: ["confirmation"],
-    },
-    handler: async ({ manifestPath = "CONTEXT_MANIFEST.json", confirmation }: { manifestPath?: string; confirmation: string }) => {
-      if (confirmation !== "CONFIRM_REPAIR") {
+    parameters: Type.Object({
+      manifestPath: Type.Optional(Type.String({ default: "CONTEXT_MANIFEST.json" })),
+      confirmation: Type.String(),
+    }),
+    execute: async (_toolCallId, params) => {
+      const manifestPath = params.manifestPath ?? "CONTEXT_MANIFEST.json";
+      if (params.confirmation !== "CONFIRM_REPAIR") {
         throw new Error("Repair rejected: confirmation string required.");
       }
 
@@ -157,7 +149,7 @@ export default function (pi: ExtensionAPI) {
 
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
 
-      return { repaired: manifestPath, timestamp: now };
+      return text({ repaired: manifestPath, timestamp: now });
     },
   });
 }

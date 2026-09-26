@@ -10,6 +10,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { Type } from "typebox";
+import { text } from "./result.js";
 
 type SessionState = "Needs Me" | "Working" | "Completed";
 
@@ -73,31 +75,28 @@ ${completed.map((s) => `- **Issue #${s.issue}** — done`).join("\n") || "_None_
 
   pi.registerTool({
     name: "state_update",
+    label: "State update",
     description: "Update the session state for an issue. Transitions between Needs Me, Working, and Completed.",
-    parameters: {
-      type: "object",
-      properties: {
-        issue: { type: "number" },
-        state: { type: "string", enum: ["Needs Me", "Working", "Completed"] },
-        phase: { type: "string" },
-        round: { type: "number" },
-        reason: { type: "string" },
-      },
-      required: ["issue", "state"],
-    },
-    handler: async (params: { issue: number; state: SessionState; phase?: string; round?: number; reason?: string }) => {
+    parameters: Type.Object({
+      issue: Type.Number(),
+      state: Type.String({ enum: ["Needs Me", "Working", "Completed"] }),
+      phase: Type.Optional(Type.String()),
+      round: Type.Optional(Type.Number()),
+      reason: Type.Optional(Type.String()),
+    }),
+    execute: async (_toolCallId, params) => {
       const state = await readState();
       const existing = state.sessions.find((s) => s.issue === params.issue);
 
       if (existing) {
-        existing.state = params.state;
+        existing.state = params.state as SessionState;
         existing.phase = params.phase || existing.phase;
         existing.round = params.round ?? existing.round;
         existing.reason = params.reason;
       } else {
         state.sessions.push({
           issue: params.issue,
-          state: params.state,
+          state: params.state as SessionState,
           phase: params.phase || "unknown",
           round: params.round || 0,
           startedAt: new Date().toISOString(),
@@ -107,16 +106,17 @@ ${completed.map((s) => `- **Issue #${s.issue}** — done`).join("\n") || "_None_
       }
 
       await writeState(state);
-      return { updated: params.issue, state: params.state };
+      return text({ updated: params.issue, state: params.state });
     },
   });
 
   pi.registerTool({
     name: "state_read",
+    label: "State read",
     description: "Read the current session state.",
-    parameters: { type: "object", properties: {} },
-    handler: async () => {
-      return await readState();
+    parameters: Type.Object({}),
+    execute: async () => {
+      return text(await readState());
     },
   });
 }
