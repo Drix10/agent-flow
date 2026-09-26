@@ -2,6 +2,8 @@
 
 **Run your agents like a small team.**
 
+[![npm version](https://img.shields.io/npm/v/@drix10/agent-flow)](https://www.npmjs.com/package/@drix10/agent-flow)
+[![npm downloads](https://img.shields.io/npm/dm/@drix10/agent-flow)](https://www.npmjs.com/package/@drix10/agent-flow)
 [![CI](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Agent Skills Standard](https://img.shields.io/badge/Agent%20Skills-Standard-blue)](https://agentskills.io)
@@ -48,6 +50,20 @@ The sidebar sorts every session by what it's waiting on:
 - **Needs Me** — action required from a human
 - **Working** — sub-agents implementing, PR open, waiting on CI
 - **Completed** — worktrees removed, temp files cleaned, servers stopped
+
+## Install
+
+```bash
+# Pi (native — skills, prompts, and extensions)
+pi install npm:@drix10/agent-flow
+
+# npm (skills, prompts, extensions, subagent definitions)
+npm install @drix10/agent-flow
+```
+
+The package is published to both registries on every release:
+[npmjs](https://www.npmjs.com/package/@drix10/agent-flow) ·
+[GitHub Packages](https://github.com/Drix10/agent-flow/pkgs/npm/agent-flow)
 
 ## Quick Start
 
