@@ -93,7 +93,7 @@ Only after the user confirms the proposal:
 1. Write `Root_AGENT.md` from `templates/Root_AGENT.md.template`
 2. Write `Per-app_AGENT.md` for each detected module
 3. Write `DOCS_INDEX.md` from `templates/DOCS_INDEX.md.template`
-4. Write `CONTEXT_MANIFEST.json` from `templates/CONTEXT_MANIFEST.json.template`
+4. Write `CONTEXT_MANIFEST.json` from `templates/CONTEXT_MANIFEST.json.template` — follow the template schema exactly (`context_files` with per-reference `path`/`type`/`last_verified`/`exists`). Do not invent alternate schemas.
 
 Every file must include:
 - Confidence markers on every assertion

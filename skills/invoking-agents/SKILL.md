@@ -46,6 +46,16 @@ Each phase starts with a **fresh context window**:
 
 ## Pipeline Steps
 
+### Step 0: Obtain the Issue
+
+Issue source precedence (first available wins — never escalate for a missing source when a higher one exists):
+
+1. **Inline criteria.** If the invoking message contains the issue title and acceptance criteria, that IS the issue. Do not look anywhere else.
+2. **GitHub.** `gh issue view {number}` — only when no inline criteria were provided.
+3. **Local queue.** A `ISSUES.md` or `.agent-issues.json` file in the repo root, if present.
+
+Escalate `issue_not_found` only when all three are absent.
+
 ### Step 1: Classify Issue
 
 Determine risk level mechanically (based on diff properties, not agent self-report):

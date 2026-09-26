@@ -130,6 +130,34 @@ test("state_update records transitions and state_read returns them", async () =>
   }
 });
 
+test("stale_detect reads the covers schema too (FM-17)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "covers-"));
+  try {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "index.ts"), "export {};\n");
+    // docs/guide.md absent — drift under the alternate schema
+    const manifestPath = join(dir, "CONTEXT_MANIFEST.json");
+    writeFileSync(manifestPath, JSON.stringify({
+      version: 1,
+      last_full_scan: new Date().toISOString(),
+      contexts: [{ path: "Root_AGENT.md", covers: ["src/index.ts", "docs/guide.md"] }],
+    }));
+
+    const { stale_detect, stale_repair } = load(staleDetector);
+    const result = await withoutNpx(() => stale_detect.execute("t1", { manifestPath, repoPath: dir }));
+    assert.equal(result.details.healthy, false);
+    assert.deepEqual(result.details.report.missing_paths, [
+      { file: "Root_AGENT.md", path: "docs/guide.md" },
+    ]);
+    const repaired = await stale_repair.execute("t1", { manifestPath, repoPath: dir, confirmation: "CONFIRM_REPAIR" });
+    assert.equal(repaired.details.repaired, manifestPath);
+    // Covers schema keeps its shape — no context_files injected.
+    assert.ok(!("context_files" in JSON.parse(readFileSync(manifestPath, "utf-8"))));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("risk_audit flags a payment dependency", async () => {
   const dir = mkdtempSync(join(tmpdir(), "risk-"));
   try {

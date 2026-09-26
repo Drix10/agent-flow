@@ -17,7 +17,7 @@ import { Type } from "typebox";
 import { text } from "./result.js";
 
 interface ContextManifest {
-  context_files: {
+  context_files?: {
     path: string;
     references: {
       path: string;
@@ -26,7 +26,31 @@ interface ContextManifest {
       exists: boolean;
     }[];
   }[];
-  staleness_threshold_days: number;
+  // Alternate schema some generators emit (FM-17): flat cover lists, no per-ref metadata.
+  contexts?: { path: string; covers: string[] }[];
+  last_full_scan?: string;
+  lastVerified?: string;
+  generated_at?: string;
+  staleness_threshold_days?: number;
+}
+
+// Normalize either schema to the context_files shape. Covers entries get the
+// manifest-level timestamp (existence is still checked; staleness only when known).
+function normalize(manifest: ContextManifest) {
+  if (manifest.context_files) return { files: manifest.context_files, native: true };
+  const stamp = manifest.last_full_scan ?? manifest.lastVerified ?? manifest.generated_at ?? new Date().toISOString();
+  return {
+    native: false,
+    files: (manifest.contexts ?? []).map((c) => ({
+      path: c.path,
+      references: (c.covers ?? []).map((p) => ({
+        path: p,
+        type: "file" as const,
+        last_verified: stamp,
+        exists: true,
+      })),
+    })),
+  };
 }
 
 interface StaleReport {
@@ -53,6 +77,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       const manifest: ContextManifest = JSON.parse(await readFile(manifestPath, "utf-8"));
+      const { files } = normalize(manifest);
       const report: StaleReport = {
         stale_files: [],
         missing_paths: [],
@@ -60,10 +85,10 @@ export default function (pi: ExtensionAPI) {
         token_waste: [],
       };
 
-      const thresholdMs = manifest.staleness_threshold_days * 24 * 60 * 60 * 1000;
+      const thresholdMs = (manifest.staleness_threshold_days ?? 30) * 24 * 60 * 60 * 1000;
       const now = Date.now();
 
-      for (const contextFile of manifest.context_files) {
+      for (const contextFile of files) {
         for (const ref of contextFile.references) {
           const fullPath = join(repoPath, ref.path);
 
@@ -137,8 +162,18 @@ export default function (pi: ExtensionAPI) {
 
       const manifest: ContextManifest = JSON.parse(await readFile(manifestPath, "utf-8"));
       const now = new Date().toISOString();
+      const { files, native } = normalize(manifest);
 
-      for (const contextFile of manifest.context_files) {
+      if (!native) {
+        // Covers schema has no per-ref metadata — refresh the manifest-level stamp only.
+        if (manifest.last_full_scan !== undefined) manifest.last_full_scan = now;
+        else if (manifest.lastVerified !== undefined) manifest.lastVerified = now;
+        else manifest.last_full_scan = now;
+      } else if (manifest.context_files) {
+        manifest.context_files = files;
+      }
+
+      for (const contextFile of files) {
         for (const ref of contextFile.references) {
           if (existsSync(join(repoPath, ref.path))) {
             ref.last_verified = now;
@@ -148,6 +183,8 @@ export default function (pi: ExtensionAPI) {
           }
         }
       }
+
+      // Sync normalized refs back only for the native schema (covers schema keeps its shape).
 
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
 
