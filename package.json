@@ -17,6 +17,7 @@
     "extensions/",
     "skills/",
     "templates/",
+    "prompts/",
     "README.md",
     "FAILURE_MODES.md"
   ],
@@ -32,7 +33,7 @@
   "pi": {
     "skills": ["./skills"],
     "extensions": ["./extensions"],
-    "templates": ["./templates"]
+    "prompts": ["./prompts"]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^0.87.0"

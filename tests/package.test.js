@@ -39,3 +39,11 @@ test("all extensions registered in entry point", () => {
     assert.ok(existsSync(join(root, "extensions", `${ext}.ts`)), `extensions/${ext}.ts missing`);
   }
 });
+
+test("prompt commands exist with descriptions", () => {
+  for (const cmd of ["bootstrap", "implement", "doctor", "sync-context", "audit-risk", "repair-docs", "garden"]) {
+    const content = readFileSync(join(root, "prompts", `${cmd}.md`), "utf-8");
+    assert.match(content, /description:\s*.+/, `prompts/${cmd}.md needs a description`);
+  }
+  assert.ok(pkg.pi?.prompts, "pi manifest must list prompts");
+});

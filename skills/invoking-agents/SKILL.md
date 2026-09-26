@@ -126,6 +126,8 @@ Update state machine: `Working` → `Completed`.
 
 ## State Machine
 
+The orchestrator must call the `state_update` tool (from `extensions/state-machine.ts`) at every transition — issue claimed → `Working`, escalation → `Needs Me`, PR opened → `Completed` — and `state_read` before deciding what to do next. The state file is the sidebar's source of truth; a transition that isn't recorded didn't happen.
+
 | State | Meaning | Transitions |
 |-------|---------|-------------|
 | `Needs Me` | Human action required | → `Working` (human resolves) |
