@@ -1,6 +1,6 @@
 {
   "name": "@drix10/agent-flow",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Agent Flow — a self-healing agent engineering workflow for any repository. Installs tiered context, enforces Implement → Review → QA pipeline, and continuously repairs context drift.",
   "type": "module",
   "main": "extensions/index.js",

@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-flow",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Self-healing agent engineering workflow. Bootstrap, implement, review, QA, and maintain any repository.",
   "author": {
     "name": "Drix10",
