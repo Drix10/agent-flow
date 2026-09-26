@@ -19,7 +19,12 @@
     "templates/",
     "prompts/",
     "plugin.json",
+    "docs/",
+    ".gemini/settings.json.example",
     "README.md",
+    "README-COMPATIBILITY.md",
+    "SECURITY.md",
+    "ROADMAP.md",
     "FAILURE_MODES.md"
   ],
   "keywords": [
