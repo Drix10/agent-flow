@@ -60,10 +60,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Drix10/agent-team-workflow.git"
+    "url": "https://github.com/Drix10/agent-flow.git"
   },
   "bugs": {
-    "url": "https://github.com/Drix10/agent-team-workflow/issues"
+    "url": "https://github.com/Drix10/agent-flow/issues"
   },
-  "homepage": "https://github.com/Drix10/agent-team-workflow#readme"
+  "homepage": "https://github.com/Drix10/agent-flow#readme"
 }

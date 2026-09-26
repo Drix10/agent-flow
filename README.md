@@ -2,7 +2,7 @@
 
 **Run your agents like a small team.**
 
-[![CI](https://github.com/Drix10/agent-team-workflow/actions/workflows/ci.yml/badge.svg)](https://github.com/Drix10/agent-team-workflow/actions/workflows/ci.yml)
+[![CI](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Agent Skills Standard](https://img.shields.io/badge/Agent%20Skills-Standard-blue)](https://agentskills.io)
 
