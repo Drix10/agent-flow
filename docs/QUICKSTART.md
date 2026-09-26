@@ -1,5 +1,9 @@
 # Agent Flow — 5-Minute Quickstart
 
+> Slash commands (`/bootstrap`, `/doctor`, …) expand in interactive Pi sessions.
+> In non-interactive `pi -p` mode, invoke the skill directly instead:
+> `pi -p --skill <path-to-skill> -e <path-to-extension> "Follow the gardener skill doctor procedure …"`.
+
 ## Install
 
 ```bash

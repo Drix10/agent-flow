@@ -75,7 +75,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Drix10/agent-flow.git"
+    "url": "git+https://github.com/Drix10/agent-flow.git"
   },
   "bugs": {
     "url": "https://github.com/Drix10/agent-flow/issues"
