@@ -37,4 +37,11 @@ jobs:
             tail -c 60000 test-output.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # GITHUB_STEP_SUMMARY isn't reachable via the plain REST API (only
+          # the web UI / blob storage). Also emit the tail as ::error::
+          # workflow commands, which Actions turns into check-run
+          # annotations — those ARE readable via GET .../check-runs/{id}/annotations.
+          tail -c 3000 test-output.log | fold -w 900 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
       - run: npm pack --dry-run
