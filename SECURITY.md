@@ -28,7 +28,7 @@ Agent Flow runs next to autonomous agents that can edit your repository. This pa
 - **Shell commands from read-only roles** are blocked by pattern analysis, which is best-effort. An interpreter trick we don't recognise can still write. For a hard guarantee, launch read-only roles without `bash` (`--tools read,grep,find,ls`) or inside a container.
 - **Gemini reviewer definition** relies on its tool list having no write/shell entries. Verify with a "write TEST.md" probe before you rely on it.
 - **Codex reviewer** should be launched with `codex exec --sandbox read-only` — a real, OS-level sandbox flag we checked against `codex exec --help` (v0.157.1), not a prompt-only restriction. We could not run the live write-block probe ourselves (no Codex account in our test environment), so it's listed here rather than in "Enforced" above; if you run the probe, please report the result. Don't rely on `.codex/agents/reviewer.toml` being auto-discovered — that path is unverified.
-- **Cursor and Copilot:** skills only. Read-only is an instruction there.
+- **Cursor, Copilot and Windsurf:** skills only. Read-only is an instruction there.
 - **`allowed-tools` in SKILL.md is not enforcement** on any harness we tested (FM-16).
 
 ## Audit this package in 10 minutes

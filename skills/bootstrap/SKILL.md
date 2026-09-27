@@ -1,6 +1,6 @@
 ---
 name: bootstrap
-description: Interactive agent-flow setup for a repository. Scans the repo read-only, proposes AGENTS.md (root + per module), DOCS_INDEX.md and CONTEXT_MANIFEST.json with a confidence marker on every claim, calibrates protected paths and risk boundaries with the user, and writes each file only after the human approves it. Use when setting up agent-flow, when context files are missing, or when migrating from Root_AGENT.md.
+description: Interactive agent-flow setup for a repository. Scans the repo read-only, proposes AGENTS.md (root + per module), DOCS_INDEX.md and CONTEXT_MANIFEST.json with a confidence marker on every claim, calibrates protected paths and risk boundaries with the user, and writes each file only after the human approves it. Use when setting up agent-flow, when context files are missing, or when migrating from Root_AGENT.md. Also use whenever the user wants an AGENTS.md (or CLAUDE.md/GEMINI.md) written for a repo that doesn't have one, says their coding agents keep getting confused about the codebase, asks to "onboard" or "document" a repo for AI agents, or wants to set protected paths / risk boundaries — even if they don't say "agent-flow" or "bootstrap" by name.
 compatibility: Requires git. Pi gets the bootstrap_scan/bootstrap_write tools; other harnesses use `npx agent-flow scan` plus normal file edits with the user's approval.
 ---
 
@@ -19,7 +19,7 @@ Why this matters: a context file with confident wrong claims makes agents *worse
 
 ## Phase 2: Proposal (interactive, nothing written)
 
-Why `AGENTS.md`: Pi, Codex, Cursor, Copilot and most agents load `AGENTS.md` automatically. Claude Code loads `CLAUDE.md`, which can import it with one line (`@AGENTS.md`). Gemini CLI loads it when `context.fileName` includes `AGENTS.md`. One source of truth, every harness.
+Why `AGENTS.md`: Pi, Codex, Cursor, Copilot, Windsurf and most agents load `AGENTS.md` automatically — it's a [shared, Linux-Foundation-stewarded convention](https://agents.md), not something specific to this project. Claude Code loads `CLAUDE.md`, which can import it with one line (`@AGENTS.md`). Gemini CLI loads it when `context.fileName` includes `AGENTS.md`. One source of truth, every harness.
 
 Show the root `AGENTS.md` (template: `templates/AGENTS.md.template`) as a proposal, one section at a time:
 
@@ -71,7 +71,7 @@ Outside Pi, show each file's full content and write it only after the human says
 Suggest these; the human runs them:
 
 - Pi: nothing more. The guard and tools are active once the package is installed.
-- Claude Code / Codex / Gemini / Cursor / Copilot: `npx agent-flow install --harness <name>`. It copies the skills and the reviewer subagent and never overwrites your edits.
+- Claude Code / Codex / Gemini / Cursor / Copilot / Windsurf: `npx agent-flow install --harness <name>`. It copies the skills and the reviewer subagent and never overwrites your edits.
 - Everyone: `npx agent-flow hook install` for the pre-commit gate (protected paths, secrets, broken context references).
 - CI: add `npx agent-flow doctor` and `npx agent-flow audit-risk --fail-on-new` as steps (see `README.md`).
 - First baseline: after the human reviews `npx agent-flow audit-risk`, `npx agent-flow baseline accept --all --yes`.

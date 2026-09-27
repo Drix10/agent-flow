@@ -10,7 +10,7 @@ npx agent-flow hook install                                               # ever
 
 ## 2. Bootstrap
 
-Pi: `/bootstrap`. Claude Code, Codex, Gemini CLI, Cursor, Copilot: ask the agent to bootstrap the repo (it has the `bootstrap` skill installed) — or run it yourself, `npx agent-flow scan`, and follow the same skill.
+Pi: `/bootstrap`. Claude Code, Codex, Gemini CLI, Cursor, Copilot, Windsurf: ask the agent to bootstrap the repo (it has the `bootstrap` skill installed) — or run it yourself, `npx agent-flow scan`, and follow the same skill.
 
 It scans read-only, stops if it finds committed secrets, proposes `AGENTS.md` and `CONTEXT_MANIFEST.json` with confidence markers, and asks you for protected paths and critical areas. Each file is written only after you approve it.
 
