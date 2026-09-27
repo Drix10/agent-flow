@@ -81,7 +81,7 @@ State & worktrees (for harnesses without Pi extensions):
 
 Setup (writes files; run by a human):
   baseline accept --all --yes | baseline accept <key>... --yes
-  install --harness <claude|codex|gemini|cursor|copilot|agents> [--dry-run] [--force]
+  install --harness <claude|codex|gemini|cursor|copilot|windsurf|agents> [--dry-run] [--force]
   hook install [--force]    Install the pre-commit hook (runs check-staged)
 
 Global: --json for machine output, --help, --version
@@ -298,7 +298,8 @@ const TARGETS = {
   },
   cursor: { skills: ".cursor/skills", agents: [], note: "Cursor reads AGENTS.md natively." },
   copilot: { skills: ".github/skills", agents: [], note: "VS Code / Copilot also reads .claude/skills and .agents/skills." },
-  agents: { skills: ".agents/skills", agents: [], note: ".agents/skills is the cross-client convention." },
+  windsurf: { skills: ".agents/skills", agents: [], note: "Windsurf (Cascade) reads AGENTS.md natively, including per-directory AGENTS.md in monorepos. No skill-folder or read-only-subagent mechanism is documented for it, so enforcement here is the pre-commit hook." },
+  agents: { skills: ".agents/skills", agents: [], note: ".agents/skills is the cross-client convention — also the right target for Aider, Zed, Warp, Amp, opencode, goose, JetBrains Junie, RooCode, and anything else that reads AGENTS.md but has no harness-specific integration below." },
 };
 
 function sameTree(a, b) {

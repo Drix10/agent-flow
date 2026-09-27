@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [1.1.0] - 2026-09-27
 
-A self-audit found that several documented guarantees were prose rather than code, and that the code had security bugs. This release fixes them. A second, adversarial pass before the first tag found five more (round-cap bypass, a glob-matching gap in the guard, a lock-staleness race, and two minor path/regex bugs) plus a deploy gap where two GitHub-native files had silently reverted to their v1.0.2 content. Full list: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).
+A self-audit found that several documented guarantees were prose rather than code, and that the code had security bugs. This release fixes them. A second, adversarial pass before the first tag found five more (round-cap bypass, a glob-matching gap in the guard, a lock-staleness race, and two minor path/regex bugs) plus a deploy gap where two GitHub-native files had silently reverted to their v1.0.2 content, and a Windows-only CI failure traced to a missing `.gitattributes`. Full list: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).
 
 ### Security
 - **Fixed shell injection** in `worktree_create`. `baseBranch` was interpolated into a shell string. All git calls now use `execFile` with validated refs.
@@ -56,12 +56,13 @@ A self-audit found that several documented guarantees were prose rather than cod
   - draft PRs for critical changes;
   - opt-in auto-merge;
   - untrusted-issue handling.
-- **`install --harness`** is now tested for every target (`claude`, `codex`, `gemini`, `cursor`, `copilot`, `agents`), not just `claude`: `--dry-run` writes nothing, `--force` overwrites, re-running is a no-op. Claude Code and Codex CLI are the primary, most-tested targets; Pi remains fully supported but is no longer the lead example in the docs.
+- **`install --harness`** now also targets `windsurf`, and is tested for every target (`claude`, `codex`, `gemini`, `cursor`, `copilot`, `windsurf`, `agents`), not just `claude`: `--dry-run` writes nothing, `--force` overwrites, re-running is a no-op. Claude Code and Codex CLI are the primary, most-tested targets; Pi remains fully supported but is no longer the lead example in the docs. Any other [AGENTS.md](https://agents.md)-reading tool (Aider, Zed, Warp, JetBrains Junie, RooCode, Amp, opencode, goose, and more) already gets drift detection and risk classification from the CLI unmodified — see [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md).
 - **Implementer skill**: commits *before* diffing. v1.0 diffed first (an empty diff) and committed `diff.patch` into the branch.
 - `detect_harness` reports Pi as the runtime and lists configured harnesses, instead of guessing from folder names.
 - `pi.extensions` names the compiled `extensions/index.js` explicitly. Verified with Pi's own loader: 14 tools, 2 hooks, no errors.
 - Zero runtime dependencies (removed `glob`, `yaml`, `zod`; `typebox` is supplied by Pi).
-- CI runs on Linux, macOS and Windows.
+- CI runs on Linux, macOS and Windows. Added `.gitattributes` (`* text=auto eol=lf`) — its absence was letting `actions/checkout` on `windows-latest` rewrite every text file to CRLF, which broke an exact `\n`-anchored regex in the skill-frontmatter test. Windows-only, deterministic, and unrelated to any of this release's actual code; see [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).
+- Added a demo GIF and two short screen recordings under `demo/`, linked from the README.
 
 ### Removed
 - `pi run …` npm scripts and skill references. `pi run` is not a Pi command.

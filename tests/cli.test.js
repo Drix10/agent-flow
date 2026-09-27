@@ -134,7 +134,7 @@ test("install --harness codex writes every skill under .agents/skills and the TO
 test("install --dry-run writes nothing, for every supported harness", () => {
   const { dir } = repo();
   try {
-    for (const harness of ["claude", "codex", "gemini", "cursor", "copilot", "agents"]) {
+    for (const harness of ["claude", "codex", "gemini", "cursor", "copilot", "windsurf", "agents"]) {
       const r = run(dir, "install", "--harness", harness, "--dry-run");
       assert.equal(r.status, 0, `${harness}: ${r.stdout}${r.stderr}`);
       assert.match(r.stdout, /would write/);

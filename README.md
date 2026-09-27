@@ -7,6 +7,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 ![runtime deps: 0](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
 
+![Agent Flow demo](./demo/demo.gif)
+
+*[Full walkthrough](./demo/demo.mp4) · [The review loop, close up](./demo/demo-loop.mp4)*
+
 Coding agents fail quietly. The model is usually fine. What goes wrong is everything around it:
 
 - an `AGENTS.md` that still names a file renamed last quarter;
@@ -59,12 +63,14 @@ That is real output. Each check exits non-zero, so CI goes red before an agent b
 
 ## Install
 
-**Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot** — the primary targets — get the skills, a read-only reviewer subagent, and the zero-dependency CLI:
+**Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf** — the primary targets — get the skills, a read-only reviewer subagent (where the harness has one), and the zero-dependency CLI:
 
 ```bash
 npm install -D @drix10/agent-flow
-npx agent-flow install --harness claude     # or codex | gemini | cursor | copilot | agents
+npx agent-flow install --harness claude     # or codex | gemini | cursor | copilot | windsurf | agents
 ```
+
+Any other tool that reads [AGENTS.md](https://agents.md) — Aider, Zed, Warp, JetBrains Junie, RooCode, Amp, opencode, goose, and more — already gets drift detection and risk classification from the CLI with no install step at all; `--harness agents` just adds a conventional `.agents/skills/` folder on top.
 
 `install` works on Windows, macOS and Linux, is idempotent, and never overwrites a skill you've edited (`--force` to override). Every command it needs — `doctor`, `audit-risk`, `classify`, `state`, `worktree` — ships in the CLI, so nothing here depends on a harness-specific extension API.
 
@@ -134,7 +140,7 @@ issue ─▶ worktree ─▶ Implementer ─▶ classify ─▶ Reviewer ─▶ 
 
 Being straight about this is the point of the project.
 
-| | Claude Code | Codex CLI | Gemini CLI | Cursor / Copilot | Pi |
+| | Claude Code | Codex CLI | Gemini CLI | Cursor / Copilot / Windsurf | Pi |
 |---|---|---|---|---|---|
 | Reviewer can't write | ✅ subagent `tools: Read, Grep, Glob` | ✅ `codex exec --sandbox read-only` | ⚠️ tool list (verify) | ❌ instruction only | ✅ `--tools` + guard |
 | Protected paths | ✅ hook | ✅ hook | ✅ hook | ✅ hook | ✅ guard + hook |
@@ -142,7 +148,7 @@ Being straight about this is the point of the project.
 | Drift + risk checks | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ tools + CLI |
 | Shell writes by read-only roles | n/a (no shell) | sandbox | — | — | ⚠️ best-effort pattern block |
 
-The ✅ cells in "Protected paths" come from the pre-commit hook. It runs at commit time, not at edit time, and a human can bypass it with `--no-verify`. The guard stops agents from doing that. Full details: [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md).
+The ✅ cells in "Protected paths" come from the pre-commit hook. It runs at commit time, not at edit time, and a human can bypass it with `--no-verify`. The guard stops agents from doing that. Full details, plus every other [AGENTS.md](https://agents.md)-reading tool the CLI already works with unmodified (Aider, Zed, Warp, JetBrains Junie, RooCode, and more): [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md).
 
 **What `allowed-tools` in a SKILL.md does:** nothing, as far as enforcement goes. We tested it (FM-16): a Reviewer skill without `write` in `allowed-tools` still wrote a file when asked. That result is why the guard exists.
 
