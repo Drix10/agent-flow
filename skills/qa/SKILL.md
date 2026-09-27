@@ -1,5 +1,6 @@
 ---
 name: qa
+tags: [testing, quality-gate, verification]
 description: Quality gate for agent-flow. Runs the repo's own test, typecheck and lint commands in the issue worktree, re-runs failures once to separate flaky tests from real failures, and reports raw output verbatim as JSON. Never modifies code. Use when the orchestrator launches you with AGENT_FLOW_ROLE=qa after a review is approved.
 ---
 

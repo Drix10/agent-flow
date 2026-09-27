@@ -1,5 +1,6 @@
 ---
 name: bootstrap
+tags: [setup, scaffolding, agents-md, context-drift]
 description: Interactive agent-flow setup for a repository. Scans the repo read-only, proposes AGENTS.md (root + per module), DOCS_INDEX.md and CONTEXT_MANIFEST.json with a confidence marker on every claim, calibrates protected paths and risk boundaries with the user, and writes each file only after the human approves it. Use when setting up agent-flow, when context files are missing, or when migrating from Root_AGENT.md. Also use whenever the user wants an AGENTS.md (or CLAUDE.md/GEMINI.md) written for a repo that doesn't have one, says their coding agents keep getting confused about the codebase, asks to "onboard" or "document" a repo for AI agents, or wants to set protected paths / risk boundaries — even if they don't say "agent-flow" or "bootstrap" by name.
 compatibility: Requires git. Pi gets the bootstrap_scan/bootstrap_write tools; other harnesses use `npx agent-flow scan` plus normal file edits with the user's approval.
 ---

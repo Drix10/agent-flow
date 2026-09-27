@@ -1,5 +1,6 @@
 ---
 name: implementer
+tags: [code-implementation, worktree, tdd]
 description: Implements one issue inside its own git worktree (.worktrees/issue-N on agent/issue-N), makes the smallest change that satisfies the acceptance criteria, self-checks with the repo's own test/lint/typecheck commands, commits, and prints a JSON report for the orchestrator. Use when the orchestrator launches you with AGENT_FLOW_ROLE=implementer, or the user asks you to implement a specific issue in a worktree.
 ---
 

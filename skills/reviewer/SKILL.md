@@ -1,5 +1,6 @@
 ---
 name: reviewer
+tags: [code-review, guardrails, risk]
 description: Read-only code reviewer for agent-flow. Reviews one diff against the issue's acceptance criteria, repo rules in AGENTS.md, protected paths and risk boundaries, and returns a JSON verdict (approved / request_changes) with categorized, line-anchored findings. Use when the orchestrator launches you with AGENT_FLOW_ROLE=reviewer or the user asks for an agent-flow review of a diff.
 ---
 

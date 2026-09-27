@@ -1,5 +1,6 @@
 ---
 name: invoking-agents
+tags: [orchestration, pipeline, multi-agent]
 description: Orchestrator for agent-flow. Runs one GitHub (or local) issue through Implementer → Reviewer → QA → PR as separate processes with artifact-only handoff, mechanical risk classification, a hard review-round cap, and escalation to Needs Me. Use when the user runs /implement <issue> or asks to push an issue through the pipeline. Also use whenever the user wants an issue implemented, reviewed and QA'd end-to-end with a PR at the end and a human kept out of the loop for anything low-risk — e.g. "have an agent take issue #42", "run this through implement/review/QA and open a PR", "auto-fix this bug and send a PR" — even if they don't say "orchestrator" or "agent-flow."
 ---
 

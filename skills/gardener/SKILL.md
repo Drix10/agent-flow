@@ -1,5 +1,6 @@
 ---
 name: gardener
+tags: [maintenance, context-drift, audit, docs]
 description: Maintenance agent for agent-flow. Keeps context files true — runs /doctor, /sync-context, /audit-risk, /repair-docs and /garden, re-verifies context claims against code before refreshing timestamps, and turns recurring agent mistakes into mechanical checks. Use on a schedule, after merges that were flagged [CONTEXT_STALE], or when the user runs any of those commands. Also use whenever the user asks to check if AGENTS.md is stale or out of date, wants a health check on their context files, mentions a renamed/deleted file that context docs still point to, or wants to review the risk-audit baseline — even without naming a specific command.
 ---
 
