@@ -10,6 +10,8 @@
 
 A self-bootstrapping, self-healing agent engineering workflow for any repository.
 
+**[▶ Watch the launch film (v1.0.2, 90s)](https://github.com/Drix10/agent-flow/releases/download/v1.0.2/agent-flow-launch-1.0.2.mp4)** — terminal sequences are staged to illustrate the story; the pipeline itself is verified live (see Failure Modes). Piano samples: Salamander Grand Piano by Alexander Holm (CC-BY 3.0).
+
 Install it once. It scans your codebase, generates tiered context files, configures a rigorous Implement → Review → QA pipeline, and then **continuously repairs itself** when your codebase drifts.
 
 ## The Problem
