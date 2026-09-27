@@ -1,15 +1,23 @@
+<div align="center">
+
 # Agent Flow
 
 **Your agents trust the context you give them. Agent Flow makes sure it's still true.**
 
-[![npm version](https://img.shields.io/npm/v/@drix10/agent-flow)](https://www.npmjs.com/package/@drix10/agent-flow)
-[![CI](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml/badge.svg)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-![runtime deps: 0](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
+*Context-drift detection, guardrails & an Implement → Review → QA pipeline for AI coding agents — Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf and any tool that reads `AGENTS.md`.*
 
-![Agent Flow demo](./demo/demo.gif)
+[![npm version](https://img.shields.io/npm/v/@drix10/agent-flow?style=flat-square&logo=npm)](https://www.npmjs.com/package/@drix10/agent-flow)
+[![npm downloads](https://img.shields.io/npm/dm/@drix10/agent-flow?style=flat-square&logo=npm&label=downloads)](https://www.npmjs.com/package/@drix10/agent-flow)
+[![CI](https://img.shields.io/github/actions/workflow/status/Drix10/agent-flow/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)
+[![Node](https://img.shields.io/node/v/@drix10/agent-flow?style=flat-square&logo=node.js&logoColor=white&label=node)](https://nodejs.org/)
+![runtime deps: 0](https://img.shields.io/badge/runtime%20deps-0-brightgreen?style=flat-square)
 
-*[Full walkthrough](./demo/demo.mp4) · [The review loop, close up](./demo/demo-loop.mp4)*
+<video src="https://github.com/user-attachments/assets/3acb0531-93c1-4770-a5e9-d26491bfe4c4" width="100%" autoplay loop muted playsinline>Agent Flow demo video: an AI coding agent runs the Implement → Review → QA pipeline, catching context drift and risky diffs.</video>
+
+</div>
+
+**Agent Flow** is a zero-runtime-dependency CLI plus skills layer for **AI coding agents** — **Claude Code, Codex CLI, Gemini CLI, Cursor, GitHub Copilot, Windsurf**, and anything that reads **`AGENTS.md`** — that keeps context files honest, gates risky diffs, and runs Implement → Review → QA as separate, enforceable processes.
 
 Coding agents fail quietly. The model is usually fine. What goes wrong is everything around it:
 
