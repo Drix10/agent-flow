@@ -37,4 +37,15 @@ jobs:
             tail -c 60000 test-output.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # GITHUB_STEP_SUMMARY isn't reachable via the plain REST API (only
+          # the web UI / blob storage, both unreachable from some CI-debugging
+          # setups). ::error:: workflow commands become check-run annotations,
+          # which ARE readable via GET .../check-runs/{id}/annotations. Capped
+          # at 10/step, so anchor on the first TAP failure, not the log tail.
+          FIRST_FAIL=$(grep -n '^not ok' test-output.log | head -1 | cut -d: -f1)
+          if [ -n "$FIRST_FAIL" ]; then
+            tail -n "+$FIRST_FAIL" test-output.log | head -c 6000
+          else
+            tail -c 6000 test-output.log
+          fi | awk 'BEGIN{buf=""} {buf = buf $0 "%0A"; if (length(buf) > 800) {print "::error::" buf; buf=""}} END{if (length(buf)>0) print "::error::" buf}'
       - run: npm pack --dry-run
