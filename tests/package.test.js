@@ -107,14 +107,17 @@ test("skill frontmatter valid for cross-harness discovery", () => {
     const skillPath = join(skillsDir, dir, "SKILL.md");
     if (!existsSync(skillPath)) continue;
     const content = readFileSync(skillPath, "utf-8");
-    const fm = content.match(/^---\n([\s\S]*?)\n---/);
+    // \r? tolerates CRLF: normalized by .gitattributes, but this stays robust
+    // even for content read before normalization applies (e.g. a fresh clone
+    // on a machine with core.autocrlf=true and no .gitattributes yet).
+    const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     assert.ok(fm, `${dir}: missing frontmatter`);
-    const name = fm[1].match(/^name:\s*(.+)$/m)?.[1].trim();
+    const name = fm[1].match(/^name:\s*(.+?)\r?$/m)?.[1].trim();
     assert.ok(name, `${dir}: missing name`);
     assert.equal(name, dir, `${dir}: name must match directory`);
     assert.match(name, /^[a-z0-9-]+$/, `${dir}: name must be lowercase alphanumeric with hyphens`);
     assert.ok(name.length <= 64, `${dir}: name exceeds 64 chars`);
-    const desc = fm[1].match(/^description:\s*(.+)$/m)?.[1];
+    const desc = fm[1].match(/^description:\s*(.+?)\r?$/m)?.[1];
     assert.ok(desc, `${dir}: missing description`);
     assert.ok(desc.length <= 1024, `${dir}: description exceeds 1024 chars`);
   }

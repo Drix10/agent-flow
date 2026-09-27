@@ -1,0 +1,14 @@
+# Normalize to LF everywhere. Without this, GitHub's windows-latest runners
+# (core.autocrlf=true by default) check text files out with CRLF, which broke
+# an exact `\n`-anchored regex in tests/package.test.js — Windows-only CI
+# failure, unreproducible on Linux/macOS. LF everywhere removes the whole
+# class of bug instead of chasing it file by file.
+* text=auto eol=lf
+
+# Binary demo assets: never touched by line-ending normalization.
+*.gif binary
+*.mp4 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
