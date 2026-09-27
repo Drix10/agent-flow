@@ -372,19 +372,19 @@ test("parallel state updates do not lose writes (lock + atomic write)", async ()
 
 test("existsExact never reports a path outside the repo as existing, even when it's real on disk", async () => {
   const { existsExact } = await import("../extensions/lib/fsutil.js");
-  const dir = tmp("exists-exact-escape");
+  // Nest the "repo" inside our own sandbox dir, rather than writing the outside
+  // marker straight into the shared OS temp root — a real file, but one only
+  // this test owns, so nothing else on the machine can collide with it.
+  const sandbox = tmp("exists-exact-escape");
+  const dir = join(sandbox, "repo");
   try {
     mkdirSync(dir, { recursive: true });
     // A file that genuinely exists one level above the repo root.
-    writeFileSync(join(dir, "..", "outside-marker.txt"), "x");
-    try {
-      assert.equal(existsExact(dir, "../outside-marker.txt"), false);
-      assert.equal(existsExact(dir, "..%2F..%2Fetc"), false); // not a real escape, just must not throw
-    } finally {
-      rmSync(join(dir, "..", "outside-marker.txt"), { force: true });
-    }
+    writeFileSync(join(sandbox, "outside-marker.txt"), "x");
+    assert.equal(existsExact(dir, "../outside-marker.txt"), false);
+    assert.equal(existsExact(dir, "..%2F..%2Fetc"), false); // not a real escape, just must not throw
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(sandbox, { recursive: true, force: true });
   }
 });
 
