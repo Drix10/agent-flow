@@ -75,6 +75,8 @@ That is real output. Each check exits non-zero, so CI goes red before an agent b
 
 ```bash
 npm install -D @drix10/agent-flow
+# — or via the skills CLI (same repo, skills-layer view):
+npx skills add Drix10/agent-flow
 npx agent-flow install --harness claude     # or codex | gemini | cursor | copilot | windsurf | agents
 ```
 

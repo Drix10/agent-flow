@@ -28,6 +28,9 @@
     "schemas/",
     "prompts/",
     "plugin.json",
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "gemini-extension.json",
     "docs/",
     ".claude/agents/reviewer.md",
     ".codex/agents/reviewer.toml",
@@ -55,6 +58,7 @@
     "claude-code",
     "codex",
     "gemini-cli",
+    "gemini-cli-extension",
     "cursor"
   ],
   "pi": {
