@@ -1,8 +1,11 @@
 {
-  // Copy to .gemini/settings.json in your workspace.
-  // Required for the reviewer subagent (.gemini/agents/reviewer.md) to load.
-  // Current flag name is enableAgents (older docs say enableSubagents).
+  // Copy to .gemini/settings.json (merge if it exists).
   "experimental": {
+    // Required for .gemini/agents/reviewer.md to load. Older docs call it enableSubagents.
     "enableAgents": true
+  },
+  "context": {
+    // Load the shared AGENTS.md as well as GEMINI.md.
+    "fileName": ["AGENTS.md", "GEMINI.md"]
   }
 }

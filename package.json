@@ -1,22 +1,31 @@
 {
   "name": "@drix10/agent-flow",
-  "version": "1.0.2",
-  "description": "Agent Flow — a self-healing agent engineering workflow for any repository. Installs tiered context, enforces Implement → Review → QA pipeline, and continuously repairs context drift.",
+  "version": "1.1.0",
+  "description": "Agent Flow \u2014 self-healing context + an Implement \u2192 Review \u2192 QA pipeline with enforced guardrails (Pi) and a zero-dependency CLI for every other harness. Detects context drift, gates risky diffs, keeps the trust signals honest.",
   "type": "module",
   "main": "extensions/index.js",
   "types": "extensions/index.d.ts",
   "exports": {
     ".": {
-      "import": "./extensions/index.js",
-      "types": "./extensions/index.d.ts"
+      "types": "./extensions/index.d.ts",
+      "import": "./extensions/index.js"
     },
-    "./skills": "./skills",
-    "./templates": "./templates"
+    "./lib/*": {
+      "types": "./extensions/lib/*.d.ts",
+      "import": "./extensions/lib/*.js"
+    },
+    "./skills/*": "./skills/*",
+    "./templates/*": "./templates/*",
+    "./package.json": "./package.json"
   },
   "files": [
-    "extensions/",
+    "bin/",
+    "extensions/**/*.js",
+    "extensions/**/*.d.ts",
+    "extensions/**/*.ts",
     "skills/",
     "templates/",
+    "schemas/",
     "prompts/",
     "plugin.json",
     "docs/",
@@ -28,7 +37,9 @@
     "README-COMPATIBILITY.md",
     "SECURITY.md",
     "ROADMAP.md",
-    "FAILURE_MODES.md"
+    "FAILURE_MODES.md",
+    "TRUST_LOOP.md",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "pi-package",
@@ -37,6 +48,9 @@
     "multi-agent",
     "code-review",
     "context-management",
+    "context-drift",
+    "agents-md",
+    "guardrails",
     "trust-loop",
     "claude-code",
     "codex",
@@ -48,32 +62,31 @@
       "./skills"
     ],
     "extensions": [
-      "./extensions"
+      "./extensions/index.js"
     ],
     "prompts": [
       "./prompts"
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.87.0"
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
-  "dependencies": {
-    "glob": "^11.0.0",
-    "typebox": "^1.3.27",
-    "yaml": "^2.7.0",
-    "zod": "^3.24.0"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "@types/node": "^22.0.0"
+    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "@types/node": "^22.0.0",
+    "typebox": "^1.3.27",
+    "typescript": "^5.7.0"
   },
   "scripts": {
     "build": "tsc",
     "lint": "tsc --noEmit",
-    "test": "node --test tests/*.test.js",
-    "doctor": "pi run /doctor",
-    "sync-context": "pi run /sync-context",
-    "audit-risk": "pi run /audit-risk"
+    "pretest": "npm run build",
+    "test": "node --test",
+    "prepack": "npm run build",
+    "doctor": "node bin/agent-flow.js doctor",
+    "audit-risk": "node bin/agent-flow.js audit-risk"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -86,5 +99,16 @@
   "bugs": {
     "url": "https://github.com/Drix10/agent-flow/issues"
   },
-  "homepage": "https://github.com/Drix10/agent-flow#readme"
+  "homepage": "https://github.com/Drix10/agent-flow#readme",
+  "bin": {
+    "agent-flow": "bin/agent-flow.js"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  }
 }

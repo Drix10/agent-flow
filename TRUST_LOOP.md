@@ -6,9 +6,14 @@ Agent Flow's core thesis is that **trust is the bottleneck**, not model capabili
 
 ## The Problem
 
-65% of enterprise AI agent failures trace to **context drift**—not model quality. 88% of AI agent projects fail to reach production. The failure is architectural: systems that don't retain feedback or improve from their own outcomes degrade over time.
+Agent failures in real repositories rarely look like "the model couldn't reason". More often it's:
+- the context named a path that moved;
+- the reviewer was the implementer in another hat;
+- a rule existed only as a sentence in a prompt.
 
-The data-layer failure tier accounts for 55% of enterprise harness failures. Stale context produces **confident wrong answers with no exception thrown**.
+Stale context is especially bad because it produces **confident wrong answers with no exception thrown**.
+
+A system that doesn't feed its own outcomes back into its inputs degrades. The Trust Loop is that feedback path.
 
 ## The Loop
 
@@ -30,7 +35,7 @@ The data-layer failure tier accounts for 55% of enterprise harness failures. Sta
 
 ### 1. Bootstrap (Trust Creation)
 
-The `/bootstrap` command scans the repo and **proposes** tiered context files. Nothing is written autonomously. Every architectural assertion carries a confidence marker:
+The `/bootstrap` command scans the repo and **proposes** `AGENTS.md` (root and per module) plus `CONTEXT_MANIFEST.json`. Each file is written only after a human approves it in a confirmation dialog. Every architectural assertion carries a confidence marker:
 
 - `[HIGH CONFIDENCE]` — verified by reading code
 - `[INFERRED]` — guessed from patterns
@@ -48,7 +53,7 @@ Issue → Implementer → Reviewer → QA → PR
          in parallel)   ≤2 rounds)
 ```
 
-Each phase produces **trust signals**:
+Each phase produces **trust signals**. They're recorded in `.agent-state.json` (per-session transition history) and `.agent-flow/audit.jsonl` (guard blocks, confirmations, state transitions):
 - Did the context files help or hinder?
 - Did the Reviewer catch issues that QA missed?
 - Did QA fail correctly, or produce false positives?
@@ -62,7 +67,7 @@ The **Gardener** agent runs periodically or on-demand:
 - `/sync-context` — updates `DOCS_INDEX.md`, flags stale design docs
 - `/audit-risk` — scans for new dependencies, auth code, data mutation paths
 - `/doctor` — validates all context file manifests, flags stale paths
-- `/repair-docs` — rebuilds affected context files after `[CONTEXT_STALE]` flag
+- `/repair-docs` — re-verifies flagged claims against the code, fixes the prose, *then* refreshes manifest timestamps
 - `/garden` — full cycle
 
 ### 4. Verification (Trust Feedback)
@@ -85,29 +90,27 @@ When an agent makes a mistake, fix it at the **highest leverage level first**:
 
 "Your team needs gardeners." Anti-patterns spread like a virus. One workaround copied everywhere within days. The Gardener:
 
-1. **Immediately** writes a lint rule to stop the bleeding
-2. Creates an issue to clean up existing instances
-3. Adds the pattern to `Per-app_AGENT.md` as a local trap
-4. Updates `Root_AGENT.md` if it's a global rule
+1. Opens an issue for a lint rule or hook that stops new instances. The Gardener edits docs, not code, and the guard enforces that.
+2. Opens an issue to clean up existing instances
+3. Adds the pattern to the module's `AGENTS.md` as a local trap
+4. Updates the root `AGENTS.md` if it's a global rule
 
-## Integration with ctxlint
+## Mechanical checks
 
-Agent Flow integrates with ctxlint in CI. ctxlint catches:
-- `stale-file-ref` — file paths mentioned in context files that no longer exist
-- `stale-command` — shell commands that are not available or have changed
-- `no-directory-tree` — hardcoded directory tree dumps that go stale
-- `token-waste` — redundant, padded, or low-signal content burning context window tokens
+`agent-flow doctor` (CI, pre-commit hook, `/doctor`) catches:
+- manifest references that no longer exist, case-exact;
+- `backticked/paths` in the context prose that no longer exist;
+- context files that were deleted;
+- invalid or placeholder timestamps and unfilled `{{TEMPLATE}}` markers;
+- references not re-verified within `staleness_threshold_days`.
 
-When ctxlint finds an issue, the context file is flagged `[STALE]` and the Gardener rebuilds it.
+If [ctxlint](https://www.npmjs.com/package/ctxlint) is installed locally, `--ctxlint` adds its dead-command and token-waste checks. It is never downloaded on demand.
 
-## What Makes This Different
+## How this differs from task runners and frameworks
 
-| Other tools | Agent Flow |
-|-------------|-----------|
-| Task management | Trust loop |
-| Pipeline execution | Bootstrap + execution + self-healing |
-| Asset caching | Universal adaptation |
-| Process frameworks | Self-bootstrapping systems |
-| Runtime environments | Context bootstrappers |
-
-No other project has a **self-healing** context system that repairs itself when it drifts.
+| Typical tool | Agent Flow |
+|---|---|
+| Queues tasks | Also verifies that the context those tasks rely on is still true |
+| Asks the model to follow rules | Blocks the tool call where the harness allows it, and says plainly where it can't |
+| Reviewer is a prompt | Reviewer is a separate process with no write tools |
+| "Max 2 retries" in a prompt | The state machine refuses round 3 and escalates |

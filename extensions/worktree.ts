@@ -1,108 +1,60 @@
 /**
- * Worktree Extension
+ * Worktree Extension — one isolated git worktree per issue.
  *
- * Manages git worktrees for parallel agent execution.
- *
- * SECURITY: This extension creates isolated worktrees. Each worktree
- * has write access only to its own branch. Protected paths are
- * read-only in the Implementer's sandbox.
+ * Isolation here means "separate checkout + branch", not a sandbox. File-level
+ * confinement comes from the guard (AGENT_FLOW_ROLE=implementer +
+ * AGENT_FLOW_WORKTREE), which blocks write/edit outside the worktree.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { Type } from "typebox";
-import { text } from "./result.js";
-
-interface WorktreeInfo {
-  path: string;
-  branch: string;
-  issue: number;
-  createdAt: Date;
-}
+import { appendAudit } from "./lib/state.js";
+import { createWorktree, listWorktrees, removeWorktree } from "./lib/worktree.js";
+import { repoRoot, text } from "./result.js";
 
 export default function (pi: ExtensionAPI) {
-  const worktrees: Map<string, WorktreeInfo> = new Map();
-
   pi.registerTool({
     name: "worktree_create",
     label: "Worktree create",
-    description: "Create an isolated git worktree for an issue. Returns the worktree path and branch.",
+    description:
+      "Create .worktrees/issue-N on branch agent/issue-N from the base branch (default: the repo's default branch, auto-detected). " +
+      "Reuses the branch if a previous run left it behind.",
     parameters: Type.Object({
-      issue: Type.Number({ description: "Issue number" }),
-      baseBranch: Type.Optional(Type.String({ description: "Branch to base from", default: "main" })),
+      issue: Type.Integer({ minimum: 1, description: "Issue number" }),
+      baseBranch: Type.Optional(Type.String({ maxLength: 200, description: "Base branch (validated with git check-ref-format)" })),
     }),
-    execute: async (_toolCallId, params) => {
-      const baseBranch = params.baseBranch ?? "main";
-      const branch = `agent/issue-${params.issue}`;
-      const worktreePath = join(".worktrees", `issue-${params.issue}`);
-
-      if (existsSync(worktreePath)) {
-        return text({ error: "worktree_exists", path: worktreePath });
-      }
-
-      try {
-        execSync(`git worktree add ${worktreePath} -b ${branch} ${baseBranch}`, {
-          stdio: "pipe",
-        });
-      } catch (error: any) {
-        throw new Error(`Failed to create worktree: ${error.message}`);
-      }
-
-      const info: WorktreeInfo = {
-        path: worktreePath,
-        branch,
-        issue: params.issue,
-        createdAt: new Date(),
-      };
-
-      worktrees.set(branch, info);
-
-      return text({
-        path: worktreePath,
-        branch,
-        issue: params.issue,
-        message: `Worktree created at ${worktreePath} on branch ${branch}`,
-      });
+    execute: async (_id, params, _signal, _onUpdate, ctx) => {
+      const root = repoRoot(ctx);
+      const r = createWorktree(root, params.issue, params.baseBranch);
+      appendAudit(root, { event: "worktree_create", issue: params.issue, ...("error" in r ? { error: r.error } : { base: r.base }) });
+      return text(r);
     },
   });
 
   pi.registerTool({
     name: "worktree_remove",
     label: "Worktree remove",
-    description: "Remove a worktree after PR is opened. Cleans up the branch.",
+    description:
+      "Remove .worktrees/issue-N. Refuses if it has uncommitted changes unless force=true. Keeps the branch (a PR is open on it) " +
+      "unless deleteBranch=true, which uses the safe `git branch -d`.",
     parameters: Type.Object({
-      issue: Type.Number({ description: "Issue number" }),
+      issue: Type.Integer({ minimum: 1 }),
+      force: Type.Optional(Type.Boolean()),
+      deleteBranch: Type.Optional(Type.Boolean()),
     }),
-    execute: async (_toolCallId, params) => {
-      const worktreePath = join(".worktrees", `issue-${params.issue}`);
-      const branch = `agent/issue-${params.issue}`;
-
-      if (!existsSync(worktreePath)) {
-        return text({ error: "worktree_not_found", path: worktreePath });
-      }
-
-      try {
-        execSync(`git worktree remove ${worktreePath} --force`, { stdio: "pipe" });
-        execSync(`git branch -d ${branch}`, { stdio: "pipe" });
-      } catch (error: any) {
-        throw new Error(`Failed to remove worktree: ${error.message}`);
-      }
-
-      worktrees.delete(branch);
-
-      return text({ removed: worktreePath, branch, issue: params.issue });
+    execute: async (_id, params, _signal, _onUpdate, ctx) => {
+      const root = repoRoot(ctx);
+      const r = removeWorktree(root, params.issue, { force: params.force, deleteBranch: params.deleteBranch });
+      appendAudit(root, { event: "worktree_remove", issue: params.issue, ...("error" in r ? { error: r.error } : {}) });
+      return text(r);
     },
   });
 
   pi.registerTool({
     name: "worktree_list",
     label: "Worktree list",
-    description: "List all active worktrees.",
+    description: "List agent worktrees (agent/issue-N) as git reports them.",
     parameters: Type.Object({}),
-    execute: async () => {
-      return text({ worktrees: Array.from(worktrees.values()) });
-    },
+    execute: async (_id, _params, _signal, _onUpdate, ctx) => text({ worktrees: listWorktrees(repoRoot(ctx)) }),
   });
 }

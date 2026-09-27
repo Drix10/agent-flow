@@ -1,7 +1,8 @@
 node_modules/
-extensions/*.js
-extensions/*.d.ts
+extensions/**/*.js
+extensions/**/*.d.ts
 .worktrees/
+.agent-flow/
 .agent-state.json
 AGENT_STATE.md
 .risk-baseline.json

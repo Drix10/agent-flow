@@ -1,50 +1,47 @@
-# Agent Flow — 5-Minute Quickstart
+# Quickstart (5 minutes)
 
-> Slash commands (`/bootstrap`, `/doctor`, …) expand in interactive Pi sessions.
-> In non-interactive `pi -p` mode, invoke the skill directly instead:
-> `pi -p --skill <path-to-skill> -e <path-to-extension> "Follow the gardener skill doctor procedure …"`.
-
-## Install
+## 1. Install
 
 ```bash
-# Pi
-pi install npm:@drix10/agent-flow
-
-# Claude Code
-mkdir -p .claude/skills && cp -r node_modules/@drix10/agent-flow/skills/* .claude/skills/
-
-# Codex
-mkdir -p .agents/skills && cp -r node_modules/@drix10/agent-flow/skills/* .agents/skills/
-
-# Gemini CLI
-mkdir -p .gemini/skills && cp -r node_modules/@drix10/agent-flow/skills/* .gemini/skills/
-# Then run /trust in the workspace
+pi install npm:@drix10/agent-flow                                         # Pi
+npm i -D @drix10/agent-flow && npx agent-flow install --harness claude    # or codex | gemini | cursor | copilot
+npx agent-flow hook install                                               # everyone
 ```
 
-## Bootstrap
+## 2. Bootstrap
 
 ```text
 /bootstrap
 ```
 
-The agent scans your repo, proposes tiered context files with confidence markers, and asks you to confirm risk boundaries. Nothing is written until you confirm.
+It scans read-only, stops if it finds committed secrets, proposes `AGENTS.md` and `CONTEXT_MANIFEST.json` with confidence markers, and asks you for protected paths and critical areas. Each file is written only after you approve it.
 
-## Run the Pipeline
+Then accept the current risk surfaces as your baseline:
+
+```bash
+npx agent-flow audit-risk                  # review
+npx agent-flow baseline accept --all --yes
+```
+
+## 3. Run an issue
 
 ```text
 /implement 42
 ```
 
-This creates a worktree, runs the Implementer, sends the diff to the Reviewer, runs QA, and opens a PR. If the Reviewer requests changes, the Implementer gets up to 2 rounds.
+Worktree → Implementer → mechanical classification → Reviewer (no write or shell tools) → QA (re-runs failures once to catch flakes) → PR. Round 3 escalates to **Needs Me**. Critical changes open a **draft** PR for you.
 
-## Maintain
+To follow along: `AGENT_STATE.md`, or `npx agent-flow state`.
+
+## 4. Keep context true
 
 ```text
-/garden
+/doctor     # report only
+/garden     # sync docs index, audit risk, re-verify and repair context
 ```
 
-Full maintenance cycle: sync docs, audit risk, detect stale context, repair affected files.
+Add `npx agent-flow doctor` and `npx agent-flow audit-risk --fail-on-new` to CI. There's a ready-made workflow in the README.
 
-## Check State
+## Headless (`pi -p`)
 
-Open `AGENT_STATE.md`. Sessions are sorted by **Needs Me**, **Working**, and **Completed**.
+Slash commands are expanded in interactive sessions. In `-p` mode, name the skill in the prompt: `pi -p "Use the gardener skill's /doctor procedure"`. File-writing tools refuse to run headless unless you launch with `AGENT_FLOW_HEADLESS_WRITES=1`, because there is no human to confirm.

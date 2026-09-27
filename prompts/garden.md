@@ -1,4 +1,4 @@
 ---
-description: Full maintenance cycle — sync docs, audit risk, repair stale context
+description: Full maintenance cycle — sync docs index, audit risk, check and repair stale context
 ---
-Follow the `gardener` skill's /garden procedure: run /sync-context, /audit-risk, /doctor, and /repair-docs in order, then report the full health summary.
+Follow the `gardener` skill's /garden procedure in order (/sync-context → /audit-risk → /doctor → /repair-docs). Re-read code before refreshing any timestamp. Ask me before accepting risk surfaces. Finish with one health summary: fixed, needs me, issues opened.

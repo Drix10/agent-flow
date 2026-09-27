@@ -1,132 +1,109 @@
 /**
  * Bootstrap Extension
  *
- * Scans the repository and generates tiered context files.
+ * bootstrap_scan  — read-only reconnaissance (languages, commands, CI, existing
+ *                   context files, secret suspects). Never writes.
+ * bootstrap_write — writes ONE context file after a human confirms it.
  *
- * SECURITY: This extension only READS files. It never writes without
- * explicit user confirmation. It never sends data to external servers.
- * It never modifies git history.
+ * SECURITY:
+ *  - Writes are confined to the repository (no `..`, no absolute paths, no
+ *    symlinked escapes) and to context-file types (*.md, CONTEXT_MANIFEST.json,
+ *    .codex/agents/*.toml).
+ *  - Existing files are never overwritten unless `overwrite: true` AND the
+ *    human confirms the overwrite.
+ *  - CONTEXT_MANIFEST.json is schema-validated before it is written (FM-17).
+ *  - Content containing secret-shaped strings is refused.
+ *  - No network access. No git history changes.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { glob } from "glob";
-import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { basename, relative } from "node:path";
 import { Type } from "typebox";
-import { text } from "./result.js";
+import { requireConfirmation } from "./lib/confirm.js";
+import { atomicWrite, resolveInside, toPosix } from "./lib/fsutil.js";
+import { MANIFEST_FILE, validateManifest } from "./lib/manifest.js";
+import { findSecrets } from "./lib/risk.js";
+import { scanRepo } from "./lib/scan.js";
+import { appendAudit } from "./lib/state.js";
+import { repoRoot, text } from "./result.js";
 
-interface ScanResult {
-  language: string;
-  framework: string | null;
-  testFramework: string | null;
-  topLevelDirs: { path: string; description: string }[];
-  entryPoints: string[];
-  existingDocs: { path: string; lastModified: Date }[];
-  ciConfig: string | null;
+
+export function allowedContextTarget(rel: string): boolean {
+  const r = toPosix(rel);
+  if (r.split("/").some((seg) => seg === ".git" || seg === "node_modules")) return false;
+  if (r === MANIFEST_FILE) return true;
+  if (/^\.codex\/agents\/[\w-]+\.toml$/.test(r)) return true;
+  return /\.md$/i.test(r);
 }
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "bootstrap_scan",
     label: "Bootstrap scan",
-    description: "Scan the repository structure. Read-only. Returns a scan result.",
+    description:
+      "Read-only repository scan for /bootstrap: languages, package managers, test frameworks, build/test/lint commands " +
+      "(read from package.json scripts / Makefile), CI files, existing context files (AGENTS.md, CLAUDE.md, …), docs, default branch, " +
+      "recent commits, and secret SUSPECTS (paths + kinds only, never values). Every field is backed by a file that was actually read.",
     parameters: Type.Object({
-      repoPath: Type.Optional(Type.String({ description: "Path to the repository root", default: "." })),
+      repoPath: Type.Optional(Type.String({ description: "Repository root. Defaults to the main repo root of the session." })),
+      maxFiles: Type.Optional(Type.Integer({ minimum: 100, maximum: 500000, description: "Cap on files walked (default 50000)." })),
     }),
-    execute: async (_toolCallId, params) => {
-      const repoPath = params.repoPath ?? ".";
-      const scan: ScanResult = {
-        language: "unknown",
-        framework: null,
-        testFramework: null,
-        topLevelDirs: [],
-        entryPoints: [],
-        existingDocs: [],
-        ciConfig: null,
-      };
-
-      // Detect language
-      const manifests = await glob("**/{package.json,go.mod,Cargo.toml,pyproject.toml,build.gradle}", {
-        cwd: repoPath,
-        ignore: ["node_modules/**", ".git/**"],
-      });
-
-      for (const manifest of manifests.slice(0, 3)) {
-        const content = await readFile(join(repoPath, manifest), "utf-8");
-        if (manifest.endsWith("package.json")) {
-          const pkg = JSON.parse(content);
-          scan.language = "typescript";
-          if (pkg.devDependencies?.jest || pkg.devDependencies?.vitest) {
-            scan.testFramework = "jest/vitest";
-          }
-        } else if (manifest.endsWith("go.mod")) {
-          scan.language = "go";
-          scan.testFramework = "go test";
-        } else if (manifest.endsWith("Cargo.toml")) {
-          scan.language = "rust";
-          scan.testFramework = "cargo test";
-        } else if (manifest.endsWith("pyproject.toml")) {
-          scan.language = "python";
-          scan.testFramework = "pytest";
-        }
-      }
-
-      // Detect top-level directories
-      const dirs = await glob("*/", {
-        cwd: repoPath,
-        ignore: ["node_modules/**", ".git/**", "dist/**", "build/**"],
-      });
-
-      scan.topLevelDirs = dirs.map((d) => ({
-        path: d.replace(/\/$/, ""),
-        description: "", // Filled by agent during proposal
-      }));
-
-      // Detect entry points
-      const entryPoints = await glob("**/{main,index,app,server}.{ts,js,go,rs,py}", {
-        cwd: repoPath,
-        ignore: ["node_modules/**", ".git/**", "dist/**"],
-      });
-      scan.entryPoints = entryPoints;
-
-      // Detect existing docs
-      const docs = await glob("**/*.md", {
-        cwd: repoPath,
-        ignore: ["node_modules/**", ".git/**", "CHANGELOG.md"],
-      });
-      scan.existingDocs = await Promise.all(
-        docs.map(async (doc) => {
-          const st = await stat(join(repoPath, doc));
-          return { path: doc, lastModified: st.mtime };
-        })
-      );
-
-      // Detect CI
-      const ciFiles = await glob(".github/workflows/*.yml", { cwd: repoPath });
-      scan.ciConfig = ciFiles.length > 0 ? ciFiles[0] : null;
-
-      return text(scan);
+    execute: async (_id, params, _signal, _onUpdate, ctx) => {
+      const root = repoRoot(ctx, params.repoPath);
+      return text(scanRepo(root, { maxFiles: params.maxFiles }));
     },
   });
 
   pi.registerTool({
     name: "bootstrap_write",
     label: "Bootstrap write",
-    description: "Write a context file after user confirmation. Requires explicit confirmation string.",
+    description:
+      "Write ONE context file (AGENTS.md, <module>/AGENTS.md, DOCS_INDEX.md, CONTEXT_MANIFEST.json, harness agent definitions) " +
+      "after the human has reviewed the exact content. A confirmation dialog is shown to the human; you cannot confirm on their behalf. " +
+      "Refuses paths outside the repo, non-context file types, invalid manifests, secret-shaped content, and overwriting unless overwrite=true.",
     parameters: Type.Object({
-      path: Type.String({ description: "Path to write" }),
-      content: Type.String({ description: "File content" }),
-      confirmation: Type.String({ description: "User confirmation string: CONFIRM_BOOTSTRAP" }),
+      path: Type.String({ description: "Repo-relative path to write" }),
+      content: Type.String({ description: "Full file content" }),
+      overwrite: Type.Optional(Type.Boolean({ description: "Allow replacing an existing file (the human is asked explicitly)" })),
+      repoPath: Type.Optional(Type.String()),
+      /** Deprecated. Kept so v1.0.x prompts do not break; it is no longer a security boundary. */
+      confirmation: Type.Optional(Type.String({ description: "Deprecated; ignored." })),
     }),
-    execute: async (_toolCallId, params) => {
-      if (params.confirmation !== "CONFIRM_BOOTSTRAP") {
-        throw new Error("Write rejected: confirmation string required.");
+    execute: async (_id, params, _signal, _onUpdate, ctx) => {
+      const root = repoRoot(ctx, params.repoPath);
+      const abs = resolveInside(root, params.path);
+      const rel = toPosix(relative(realpathSync(root), abs));
+      if (!allowedContextTarget(rel)) {
+        throw new Error(`bootstrap_write only writes context files (*.md, ${MANIFEST_FILE}, .codex/agents/*.toml); refused: ${rel}`);
       }
-
-      await mkdir(dirname(params.path), { recursive: true });
-      await writeFile(params.path, params.content, "utf-8");
-
-      return text({ written: params.path, size: params.content.length });
+      const secrets = findSecrets(params.content);
+      if (secrets.length) {
+        throw new Error(`refused: content contains ${secrets.map((x) => `${x.kind} (line ${x.lines.join(", ")})`).join("; ")}. Context files are sent to model providers — never put credentials in them.`);
+      }
+      if (basename(rel) === MANIFEST_FILE) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(params.content);
+        } catch (e: any) {
+          throw new Error(`refused: ${MANIFEST_FILE} is not valid JSON (${e.message})`);
+        }
+        const problems = validateManifest(parsed);
+        if (problems.length) throw new Error(`refused: ${MANIFEST_FILE} fails schema validation:\n- ${problems.join("\n- ")}`);
+      }
+      const exists = existsSync(abs);
+      if (exists && !params.overwrite) {
+        throw new Error(`${rel} already exists. Propose a merge to the human and call again with overwrite: true only after they approve.`);
+      }
+      const lines = params.content.split("\n").length;
+      const via = await requireConfirmation(
+        ctx,
+        exists ? `Overwrite ${rel}?` : `Create ${rel}?`,
+        `${exists ? "REPLACES the existing file. " : ""}${lines} lines, ${params.content.length} bytes. Approve only if you reviewed this exact content.`,
+      );
+      atomicWrite(abs, params.content);
+      appendAudit(root, { event: "bootstrap_write", path: rel, overwrite: exists, confirmed_via: via });
+      return text({ written: rel, bytes: params.content.length, overwrote: exists, confirmed_via: via });
     },
   });
 }

@@ -1,4 +1,4 @@
 ---
-description: Scan for new dependencies, auth code, and data mutation paths
+description: Find new risk surfaces (dependencies, auth, payments, destructive data ops, outbound calls, secrets) since the baseline
 ---
-Follow the `gardener` skill's /audit-risk procedure: run the `risk_audit` tool, compare against the baseline, and propose risk-boundary updates for any new surfaces. Update the baseline only after I confirm.
+Follow the `gardener` skill's /audit-risk procedure: call `risk_audit`, group new surfaces by type, propose protected_paths / risk_boundaries updates, and call `risk_baseline_update` with only the keys I accept. Secrets are never accepted — tell me to remove and rotate them.

@@ -1,4 +1,4 @@
 ---
-description: Update DOCS_INDEX, flag stale and missing design docs
+description: Update DOCS_INDEX.md — stale, missing and archived design docs
 ---
-Follow the `gardener` skill's /sync-context procedure: rescan docs, update DOCS_INDEX.md, and list stale and missing docs.
+Follow the `gardener` skill's /sync-context procedure: list docs with their last commit dates, compare against the code they describe, show me the DOCS_INDEX.md diff, then apply it.

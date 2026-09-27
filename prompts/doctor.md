@@ -1,4 +1,4 @@
 ---
-description: Validate context manifests, flags stale paths and dead references
+description: Check context files against the codebase (paths, prose references, timestamps, schema) — report only
 ---
-Follow the `gardener` skill's /doctor procedure: validate every context file manifest, check all referenced paths exist, and report a pass/fail health summary. Repair nothing — report only.
+Follow the `gardener` skill's /doctor procedure: call `stale_detect`, report pass/fail per check with the exact offending files and paths, and end with the one command that fixes it. Do not modify anything.

@@ -1,58 +1,59 @@
 # Contributing to Agent Flow
 
-## Prerequisites
-
-- Node.js >= 20
-- Git
-- A Pi-compatible harness (Pi, Claude Code, Codex, Gemini CLI, or Cursor)
-
 ## Setup
 
 ```bash
 git clone https://github.com/Drix10/agent-flow.git
 cd agent-flow
 npm install
-npm run build
-npm test
+npm test          # builds, then runs every test against temp git repos
 ```
 
-## Development Workflow
+Node ≥ 20 and git are required. The CI matrix covers Linux, macOS and Windows on Node 20 and 22.
 
-1. Fork the repo and create a feature branch: `git checkout -b feat/my-feature`
-2. Make changes. Run `npm run build` and `npm test` before committing.
-3. Run the doctor against your own repo to verify nothing broke:
-   ```bash
-   node extensions/stale-detector.js --manifestPath ./CONTEXT_MANIFEST.json
-   ```
-4. Open a PR. Describe what changed and which failure mode it addresses.
+## Layout
 
-## Testing Against a Real Repo
+```
+extensions/lib/   all logic, zero dependencies (shared by Pi tools and the CLI)
+extensions/*.ts   thin Pi tool wrappers + the guard hook
+bin/agent-flow.js CLI
+skills/           Agent Skills (instructions only)
+prompts/          Pi slash-command templates
+templates/        AGENTS.md, module AGENTS.md, CLAUDE.md, DOCS_INDEX.md, manifest
+schemas/          JSON Schema for CONTEXT_MANIFEST.json
+```
 
-The best way to test your changes:
+## Rules for changes
 
-1. Clone a small test repo.
-2. Symlink your local `agent-flow` into the test repo's `.pi/` directory.
-3. Run `/bootstrap`, `/implement`, and `/garden`.
-4. Observe which failure modes occur. Add them to `FAILURE_MODES.md`.
+1. **Logic goes in `extensions/lib/`.** Tool wrappers and the CLI only parse input and format output. Otherwise Pi and every other harness drift apart.
+2. **No runtime dependencies.** `node:` built-ins only.
+3. **No shell strings.** Use `execFile` with argv. Validate anything that reaches git (`validateBranchName`, `validateRevision`).
+4. **Anything that writes goes through `resolveInside` + `atomicWrite`,** and user-facing writes go through `requireConfirmation`.
+5. **Every claim in a doc needs a test, or gets labelled Instructed.** If you write "enforced", link the test.
 
-## Adding a New Failure Mode
+## Adding a failure mode
 
-If you find a failure mode not in `FAILURE_MODES.md`:
+1. Add an entry to `FAILURE_MODES.md`: what happens, the fix, a status (Enforced / Checked / Instructed / Open).
+2. If the fix is code, add a test that fails without it.
+3. If the fix is a skill instruction, say so. Don't call it enforced.
 
-1. Add an entry with: what happens, why it matters, the fix, and which file addresses it.
-2. If the fix is code, add the code and the test.
-3. If the fix is prose (a skill instruction), update the relevant `SKILL.md`.
-4. Update the "Open Issues" section if the fix is incomplete.
+## Testing against a real repo
 
-## Skill Authoring Rules
+```bash
+npm run build
+cd /path/to/some/repo
+node /path/to/agent-flow/bin/agent-flow.js doctor
+node /path/to/agent-flow/bin/agent-flow.js audit-risk
+pi -e /path/to/agent-flow/extensions/index.js     # load the extensions in Pi
+```
 
-All `SKILL.md` files must follow the [Agent Skills specification](https://agentskills.io/specification):
+## Skill authoring
 
-- YAML frontmatter with `name` and `description` (required)
-- `name` must match the parent directory name, lowercase, hyphens only, max 64 chars
-- `description` max 1024 chars, describes what the skill does **and when to use it**
-- Body contains the workflow, constraints, and output format
+Follow the [Agent Skills specification](https://agentskills.io/specification):
+- `name` matches the directory (lowercase, hyphens, ≤ 64 chars);
+- `description` ≤ 1024 chars, and says what the skill does *and when to use it*;
+- don't declare `allowed-tools` as if it restricted anything (FM-16).
 
 ## Code of Conduct
 
-By participating, you agree to uphold the [Contributor Covenant](./CODE_OF_CONDUCT.md).
+By participating you agree to the [Contributor Covenant](./CODE_OF_CONDUCT.md).

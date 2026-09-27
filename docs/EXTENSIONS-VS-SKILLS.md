@@ -1,23 +1,20 @@
-# Extensions vs. Skills
+# Skills, extensions, the CLI and the hook
 
-Agent Flow has two kinds of components. They travel differently.
+Agent Flow ships four kinds of component. They reach different places.
 
-## Skills (`skills/`)
+| Component | Where it runs | What it can enforce |
+|---|---|---|
+| **Skills** (`skills/*/SKILL.md`) | Any Agent Skills harness | Nothing. They are instructions. |
+| **Pi extensions** (`extensions/`) | Pi only | Blocks tool calls *before* they execute (`tool_call` guard), and validates state transitions and risk classification |
+| **CLI** (`bin/agent-flow.js`) | Anywhere Node ≥ 20 runs: every harness and CI | The same state machine, classifier, drift and risk checks, called from a shell |
+| **Pre-commit hook** (`agent-flow hook install`) | Any git client | Blocks commits that touch protected paths, contain secrets, or break context references |
 
-Instruction-only Markdown. They follow the Agent Skills open standard, so they copy into any compatible harness: Pi, Claude Code, Codex, Gemini CLI, Cursor, VS Code. Skills describe *process* — who does what, in which order, with which constraints.
+The extensions and the CLI share one library (`extensions/lib/`, zero dependencies), so their behaviour can't drift apart.
 
-## Extensions (`extensions/`)
+## Subagent definitions
 
-TypeScript tools registered on Pi's `ExtensionAPI` (`bootstrap_scan`, `worktree_create`, `state_update`, `stale_detect`, `risk_audit`, `detect_harness`). They are **Pi-only**. Agent Plugins 1.0.0 standardizes exactly two component types — Agent Skills and MCP servers — so Pi extensions do not travel to other harnesses.
+Harnesses discover subagents in their own directories, not in `skills/`. A file under `skills/<name>/agents/` does nothing in every harness. The reviewer definitions ship at `.claude/agents/`, `.codex/agents/` and `.gemini/agents/`, and `agent-flow install` copies them into place.
 
-## The rule
+## The road to tool-call enforcement everywhere
 
-**Skills travel through `skills/`; subagents travel through each harness's `agents/` directory.** They are two different discovery mechanisms, and Agent Plugins 1.0.0 only standardizes the first one. Extensions and subagents do not travel — a file under `skills/<name>/agents/` is inert documentation in every harness, no matter how correct its frontmatter is. Every subagent this repo ships lives at its harness-canonical path (`.claude/agents/`, `.codex/agents/`, `.gemini/agents/`) and is copied from there.
-
-- **Pi:** skills + extensions. Full enforcement.
-- **Claude Code:** skills + a Reviewer subagent definition copied to the harness `agents/` dir — the only hard read-only enforcement in the project. State machine and risk-audit tools do not exist there. - **Codex / Gemini CLI:** skills + a Reviewer subagent definition (conventional read-only; Codex TOML discovery itself unverified). Wherever a skill says "call `state_update`" or "run `risk_audit`", the agent falls back to editing `AGENT_STATE.md` and the context files directly — honest, but advisory.
-- **Cursor / VS Code:** skills only.
-
-## The path to real cross-harness enforcement
-
-Ship the extensions as an **MCP server** (`mcp.json` at the plugin root) exposing the same tools. Agent Plugins carries MCP servers to every conforming client, so `state_update` and friends would exist everywhere. Until then, the README scopes the claim per harness instead of pretending.
+An **MCP server** exposing the same tools would carry the state machine, classifier and checks to every MCP client. It still wouldn't intercept the harness's *built-in* write tools; only the harness can do that (Pi's `tool_call`, Claude Code's `tools` field and hooks, the Codex sandbox). So the plan is MCP for the tools, and each harness's native mechanism for blocking. See ROADMAP.

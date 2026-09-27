@@ -1,101 +1,89 @@
-# Agent Flow — Cross-Harness Installation
+# Agent Flow: per-harness setup
 
-Agent Flow follows the [Agent Skills open standard](https://agentskills.io). The same `skills/` directory works across all major harnesses.
+The skills follow the [Agent Skills](https://agentskills.io) format and work in any compatible harness. **Enforcement depends on the harness.** See [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md).
 
-## Pi (native)
+Every harness except Pi installs the same way, and the command is identical on Windows, macOS and Linux:
+
+```bash
+npm install -D @drix10/agent-flow
+npx agent-flow install --harness <name>      # --dry-run to preview; never overwrites your edits without --force
+npx agent-flow hook install                   # pre-commit gate (recommended everywhere)
+```
+
+v1.0.x told you to use `cp -r` and `ln -s`. Those don't work in PowerShell, and the documented relative symlink resolved to the wrong place. Use `install` instead.
+
+## Pi (full: skills, prompts, tools, guard)
 
 ```bash
 pi install npm:@drix10/agent-flow
 ```
 
-Skills auto-surface as `/skill:name`. Prompts in `prompts/` become `/name` commands.
+- Slash commands: `/bootstrap`, `/implement <n>`, `/doctor`, `/garden`, …
+- Tools: `bootstrap_scan`, `bootstrap_write`, `stale_detect`, `stale_repair`, `risk_audit`, `risk_baseline_update`, `risk_classify`, `worktree_*`, `state_*`, `detect_harness`, `guard_status`.
+- Guard: active in every session. It blocks protected paths and direct writes to state files. Setting `AGENT_FLOW_ROLE` when you launch `pi` turns on role limits (the orchestrator does this for you).
+
+Run a role by hand:
+
+```bash
+AGENT_FLOW_ROLE=reviewer pi --tools read,grep,find,ls          # bash/zsh
+$env:AGENT_FLOW_ROLE="reviewer"; pi --tools read,grep,find,ls  # PowerShell
+```
 
 ## Claude Code
 
 ```bash
-mkdir -p .claude/skills
-cp -r node_modules/@drix10/agent-flow/skills/* .claude/skills/
+npx agent-flow install --harness claude
 ```
 
-Or symlink:
-
-```bash
-ln -s node_modules/@drix10/agent-flow/skills .claude/skills/agent-flow
-```
-
-Skills surface as `/bootstrap`, `/implementer`, etc. **The Reviewer subagent** is defined in `.claude/agents/reviewer.md` and enforces read-only via Claude Code's `tools` field. That file is a reference — Claude Code only loads subagents from `.claude/agents/`, so copy it into place:
-
-```bash
-mkdir -p .claude/agents
-cp node_modules/@drix10/agent-flow/.claude/agents/reviewer.md .claude/agents/reviewer.md
-```
+- Copies the skills to `.claude/skills/<name>/` and the reviewer subagent to `.claude/agents/reviewer.md` (`tools: Read, Grep, Glob`, so it really is read-only).
+- Add `@AGENTS.md` to `CLAUDE.md` so the root context loads.
+- There are no Pi tools here. The skills call `npx agent-flow state|worktree|classify|doctor|audit-risk` instead.
 
 ## Codex CLI
 
 ```bash
-mkdir -p .agents/skills
-cp -r node_modules/@drix10/agent-flow/skills/* .agents/skills/
+npx agent-flow install --harness codex
 ```
 
-Skills auto-discover. Invoke with `/skills` or `$reviewer`. A Reviewer definition ships at `.codex/agents/reviewer.toml` in this repo — copy it to your project's `.codex/agents/` and declare it:
-
-```bash
-mkdir -p .codex/agents
-cp node_modules/@drix10/agent-flow/.codex/agents/reviewer.toml .codex/agents/reviewer.toml
-```
+Declare the reviewer in `.codex/config.toml`:
 
 ```toml
-# .codex/config.toml (append)
 [agents.reviewer]
 description = "Read-only code reviewer"
 config_file = "./.codex/agents/reviewer.toml"
 ```
 
-**Verify before relying on it:** run `codex --help` or check the agent list for the `reviewer` role. The TOML format is verified; the `config_file` auto-discovery path is not. Until confirmed, treat Codex read-only as conventional.
+The reviewer uses `sandbox_mode = "read-only"`. **Verify it** with a "create TEST.md" probe before you rely on it, and please report the result.
 
 ## Gemini CLI
 
 ```bash
-mkdir -p .gemini/skills
-cp -r node_modules/@drix10/agent-flow/skills/* .gemini/skills/
+npx agent-flow install --harness gemini
 ```
 
-**Important:** Gemini CLI requires workspace trust. Run `/trust` in the workspace, then restart the session. Verify with `/skills list`.
-
-Subagents additionally require the experimental flag. Copy `.gemini/settings.json.example` to `.gemini/settings.json` (or merge the `experimental.enableAgents` key — older docs call it `enableSubagents`), and copy the reviewer definition into place:
-
-```bash
-mkdir -p .gemini/agents
-cp node_modules/@drix10/agent-flow/.gemini/agents/reviewer.md .gemini/agents/reviewer.md
-```
+- Run `/trust` in the workspace, then restart.
+- In `.gemini/settings.json`, set `"experimental": {"enableAgents": true}` for the reviewer subagent, and `"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}` so `AGENTS.md` loads. `.gemini/settings.json.example` has both.
+- The reviewer's tool list has no write or shell tools. Verify it with the probe.
 
 ## Cursor
 
 ```bash
-mkdir -p .cursor/skills
-cp -r node_modules/@drix10/agent-flow/skills/* .cursor/skills/
+npx agent-flow install --harness cursor
 ```
 
-Skills auto-discover. Invoke from the `/` menu or let the agent match the description.
+Cursor reads `AGENTS.md` natively. Read-only review is an instruction only here, so rely on the pre-commit hook.
 
 ## VS Code / GitHub Copilot
 
 ```bash
-mkdir -p .github/skills
-cp -r node_modules/@drix10/agent-flow/skills/* .github/skills/
+npx agent-flow install --harness copilot     # → .github/skills/
 ```
 
-VS Code also reads `.claude/skills/` and `.agents/skills/`. Skills surface as slash commands in chat.
+VS Code also reads `.claude/skills/` and `.agents/skills/`.
 
-## Agent Plugins 1.0
+## Upgrading from 1.0.x
 
-Agent Flow ships a `plugin.json` manifest. The plugin format expects:
-
-```text
-agent-flow-plugin/
-├── plugin.json
-├── skills/
-│   └── bootstrap/
-│       └── SKILL.md
-└── mcp.json (optional)
-```
+1. Rename `Root_AGENT.md` to `AGENTS.md`, and each `Per-app_AGENT.md` to `<module>/AGENTS.md`. Update the `path` entries in `CONTEXT_MANIFEST.json` to match. Or run `/bootstrap`, which offers to do this.
+2. A legacy `contexts`/`covers` manifest is migrated automatically by `/repair-docs` (`stale_repair`).
+3. `CONFIRM_*` strings are ignored now. Writes ask you through the Pi UI. For unattended runs, set `AGENT_FLOW_HEADLESS_WRITES=1`.
+4. Re-accept the risk baseline once. The format changed to per-dependency keys, so the first audit will list dependencies as new: `npx agent-flow baseline accept --all --yes`.

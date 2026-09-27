@@ -8,5 +8,6 @@
     "declaration": true,
     "types": ["node"]
   },
-  "include": ["extensions/**/*.ts"]
+  "include": ["extensions/**/*.ts"],
+  "exclude": ["extensions/**/*.d.ts"]
 }

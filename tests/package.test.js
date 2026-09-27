@@ -13,17 +13,54 @@ test("entry points exist", () => {
   for (const skill of ["bootstrap", "implementer", "reviewer", "qa", "gardener", "invoking-agents"]) {
     assert.ok(existsSync(join(root, "skills", skill, "SKILL.md")), `skills/${skill}/SKILL.md missing`);
   }
-  for (const t of ["Root_AGENT.md.template", "Per-app_AGENT.md.template", "DOCS_INDEX.md.template", "CONTEXT_MANIFEST.json.template"]) {
+  for (const t of ["AGENTS.md.template", "module-AGENTS.md.template", "CLAUDE.md.template", "DOCS_INDEX.md.template", "CONTEXT_MANIFEST.json.template"]) {
     assert.ok(existsSync(join(root, "templates", t)), `templates/${t} missing`);
   }
 });
 
-test("reviewer and QA skills exclude write/edit tools", () => {
+test("read-only reviewers really are read-only where the harness enforces it", () => {
+  // Claude Code: the tools field IS enforcement — so it must not include a shell (a shell can write).
+  const claude = readFileSync(join(root, ".claude", "agents", "reviewer.md"), "utf-8");
+  const tools = claude.match(/^tools:\s*(.+)$/m)?.[1] ?? "";
+  for (const t of ["Write", "Edit", "Bash", "MultiEdit", "NotebookEdit"]) assert.ok(!new RegExp(`\\b${t}\\b`).test(tools), `claude reviewer must not have ${t}`);
+  const gemini = readFileSync(join(root, ".gemini", "agents", "reviewer.md"), "utf-8");
+  for (const t of ["write_file", "replace", "run_shell_command"]) assert.ok(!gemini.includes(`- ${t}`), `gemini reviewer must not have ${t}`);
+  assert.match(readFileSync(join(root, ".codex", "agents", "reviewer.toml"), "utf-8"), /sandbox_mode = "read-only"/);
+  // Skills must not pretend allowed-tools is enforcement (FM-16).
   for (const skill of ["reviewer", "qa"]) {
-    const content = readFileSync(join(root, "skills", skill, "SKILL.md"), "utf-8");
-    const m = content.match(/allowed-tools:\s*(.+)/);
-    assert.ok(m, `${skill} missing allowed-tools`);
-    assert.ok(!/\b(write|edit)\b/.test(m[1]), `${skill} must not allow write/edit`);
+    const m = readFileSync(join(root, "skills", skill, "SKILL.md"), "utf-8").match(/allowed-tools:\s*(.+)/);
+    if (m) assert.ok(!/\b(write|edit)\b/.test(m[1]), `${skill} must not allow write/edit`);
+  }
+});
+
+test("pi manifest points at the compiled single entry file", () => {
+  // Explicit compiled entry: Pi loads exactly the build that the tests exercised.
+  assert.deepEqual(pkg.pi.extensions, ["./extensions/index.js"]);
+  assert.ok(existsSync(join(root, "extensions", "index.js")), "run npm run build");
+});
+
+test("zero runtime dependencies; pi packages are peers", () => {
+  assert.deepEqual(pkg.dependencies ?? {}, {});
+  assert.ok(pkg.peerDependencies["@earendil-works/pi-coding-agent"]);
+  assert.ok(pkg.bin?.["agent-flow"] && existsSync(join(root, pkg.bin["agent-flow"])));
+});
+
+test("no npm script calls a pi subcommand that does not exist", () => {
+  for (const [name, cmd] of Object.entries(pkg.scripts)) assert.ok(!/\bpi run\b/.test(cmd), `script ${name} uses nonexistent \`pi run\``);
+});
+
+test("skills never reference nonexistent commands or the old context file names", () => {
+  for (const dir of readdirSync(join(root, "skills"))) {
+    const c = readFileSync(join(root, "skills", dir, "SKILL.md"), "utf-8");
+    assert.ok(!/pi run \//.test(c), `${dir}: \`pi run /x\` is not a Pi command`);
+    assert.ok(!/node extensions\/[\w-]+\.js/.test(c), `${dir}: extensions are not CLIs; use npx agent-flow`);
+  }
+});
+
+test("templates contain no stale file names", () => {
+  for (const f of ["AGENTS.md.template", "module-AGENTS.md.template", "CLAUDE.md.template", "DOCS_INDEX.md.template", "CONTEXT_MANIFEST.json.template"]) {
+    const c = readFileSync(join(root, "templates", f), "utf-8");
+    assert.ok(!c.includes("Root_AGENT.md") && !c.includes("Per-app_AGENT.md"), `${f} references the old names`);
   }
 });
 

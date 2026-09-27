@@ -1,66 +1,24 @@
 {
-  "$schema": "https://agentskills.io/schemas/context-manifest.json",
-  "version": "1.0.0",
+  "$schema": "./node_modules/@drix10/agent-flow/schemas/context-manifest.schema.json",
+  "version": "2",
   "repo": "{{REPO_NAME}}",
-  "generated_at": "{{TIMESTAMP}}",
   "generated_by": "agent-flow@{{VERSION}}",
-  "last_full_scan": "{{TIMESTAMP}}",
+  "generated_at": "{{ISO_TIMESTAMP}}",
+  "last_full_scan": "{{ISO_TIMESTAMP}}",
+  "default_branch": "{{DEFAULT_BRANCH}}",
   "staleness_threshold_days": 30,
   "context_files": [
     {
-      "path": "Root_AGENT.md",
+      "path": "AGENTS.md",
       "references": [
-        {
-          "path": "{{REFERENCED_PATH_1}}",
-          "type": "directory",
-          "last_verified": "{{DATE}}",
-          "exists": true
-        },
-        {
-          "path": "{{REFERENCED_PATH_2}}",
-          "type": "file",
-          "last_verified": "{{DATE}}",
-          "exists": true
-        }
+        { "path": "{{PATH_NAMED_IN_AGENTS_MD}}", "type": "directory", "last_verified": "{{ISO_TIMESTAMP}}", "exists": true }
       ],
-      "confidence_markers": {
-        "high_confidence": 12,
-        "inferred": 4,
-        "needs_verification": 2
-      }
-    },
-    {
-      "path": "Per-app_AGENT.md",
-      "references": [
-        {
-          "path": "{{MODULE_PATH}}",
-          "type": "directory",
-          "last_verified": "{{DATE}}",
-          "exists": true
-        }
-      ],
-      "confidence_markers": {
-        "high_confidence": 8,
-        "inferred": 3,
-        "needs_verification": 1
-      }
+      "confidence_markers": { "high_confidence": 0, "inferred": 0, "needs_verification": 0 }
     }
   ],
+  "protected_paths": ["{{PROTECTED_PATH_OR_GLOB}}"],
   "risk_boundaries": [
-    {
-      "path": "{{HIGH_RISK_PATH}}",
-      "risk_level": "critical",
-      "reviewer_model": "high-reasoning",
-      "rationale": "{{RATIONALE}}"
-    }
+    { "path": "{{CRITICAL_PATH}}", "risk_level": "critical", "reviewer_model": "high-reasoning", "rationale": "{{WHY}}" }
   ],
-  "protected_paths": [
-    "{{PROTECTED_PATH_1}}",
-    "{{PROTECTED_PATH_2}}"
-  ],
-  "ci": {
-    "ctxlint": true,
-    "stale_detection": true,
-    "risk_audit": true
-  }
+  "pipeline": { "max_review_rounds": 2, "auto_merge_low_risk": false }
 }

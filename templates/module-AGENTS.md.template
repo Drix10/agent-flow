@@ -1,0 +1,19 @@
+# {{MODULE_NAME}}
+
+<!-- Scope: this directory. Parent: root AGENTS.md. Keep it short; only what differs from the root. -->
+
+## Purpose
+
+{{MODULE_PURPOSE}} [{{CONFIDENCE}} — read `{{ENTRY_POINT_FILE}}`]
+
+## Local traps
+
+- {{TRAP}} — {{WHY}} — instead: {{ALTERNATIVE}}
+
+## Local rules
+
+- {{RULE}}
+
+## Commands (this module only)
+
+- Test: `{{MODULE_TEST_COMMAND}}` [{{CONFIDENCE}}]

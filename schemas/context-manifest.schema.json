@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Drix10/agent-flow/schemas/context-manifest.schema.json",
+  "title": "agent-flow CONTEXT_MANIFEST.json",
+  "type": "object",
+  "required": ["context_files"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": ["string", "number"] },
+    "repo": { "type": "string" },
+    "generated_by": { "type": "string" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "last_full_scan": { "type": "string", "format": "date-time" },
+    "default_branch": { "type": "string" },
+    "staleness_threshold_days": { "type": "number", "exclusiveMinimum": 0 },
+    "context_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "references"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "last_verified"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "type": { "enum": ["file", "directory"] },
+                "last_verified": { "type": "string", "format": "date-time" },
+                "exists": { "type": "boolean" }
+              }
+            }
+          },
+          "confidence_markers": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } }
+        }
+      }
+    },
+    "protected_paths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "risk_boundaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "risk_level"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "risk_level": { "enum": ["low", "medium", "critical"] },
+          "reviewer_model": { "type": "string" },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "properties": {
+        "max_review_rounds": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "auto_merge_low_risk": { "type": "boolean" }
+      }
+    }
+  }
+}

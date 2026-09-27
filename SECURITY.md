@@ -1,33 +1,47 @@
 # Security
 
-Agent Flow touches your repository with autonomous agents. This document explains what is enforced, what is conventional, and how to verify every claim yourself.
+Agent Flow runs next to autonomous agents that can edit your repository. This page separates what is **enforced**, **checked** and merely **instructed**, and shows you how to verify each claim yourself.
 
-## What is enforced at the harness level
+## Enforced (code blocks it, and a test proves it)
 
-- **Reviewer and QA are instructed read-only, not blocked.** Their skills declare `allowed-tools` without `write` or `edit`, but Pi treats that list as pre-approval, not restriction — a live test confirmed the Reviewer writes a file when directly asked (FM-16). The only hard read-only enforcement is Claude Code's subagent `tools` field.
-- **Bootstrap and repair need confirmation strings.** `bootstrap_write` requires `CONFIRM_BOOTSTRAP`; `stale_repair` requires `CONFIRM_REPAIR`; `risk_baseline_update` requires `CONFIRM_RISK_BASELINE`. Without the exact string, the tool throws. Verify in `extensions/*.ts`.
-- **Implementers work on isolated branches.** Each issue gets its own git worktree and branch (`agent/issue-N`). Nothing lands on your main branch except through a PR you approve.
+| Claim | Where | Test |
+|---|---|---|
+| Reviewer and QA can't `write`/`edit` on Pi | `extensions/guard.ts` → `lib/guard.ts` (`tool_call` hook) | `tests/guard.test.js` |
+| Reviewer launched by the orchestrator has no write, edit or shell tool | `pi --tools read,grep,find,ls` in `skills/invoking-agents` | Pi's own flag |
+| Claude Code reviewer subagent can't write or run shell | `.claude/agents/reviewer.md` → `tools: Read, Grep, Glob` | `tests/package.test.js` |
+| Protected paths can't be written by any agent on Pi | guard | `tests/guard.test.js` |
+| Implementer can't write outside `AGENT_FLOW_WORKTREE` | guard | `tests/guard.test.js` |
+| No `--no-verify`, force-push, push to the default branch, re-roling or nested agent launches from agent roles | guard | `tests/guard.test.js` |
+| File-writing tools need a **human** (Pi UI dialog). Headless writes need `AGENT_FLOW_HEADLESS_WRITES=1`, set by the launcher | `lib/confirm.ts` | `tests/tools.test.js` |
+| Writes stay inside the repo: no `..`, absolute paths or symlink escapes | `lib/fsutil.ts#resolveInside` | `tests/tools.test.js` |
+| No shell-string execution; git revisions and branches are validated | `lib/git.ts` (`execFile` + `check-ref-format`) | `tests/tools.test.js` |
+| Review round cap and legal state transitions | `lib/state.ts` | `tests/tools.test.js`, `tests/cli.test.js` |
+| Secret values are never printed or written | `lib/risk.ts#findSecrets` (kind + line only) | `tests/tools.test.js`, `tests/cli.test.js` |
 
-## What is conventional (not enforced)
+## Checked (detected and reported; someone still has to act)
 
-- **`allowed-tools` enforcement depends on the harness.** On Pi, skill `allowed-tools` restricts the model. On other harnesses (Claude Code, Cursor), the equivalent mechanism is the harness's own permission system — copy `skills/` over, then confirm the target harness honors the tool list. Until you have watched the Reviewer refuse a direct "write this file" instruction, treat read-only review as **instructed, not proven**. See FM-16 in `FAILURE_MODES.md`.
-- **Protected paths** are a bootstrap-time agreement recorded in `CONTEXT_MANIFEST.json`, backed by a pre-commit hook only if you install one. The template does not install hooks for you yet.
+- **Pre-commit hook** (`agent-flow hook install`) blocks commits that touch protected paths, contain secret-shaped strings, or *introduce* broken context references (older drift is a warning). It works in any harness. A human can bypass it with `git commit --no-verify`; the guard stops agents on Pi from doing so.
+- **`agent-flow doctor` / `audit-risk --fail-on-new`** in CI.
 
-## How to audit this package
+## Instructed only (be clear-eyed about this)
 
-1. **Read the extensions.** There are six small TypeScript files in `extensions/`. No minification, no bundled blobs, no postinstall scripts. `grep -rn "fetch\|axios\|https://" extensions/` should return nothing.
-2. **Run the tests.** `npm test` checks package integrity, skill tool exclusions, and extension wiring. `npm run build` type-checks every tool against Pi's real `ToolDefinition` API.
-3. **Check the pack.** `npm pack --dry-run` lists exactly what ships. Only `extensions/`, `skills/`, `templates/`, `prompts/`, `README.md`, and `FAILURE_MODES.md`.
-4. **No telemetry.** The package makes no network calls. The only network traffic is your own model provider calls from the harness.
+- **Shell commands from read-only roles** are blocked by pattern analysis, which is best-effort. An interpreter trick we don't recognise can still write. For a hard guarantee, launch read-only roles without `bash` (`--tools read,grep,find,ls`) or inside a container.
+- **Codex and Gemini reviewer definitions** rely on each harness's own sandbox or tool list. Verify each one with a "write TEST.md" probe before you rely on it.
+- **Cursor and Copilot:** skills only. Read-only is an instruction there.
+- **`allowed-tools` in SKILL.md is not enforcement** on any harness we tested (FM-16).
+
+## Audit this package in 10 minutes
+
+1. **Dependencies:** `npm ls --omit=dev --all` shows nothing. There are zero runtime dependencies.
+2. **Network:** `grep -rnE "fetch\(|https?\.request|net\.connect|npx " extensions/lib/*.ts bin` finds no network call. The only hits are the "never npx" comment in `lib/stale.ts` and `npx --no-install` in the pre-commit hook text, and `--no-install` forbids downloading.
+3. **Process execution:** `grep -rn "execFileSync\|execSync\|spawn" extensions/lib/*.ts bin`. The real calls are `execFileSync("git", [...])` and a locally installed ctxlint run through `process.execPath` (opt-in). Every other hit is a comment, a detection regex, or guard text.
+4. **Tests:** `npm test`. They run against real git repositories in temp directories.
+5. **Package contents:** `npm pack --dry-run` lists exactly what ships (`bin/`, `extensions/`, `skills/`, `templates/`, `schemas/`, `prompts/`, `docs/`, the harness reviewer definitions, and the Markdown docs).
 
 ## Known risk data
 
-Independent research finds 26.1% of agent skills contain at least one vulnerability (data exfiltration 13.3%, privilege escalation 11.8%), and skills bundling executable scripts are 2.12× more likely to be vulnerable. Mitigations in this package:
+A 2026 study of 31,132 public agent skills found 26.1% contain at least one vulnerability (data exfiltration 13.3%, privilege escalation 11.8%). Skills that bundle executable scripts were 2.12× more likely to be vulnerable than instruction-only skills ([Liu et al., arXiv:2601.10338](https://arxiv.org/abs/2601.10338)). Agent Flow does bundle code. That is why it has no dependencies, makes no network calls, and has a test for every security claim above.
 
-- Skills are instruction-only Markdown. The only executable code is the auditable TypeScript in `extensions/`.
-- Every file-writing tool requires an explicit confirmation string.
-- CI runs build, lint, and tests on every push.
+## Reporting a vulnerability
 
-## Reporting
-
-Open an issue at https://github.com/Drix10/agent-flow/issues with what happened, what you expected, and the relevant logs. Do not post secrets — scrub tokens and keys before attaching output.
+Please use GitHub's **private vulnerability reporting** (Security → Report a vulnerability) on https://github.com/Drix10/agent-flow rather than a public issue. Include the steps to reproduce and the relevant `.agent-flow/audit.jsonl` lines. Scrub any tokens first.

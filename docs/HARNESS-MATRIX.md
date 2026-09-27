@@ -1,20 +1,32 @@
 # Harness Enforcement Matrix
 
-Not all harnesses enforce tool restrictions the same way. This document tells you exactly what is enforced vs. advisory per harness.
+What is **enforced** (the harness or our code blocks it), **checked** (the pre-commit hook or CI catches it), or only **instructed** (the model is asked to comply), per harness.
 
-| Feature | Pi | Claude Code | Codex | Gemini CLI | Cursor | VS Code |
+| Capability | Pi | Claude Code | Codex CLI | Gemini CLI | Cursor | VS Code / Copilot |
 |---|---|---|---|---|---|---|
-| Skill discovery | ✅ `pi.skills` | ✅ `.claude/skills/` | ✅ `.agents/skills/` | ✅ `.gemini/skills/` | ✅ `.cursor/skills/` | ✅ `.github/skills/` |
-| Frontmatter `name` required | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `allowed-tools` enforcement | ⚠️ pre-approval only — verified non-restricting (FM-16) | ⚠️ Advisory only | ❌ | ❌ | ❌ | ❌ |
-| Subagent tool restriction | ✅ (extension) | ✅ (`tools` field) | ⚠️ TOML ships, discovery unverified | ✅ (tool list, needs `enableAgents`) | ✅ (permission config) | ✅ (agent profile) |
-| Workspace trust required | ❌ | ✅ (project skills) | ❌ | ✅ (`/trust`) | ❌ | ✅ |
-| Auto-discovery | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Slash command from skill | ✅ `/skill:name` | ✅ `/name` (dir name) | ✅ `/skills` | ✅ `/skills list` | ✅ `/` menu | ✅ chat slash |
-| Pi extensions available | ✅ native | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Skill discovery | `pi.skills` | `.claude/skills/` | `.agents/skills/` | `.gemini/skills/` | `.cursor/skills/` | `.github/skills/` |
+| Root context auto-loaded | `AGENTS.md` | `CLAUDE.md` → `@AGENTS.md` | `AGENTS.md` | `GEMINI.md`, or `context.fileName` incl. `AGENTS.md` | `AGENTS.md` | `AGENTS.md` |
+| `allowed-tools` restricts tools | ❌ pre-approval only (FM-16, tested) | ❌ pre-approval | ❌ | ❌ | ❌ | ❌ |
+| Reviewer can't write | ✅ `--tools read,grep,find,ls` + guard | ✅ subagent `tools: Read, Grep, Glob` | ⚠️ `sandbox_mode = "read-only"`, unverified | ⚠️ tool list without write/shell, unverified | ❌ instructed | ❌ instructed |
+| Protected paths | ✅ guard (per call) + hook | ✅ hook (commit time) | ✅ hook | ✅ hook | ✅ hook | ✅ hook |
+| Implementer confined to worktree | ✅ guard | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed |
+| State machine (round cap, transitions) | ✅ `state_update` tool | ✅ `npx agent-flow state update` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
+| Mechanical risk classification | ✅ `risk_classify` | ✅ `npx agent-flow classify` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
+| Drift / risk checks | ✅ tools + CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
+| Human confirmation for context writes | ✅ UI dialog | the harness's own permission prompt | same | same | same | same |
+| Install | `pi install npm:@drix10/agent-flow` | `npx agent-flow install --harness claude` | `… --harness codex` | `… --harness gemini` | `… --harness cursor` | `… --harness copilot` |
 
-## Key Takeaway
+A ✅ from the CLI means the rule is enforced when the CLI is called. Whether the agent calls it depends on the skill (instructed), but the rule itself can't be bypassed by calling the CLI with different arguments.
 
-**`allowed-tools` in SKILL.md frontmatter is NOT enforced by Claude Code.** An experiment found that `allowed-tools: Read` did not prevent Grep or Glob from being used in an inline skill context. The field grants pre-approval, not restriction.
+## Verify it yourself
 
-**For real enforcement, use harness-level subagent definitions.** Claude Code's `tools` field in a subagent definition (`.claude/agents/reviewer.md`) restricts which tools the subagent receives. If `Write` and `Edit` are not listed, the subagent physically cannot modify files.
+Every "⚠️ unverified" cell is one probe away from ✅ or ❌. Launch the reviewer on that harness and ask it to *"create TEST.md containing hello"*. If the file appears, the cell is ❌. Please open an issue with the result either way.
+
+## Why skills alone can't enforce anything
+
+A SKILL.md is text that goes into the model's context. Enforcement needs something that sits *between* the model and the tool:
+- a harness permission system (Claude Code subagent `tools`, the Codex sandbox);
+- a hook (Pi `tool_call`, git pre-commit);
+- a process boundary (`pi --tools`, a container).
+
+Agent Flow uses all three where they exist, and says plainly where they don't.

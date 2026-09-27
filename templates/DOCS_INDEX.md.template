@@ -22,7 +22,7 @@
 |-----|------|------------|--------|
 | {{STALE_1_TITLE}} | `{{STALE_1_PATH}}` | {{STALE_1_DATE}} | {{STALE_1_REASON}} |
 
-**Action:** Run `/repair-docs` to rebuild affected context files.
+**Action:** Run `/repair-docs` (re-verifies the prose against code, then refreshes the manifest).
 
 ---
 
@@ -52,6 +52,6 @@ The following areas have code but no design doc:
   "docs": [
     {"path": "{{DOC_1_PATH}}", "status": "{{DOC_1_STATUS}}", "last_updated": "{{DOC_1_DATE}}"}
   ],
-  "stale_threshold_days": 60
+  "stale_threshold_days": 30
 }
 ```

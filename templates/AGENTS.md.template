@@ -1,0 +1,55 @@
+# {{REPO_NAME}}
+
+<!--
+  Root context for coding agents. Loaded automatically by Pi, Codex, Cursor, Copilot
+  and others; Claude Code loads it via `@AGENTS.md` in CLAUDE.md.
+  Keep it under ~150 lines. Every `backticked/path` is checked by `agent-flow doctor`.
+  Markers: [HIGH CONFIDENCE] read in code · [INFERRED] from names/patterns · [NEEDS VERIFICATION] unknown
+  Machine-readable references: CONTEXT_MANIFEST.json
+-->
+
+## What this is
+
+{{ONE_PARAGRAPH_PURPOSE}} [{{CONFIDENCE}}]
+
+## Where things live
+
+| Path | Purpose | Confidence |
+|---|---|---|
+| `{{MODULE_1_PATH}}` | {{MODULE_1_PURPOSE}} | [{{CONFIDENCE}}] |
+| `{{MODULE_2_PATH}}` | {{MODULE_2_PURPOSE}} | [{{CONFIDENCE}}] |
+
+Module-specific rules live in each module's own `AGENTS.md`.
+
+## Commands
+
+| Task | Command | Source |
+|---|---|---|
+| Test | `{{TEST_COMMAND}}` | {{SOURCE}} |
+| Typecheck | `{{TYPECHECK_COMMAND}}` | {{SOURCE}} |
+| Lint | `{{LINT_COMMAND}}` | {{SOURCE}} |
+| Build | `{{BUILD_COMMAND}}` | {{SOURCE}} |
+
+## Paved paths
+
+The one way we do common things. Extend these; don't invent parallel ones.
+
+- {{PATTERN}}: see `{{EXAMPLE_FILE}}` [{{CONFIDENCE}}]
+
+## Local traps
+
+Things that look right and are wrong here.
+
+- {{TRAP}} — {{WHY}} — instead: {{ALTERNATIVE}}
+
+## Rules
+
+- Never modify protected paths (see `CONTEXT_MANIFEST.json` → `protected_paths`). Escalate instead.
+- All changes land via PR from `agent/issue-N`; never push to `{{DEFAULT_BRANCH}}`.
+- New dependencies need risk review (`agent-flow audit-risk`).
+- If code contradicts this file, trust the code and flag `[CONTEXT_STALE]`.
+- Fix root causes; no comments that justify workarounds.
+
+## Personal preferences
+
+Not here — this file is shared. Put personal notes in `AGENTS.local.md` / `CLAUDE.local.md` and add them to `.gitignore`.

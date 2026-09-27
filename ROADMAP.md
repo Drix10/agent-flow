@@ -1,31 +1,28 @@
 # Roadmap
 
-## v1.0.x — Prove it works (now)
+## v1.1 — Make the claims true (this release)
+- [x] FM-16: real read-only enforcement on Pi (guard + `--tools`)
+- [x] Mechanical round cap and state transitions
+- [x] Mechanical risk classification from the real diff
+- [x] Pre-commit hook: protected paths, secrets, broken context references
+- [x] CLI for non-Pi harnesses and CI
+- [x] Prose drift detection, case-exact paths
+- [x] Security fixes from self-audit (injection, traversal, npx, confirmation)
 
-- [ ] Verify `allowed-tools` enforcement: instruct the Reviewer to write a file, confirm it refuses (FM-16)
-- [ ] End-to-end dry run: `/bootstrap` → `/implement` → `/garden` on a real repo, twice, on two different repos
-- [ ] Real unit tests for each extension `execute()` handler (fake repo in, asserted shape out)
-- [ ] Demo repo: `github.com/Drix10/agent-flow-demo` with full lifecycle walkthrough
-- [ ] Publish `v1.0.0` quietly to npm; announce `v1.0.1` after the dry run passes
+## v1.2 — Prove it in the wild
+- [ ] Public demo repo with a recorded, unedited `/bootstrap` → `/implement` → `/garden` run
+- [ ] Probe results for the Codex sandbox and Gemini tool list (turn ⚠️ into ✅/❌ in the matrix)
+- [ ] `agent-flow report`: summarize `.agent-flow/audit.jsonl` into trust signals (guard blocks per role, escalation reasons, rounds per issue)
+- [ ] Gardener consumes that report to propose `protected_paths` and lint rules automatically
+- [ ] GitHub Action wrapper (`uses: Drix10/agent-flow@v1`)
 
-## v1.1 — Harden the loop
-
-- [ ] FM-14: flaky-test detection in QA (re-run failures once before reporting)
-- [ ] Pre-commit hook template that rejects protected-path changes and broken context references
-- [ ] `ctxlint` wired into CI once the action is verified
-- [ ] `pi.image` gallery preview (1200×630)
-
-## v2.0 — Scale the team
-
-- [ ] Ship extensions as an MCP server (`mcp.json` at plugin root) so `state_update`, `risk_audit`, etc. exist on every harness, not just Pi. This is the only path to genuine cross-harness enforcement. See `docs/EXTENSIONS-VS-SKILLS.md`.
-
-- [ ] FM-13: multi-repo coordination (cross-repo dependencies)
-- [ ] FM-15: model provider fallback configuration
-- [ ] Claude Code native support (verified permission mapping, not just copied skills)
-- [ ] VS Code extension integration
+## v2.0 — Everywhere
+- [ ] MCP server exposing the same tools (state, classify, doctor, audit, worktrees) to every MCP client
+- [ ] Claude Code `PreToolUse` hook shipping the guard policy (same `lib/guard.ts`)
+- [ ] FM-13: multi-repo coordination
+- [ ] FM-15: model-provider fallback and resumable runs
 
 ## Out of scope
-
-- Multi-tenant / SaaS hosting. This is a local-first repo tool.
-- Custom model training or fine-tuning. The Trust Loop is model-agnostic by design.
-- Framework-specific scaffolding. The package bootstraps process, not code.
+- Hosting / SaaS. This is a local-first repo tool.
+- Model training or fine-tuning.
+- Framework scaffolding. Agent Flow bootstraps process and context, not code.
