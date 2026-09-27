@@ -22,5 +22,19 @@ jobs:
       - run: git config --global user.email ci@example.com && git config --global user.name ci
       - run: npm ci
       - run: npm run lint
-      - run: npm test
+      - name: Run npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.log
+      - name: Show test output on failure
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '### npm test output'
+            echo '```'
+            tail -c 60000 test-output.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - run: npm pack --dry-run
