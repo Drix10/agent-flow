@@ -8,7 +8,7 @@ Agent Flow runs next to autonomous agents that can edit your repository. This pa
 |---|---|---|
 | Reviewer and QA can't `write`/`edit` on Pi | `extensions/guard.ts` → `lib/guard.ts` (`tool_call` hook) | `tests/guard.test.js` |
 | Reviewer launched by the orchestrator has no write, edit or shell tool | `pi --tools read,grep,find,ls` in `skills/invoking-agents` | Pi's own flag |
-| Claude Code reviewer subagent can't write or run shell | `.claude/agents/reviewer.md` → `tools: Read, Grep, Glob` | `tests/package.test.js` |
+| Claude Code reviewer subagent can't write or run shell | `.claude/agents/reviewer.md` → `tools: Read, Grep, Glob` | `tests/package.test.js` (static) + live-verified: launched the real subagent via the Task tool in a scratch repo and told it to create `TEST.md` by any means; it reported it had no tool that could write and the file did not exist on disk. Reproduce with the probe in [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md#verify-it-yourself). |
 | Protected paths can't be written by any agent on Pi | guard | `tests/guard.test.js` |
 | Implementer can't write outside `AGENT_FLOW_WORKTREE` | guard | `tests/guard.test.js` |
 | No `--no-verify`, force-push, push to the default branch, re-roling or nested agent launches from agent roles | guard | `tests/guard.test.js` |
@@ -26,7 +26,8 @@ Agent Flow runs next to autonomous agents that can edit your repository. This pa
 ## Instructed only (be clear-eyed about this)
 
 - **Shell commands from read-only roles** are blocked by pattern analysis, which is best-effort. An interpreter trick we don't recognise can still write. For a hard guarantee, launch read-only roles without `bash` (`--tools read,grep,find,ls`) or inside a container.
-- **Codex and Gemini reviewer definitions** rely on each harness's own sandbox or tool list. Verify each one with a "write TEST.md" probe before you rely on it.
+- **Gemini reviewer definition** relies on its tool list having no write/shell entries. Verify with a "write TEST.md" probe before you rely on it.
+- **Codex reviewer** should be launched with `codex exec --sandbox read-only` — a real, OS-level sandbox flag we checked against `codex exec --help` (v0.157.1), not a prompt-only restriction. We could not run the live write-block probe ourselves (no Codex account in our test environment), so it's listed here rather than in "Enforced" above; if you run the probe, please report the result. Don't rely on `.codex/agents/reviewer.toml` being auto-discovered — that path is unverified.
 - **Cursor and Copilot:** skills only. Read-only is an instruction there.
 - **`allowed-tools` in SKILL.md is not enforcement** on any harness we tested (FM-16).
 

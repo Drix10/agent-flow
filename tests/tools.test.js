@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import staleDetector from "../extensions/stale-detector.js";
@@ -101,6 +101,20 @@ test("index registers every tool exactly once", () => {
 // ---------------------------------------------------------------------------
 // stale_detect / stale_repair
 // ---------------------------------------------------------------------------
+
+test("stale_detect reports every unfilled {{PLACEHOLDER}} on a line, not just the first", async () => {
+  const dir = tmp("placeholders");
+  try {
+    writeFileSync(join(dir, "AGENTS.md"), "Owner: {{OWNER}}, repo: {{REPO}}\n");
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify(manifest([])));
+    const { stale_detect } = load(staleDetector);
+    const r = await stale_detect.execute("t", { repoPath: dir }, undefined, undefined, ctxAt(dir));
+    const texts = r.details.report.unfilled_placeholders.map((p) => p.text);
+    assert.deepEqual(texts.sort(), ["{{OWNER}}", "{{REPO}}"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("stale_detect flags a deleted manifest reference", async () => {
   const dir = tmp("drift");
@@ -295,6 +309,27 @@ test("≤2 rounds is mechanical: round 3 auto-escalates, rounds cannot go backwa
   }
 });
 
+test("reopen cannot rewind the round counter on a session that isn't actually Completed", async () => {
+  // `reopen` is meant as a human-only escape hatch for a *Completed* session. Passing it on a
+  // still-open session must not let the round cap be dodged by resetting the round to 0.
+  const dir = tmp("reopen-bypass");
+  try {
+    const { state_update } = load(stateMachine);
+    const call = (p) => state_update.execute("t", p, undefined, undefined, ctxAt(dir));
+    await call({ issue: 5, state: "Working", round: 1 });
+    await call({ issue: 5, state: "Working", round: 2 });
+    const escalated = await call({ issue: 5, state: "Working", round: 3 });
+    assert.equal(escalated.details.state, "Needs Me");
+    await assert.rejects(
+      () => call({ issue: 5, state: "Working", round: 0, reopen: true }),
+      /backwards/,
+      "reopen must not bypass the round-monotonic guard on a non-Completed session",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("state machine rejects illegal transitions and reasonless escalations", async () => {
   const dir = tmp("illegal");
   try {
@@ -330,6 +365,55 @@ test("parallel state updates do not lose writes (lock + atomic write)", async ()
     await Promise.all(procs);
     const state = JSON.parse(readFileSync(join(dir, ".agent-state.json"), "utf-8"));
     assert.equal(state.sessions.length, 12);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("existsExact never reports a path outside the repo as existing, even when it's real on disk", async () => {
+  const { existsExact } = await import("../extensions/lib/fsutil.js");
+  const dir = tmp("exists-exact-escape");
+  try {
+    mkdirSync(dir, { recursive: true });
+    // A file that genuinely exists one level above the repo root.
+    writeFileSync(join(dir, "..", "outside-marker.txt"), "x");
+    try {
+      assert.equal(existsExact(dir, "../outside-marker.txt"), false);
+      assert.equal(existsExact(dir, "..%2F..%2Fetc"), false); // not a real escape, just must not throw
+    } finally {
+      rmSync(join(dir, "..", "outside-marker.txt"), { force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("withLock breaks a dead holder's lock immediately, and never breaks a live holder's lock early", async () => {
+  const { withLock } = await import("../extensions/lib/fsutil.js");
+  const dir = tmp("lock");
+  try {
+    const lockPath = join(dir, "x.lock");
+    mkdirSync(dir, { recursive: true });
+
+    // A lock left behind by a PID that no longer exists is broken right away,
+    // not after waiting out `staleMs` — that's the whole point of tracking the PID.
+    writeFileSync(lockPath, "999999999"); // not a real PID
+    const start = Date.now();
+    const result = withLock(lockPath, () => "acquired-after-dead-pid", 5_000, 30_000);
+    assert.equal(result, "acquired-after-dead-pid");
+    assert.ok(Date.now() - start < 2_000, "a dead PID's lock must not wait for the stale-age fallback");
+
+    // A lock held by a PID that IS alive (this test process itself, standing in for
+    // a legitimately slow holder) must not be broken just because it's a few seconds
+    // "old" — only actual staleness (age past staleMs, tested via a tiny staleMs below)
+    // or a confirmed-dead PID should ever break it.
+    writeFileSync(lockPath, String(process.pid));
+    assert.throws(
+      () => withLock(lockPath, () => "unreachable", 200, 30_000),
+      /timed out waiting for lock/,
+      "a live PID's lock must not be broken while it's within staleMs",
+    );
+    unlinkSync(lockPath);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

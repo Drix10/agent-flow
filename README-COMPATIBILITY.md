@@ -45,15 +45,23 @@ npx agent-flow install --harness claude
 npx agent-flow install --harness codex
 ```
 
-Declare the reviewer in `.codex/config.toml`:
+The verified way to run the reviewer read-only is the `--sandbox` flag (checked against `codex exec --help`, Codex CLI v0.157.1 — OpenAI's own OS-level sandbox, same class of mechanism as a container):
 
-```toml
-[agents.reviewer]
-description = "Read-only code reviewer"
-config_file = "./.codex/agents/reviewer.toml"
+```bash
+codex exec --sandbox read-only "Use the reviewer skill. …"
 ```
 
-The reviewer uses `sandbox_mode = "read-only"`. **Verify it** with a "create TEST.md" probe before you rely on it, and please report the result.
+or a profile (Codex's own per-user config layering — see [Codex config docs](https://developers.openai.com/codex/config-advanced#profiles)):
+
+```toml
+# ~/.codex/reviewer.config.toml
+sandbox_mode = "read-only"
+```
+```bash
+codex exec --profile reviewer "Use the reviewer skill. …"
+```
+
+`.codex/agents/reviewer.toml`, installed alongside the skills, is a subagent definition Codex can discover under `.codex/agents/` and spawn on its own. We have **not** verified the exact auto-discovery/declaration syntax against a live Codex session (no Codex account in our test environment) — don't take the `[agents.reviewer]` shape as confirmed. If you rely on it, run the "create TEST.md" probe from [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md#verify-it-yourself) first, and please report the result either way.
 
 ## Gemini CLI
 

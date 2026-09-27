@@ -159,10 +159,28 @@ function sleep(ms: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/** True if `pid` names a process that is still alive on this machine. */
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    return e.code === "EPERM"; // exists, just owned by someone else
+  }
+}
+
 /**
  * Cross-process mutex via O_EXCL lockfile. Parallel implementers updating the
  * same state file would otherwise lose writes (read-modify-write race).
- * A lock older than `staleMs` is assumed abandoned (crashed process) and broken.
+ *
+ * The lock file holds the holder's PID. A lock is broken immediately once its
+ * PID is confirmed dead (works whenever the holder ran on this machine, which
+ * is every real use of this tool — worktrees are always local). Age (`staleMs`)
+ * is only a fallback for a lock we can't attribute to a live-or-dead PID (a
+ * foreign/older-format lock file, or a cross-host holder) — `fn()` itself is
+ * always a fast, synchronous, in-process critical section, so a legitimate
+ * holder should never actually take anywhere near `staleMs`.
  */
 export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, staleMs = 30_000): T {
   mkdirSync(dirname(lockPath), { recursive: true });
@@ -174,7 +192,10 @@ export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, s
     } catch (e: any) {
       if (e.code !== "EEXIST") throw e;
       try {
-        if (Date.now() - statSync(lockPath).mtimeMs > staleMs) {
+        const heldPid = Number.parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
+        const dead = Number.isInteger(heldPid) && heldPid > 0 && heldPid !== process.pid && !processAlive(heldPid);
+        const stale = Date.now() - statSync(lockPath).mtimeMs > staleMs;
+        if (dead || stale) {
           unlinkSync(lockPath);
           continue;
         }
@@ -184,6 +205,11 @@ export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, s
       if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
       sleep(25);
     }
+  }
+  try {
+    writeFileSync(fd, String(process.pid));
+  } catch {
+    /* best-effort: an unreadable/missing PID just falls back to the age check above */
   }
   try {
     return fn();
@@ -205,6 +231,11 @@ export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, s
 export function existsExact(root: string, relPath: string): boolean {
   const clean = toPosix(relPath).replace(/^\.\//, "").replace(/\/+$/, "");
   if (clean === "" || clean === ".") return existsSync(root);
+  // A manifest reference that escapes the repo (`../../etc/hostname`) must never be reported
+  // as existing — every other path check in this project is repo-confined, and stale/repair
+  // certifying an outside-the-repo path as "verified" would be an inconsistent, surprising exception.
+  const escapes = relative(root, resolve(root, clean));
+  if (escapes.startsWith("..") || isAbsolute(escapes)) return false;
   if (!existsSync(join(root, clean))) return false;
   if (!CASE_INSENSITIVE_FS) return true;
   let dir = root;

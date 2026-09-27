@@ -138,6 +138,10 @@ export function updateState(root: string, p: UpdateParams, maxRounds = DEFAULT_M
     let reason = p.reason;
     let escalated = false;
 
+    // `reopen` only has effect when the session is actually Completed. A `Working` or `Needs Me`
+    // session cannot use it to rewind its round counter — that would let anyone dodge the round
+    // cap (below) by resetting the count instead of actually resolving the escalation.
+    const reopening = existing?.state === "Completed" && !!p.reopen;
     if (existing?.state === "Completed") {
       if (!p.reopen) throw new Error(`issue #${p.issue} is Completed (terminal). Pass reopen: true to start it again.`);
       existing.round = 0;
@@ -147,7 +151,7 @@ export function updateState(root: string, p: UpdateParams, maxRounds = DEFAULT_M
 
     const prevRound = existing?.round ?? 0;
     const round = p.round ?? prevRound;
-    if (round < prevRound && !p.reopen) {
+    if (round < prevRound && !reopening) {
       throw new Error(`round cannot go backwards (${prevRound} → ${round}) — rounds are monotonic so the cap cannot be reset`);
     }
 
@@ -185,6 +189,10 @@ export function updateState(root: string, p: UpdateParams, maxRounds = DEFAULT_M
       });
     }
     state.lastUpdated = now;
+    // STATE_FILE is the source of truth and is written first; it's the only one anything
+    // else reads back. AGENT_STATE.md and the audit line are derived/best-effort — a crash
+    // between these three writes leaves them briefly behind STATE_FILE, not wrong, and the
+    // next transition regenerates AGENT_STATE.md from STATE_FILE in full each time.
     atomicWrite(join(root, STATE_FILE), JSON.stringify(state, null, 2) + "\n");
     atomicWrite(join(root, STATE_MD), renderMarkdown(state));
     appendAudit(root, { event: "state_transition", issue: p.issue, from, to, phase, round, escalated, reason });

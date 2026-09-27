@@ -57,10 +57,14 @@ test("skills never reference nonexistent commands or the old context file names"
   }
 });
 
-test("templates contain no stale file names", () => {
+test("templates contain no stale file names, and no leftover files from the old names ship", () => {
   for (const f of ["AGENTS.md.template", "module-AGENTS.md.template", "CLAUDE.md.template", "DOCS_INDEX.md.template", "CONTEXT_MANIFEST.json.template"]) {
     const c = readFileSync(join(root, "templates", f), "utf-8");
     assert.ok(!c.includes("Root_AGENT.md") && !c.includes("Per-app_AGENT.md"), `${f} references the old names`);
+  }
+  const shipped = readdirSync(join(root, "templates"));
+  for (const old of ["Root_AGENT.md.template", "Per-app_AGENT.md.template"]) {
+    assert.ok(!shipped.includes(old), `templates/${old} is the pre-rename file and must not exist`);
   }
 });
 

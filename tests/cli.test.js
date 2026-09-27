@@ -3,12 +3,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BIN = fileURLToPath(new URL("../bin/agent-flow.js", import.meta.url));
+const pkgRoot = () => fileURLToPath(new URL("..", import.meta.url));
 const run = (cwd, ...args) => spawnSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf-8", env: { ...process.env, NO_COLOR: "1" } });
 
 function repo() {
@@ -107,6 +108,56 @@ test("install copies skills + reviewer agent and refuses to clobber user edits",
     assert.equal(r.status, 1);
     assert.equal(readFileSync(join(dir, ".claude", "skills", "reviewer", "SKILL.md"), "utf-8"), "user edit");
     assert.equal(run(dir, "install", "--harness", "nope").status, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("install --harness codex writes every skill under .agents/skills and the TOML reviewer agent", () => {
+  const { dir } = repo();
+  try {
+    const r = run(dir, "install", "--harness", "codex");
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const skillNames = readdirSync(join(pkgRoot(), "skills")).sort();
+    for (const name of skillNames) {
+      assert.ok(existsSync(join(dir, ".agents", "skills", name, "SKILL.md")), `missing .agents/skills/${name}/SKILL.md`);
+    }
+    const agentToml = readFileSync(join(dir, ".codex", "agents", "reviewer.toml"), "utf-8");
+    assert.match(agentToml, /sandbox_mode = "read-only"/);
+    // Re-running with nothing changed is a clean no-op, not a conflict.
+    assert.equal(run(dir, "install", "--harness", "codex").status, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("install --dry-run writes nothing, for every supported harness", () => {
+  const { dir } = repo();
+  try {
+    for (const harness of ["claude", "codex", "gemini", "cursor", "copilot", "agents"]) {
+      const r = run(dir, "install", "--harness", harness, "--dry-run");
+      assert.equal(r.status, 0, `${harness}: ${r.stdout}${r.stderr}`);
+      assert.match(r.stdout, /would write/);
+    }
+    assert.ok(!existsSync(join(dir, ".claude")));
+    assert.ok(!existsSync(join(dir, ".agents")));
+    assert.ok(!existsSync(join(dir, ".gemini")));
+    assert.ok(!existsSync(join(dir, ".cursor")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("install --force overwrites a user edit instead of refusing", () => {
+  const { dir } = repo();
+  try {
+    assert.equal(run(dir, "install", "--harness", "codex").status, 0);
+    const skillFile = join(dir, ".agents", "skills", "reviewer", "SKILL.md");
+    writeFileSync(skillFile, "user edit");
+    assert.equal(run(dir, "install", "--harness", "codex").status, 1, "without --force, still refuses");
+    assert.equal(readFileSync(skillFile, "utf-8"), "user edit");
+    assert.equal(run(dir, "install", "--harness", "codex", "--force").status, 0);
+    assert.notEqual(readFileSync(skillFile, "utf-8"), "user edit");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

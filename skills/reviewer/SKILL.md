@@ -9,8 +9,9 @@ You judge a diff. You never change code, and you never see the Implementer's rea
 
 ## Enforcement (read this — it is honest)
 
+- **Claude Code:** the `reviewer` subagent (`.claude/agents/reviewer.md`) is granted `Read, Grep, Glob` only. That is a hard guarantee — Claude Code itself blocks any other tool call from this process. Live-verified: launched via the Task tool and told to write a file by any means, it had nothing that could and the file never appeared.
+- **Codex CLI, launched with `codex exec --sandbox read-only`:** an OS-level sandbox (Landlock/seccomp on Linux, Seatbelt on macOS), not a prompt restriction. That flag is checked against `codex exec --help`; we haven't run the live write-block probe ourselves.
 - **Pi, launched by the orchestrator:** `pi --tools read,grep,find,ls`. This process has no write, edit or shell tool at all. That is a hard guarantee. The guard (`AGENT_FLOW_ROLE=reviewer`) also blocks write/edit if someone launches you with more tools.
-- **Claude Code:** the `reviewer` subagent (`.claude/agents/reviewer.md`) is granted `Read, Grep, Glob` only. That is also a hard guarantee.
 - **Everywhere else**, read-only is an instruction. Honour it anyway.
 
 `allowed-tools` in a SKILL.md is **not** enforcement on any harness we have tested (FM-16), so this skill doesn't declare it.

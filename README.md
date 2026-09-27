@@ -19,7 +19,7 @@ Agent Flow is a small, auditable layer that catches these:
 | | What it does | How it's enforced |
 |---|---|---|
 | 🩺 **Drift detection** | Checks every path your context files mention (manifest *and* the `backticked/paths` in the prose) against the real filesystem. Case-exact, so it works on Windows and macOS too. | `agent-flow doctor` in CI and in the pre-commit hook |
-| 🛡️ **Guardrails** | Reviewer and QA can't write. Implementers can't leave their worktree. Nobody touches protected paths, `--no-verify`s, force-pushes, or pushes to `main`. | Pi `tool_call` hook blocks the call *before* it runs |
+| 🛡️ **Guardrails** | Reviewer and QA can't write. Implementers can't leave their worktree. Nobody touches protected paths, `--no-verify`s, force-pushes, or pushes to `main`. | Claude Code subagent tool restrictions, Codex read-only sandbox, or (on Pi) the `tool_call` hook — plus the pre-commit hook everywhere. See [per-harness table](#what-is-enforced-per-harness). |
 | ⚖️ **Mechanical risk** | Classifies the *actual diff* against your protected paths and risk boundaries → reviewer tier, draft PR, human gate. | `risk_classify` / `agent-flow classify` |
 | 🔁 **Bounded review loop** | Implement → Review → QA as separate processes. Round 3 auto-escalates to **Needs Me** with a decision brief. | State machine rejects illegal transitions and rounds that go backwards |
 | 🔎 **Risk audit** | Flags new dependencies, auth/payment code, destructive data ops, outbound calls, and secrets (values never printed) against a baseline. | `agent-flow audit-risk --fail-on-new` |
@@ -59,20 +59,20 @@ That is real output. Each check exits non-zero, so CI goes red before an agent b
 
 ## Install
 
-**Pi** gets the full set: skills, slash commands, tools, and the guard.
-
-```bash
-pi install npm:@drix10/agent-flow
-```
-
-**Claude Code, Codex, Gemini CLI, Cursor, Copilot** get the skills, a reviewer subagent, and the CLI.
+**Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot** — the primary targets — get the skills, a read-only reviewer subagent, and the zero-dependency CLI:
 
 ```bash
 npm install -D @drix10/agent-flow
 npx agent-flow install --harness claude     # or codex | gemini | cursor | copilot | agents
 ```
 
-`install` works on Windows, macOS and Linux. It never overwrites a skill you've edited.
+`install` works on Windows, macOS and Linux, is idempotent, and never overwrites a skill you've edited (`--force` to override). Every command it needs — `doctor`, `audit-risk`, `classify`, `state`, `worktree` — ships in the CLI, so nothing here depends on a harness-specific extension API.
+
+**Pi** additionally gets tool-level enforcement, because Pi exposes a `tool_call` hook the others don't:
+
+```bash
+pi install npm:@drix10/agent-flow
+```
 
 **Everyone** should add the pre-commit gate and the CI checks:
 
@@ -98,15 +98,17 @@ jobs:
 
 ## Use
 
-| Pi command | Outside Pi | What happens |
+On Claude Code, Codex, Gemini CLI, Cursor and Copilot, these run as skills the agent invokes by name (or you ask for by task — "bootstrap this repo", "implement issue 42") plus the CLI commands the skill shells out to. Pi additionally wires them up as slash commands.
+
+| Skill / CLI | Pi shortcut | What happens |
 |---|---|---|
-| `/bootstrap` | `npx agent-flow scan` + the `bootstrap` skill | Scans read-only and proposes `AGENTS.md` + `CONTEXT_MANIFEST.json`. Every claim carries `[HIGH CONFIDENCE]`, `[INFERRED]` or `[NEEDS VERIFICATION]`. Asks you for protected paths and risk boundaries. Writes each file only after you approve it. |
-| `/implement 42` | the `invoking-agents` skill | Runs Implementer → classify → Reviewer → QA → PR, each as a separate process. See [the pipeline](#the-pipeline). |
-| `/doctor` | `npx agent-flow doctor` | Drift report. Changes nothing. |
-| `/repair-docs` | the `gardener` skill | Re-reads the code, fixes the prose, *then* refreshes the manifest. |
-| `/audit-risk` | `npx agent-flow audit-risk` | New risk surfaces since the baseline. |
-| `/sync-context` | the `gardener` skill | Updates `DOCS_INDEX.md` with stale, missing and archived docs. |
-| `/garden` | — | All of the above, in order. |
+| `bootstrap` skill + `npx agent-flow scan` | `/bootstrap` | Scans read-only and proposes `AGENTS.md` + `CONTEXT_MANIFEST.json`. Every claim carries `[HIGH CONFIDENCE]`, `[INFERRED]` or `[NEEDS VERIFICATION]`. Asks you for protected paths and risk boundaries. Writes each file only after you approve it. |
+| `invoking-agents` skill | `/implement 42` | Runs Implementer → classify → Reviewer → QA → PR, each as a separate process. See [the pipeline](#the-pipeline). |
+| `npx agent-flow doctor` | `/doctor` | Drift report. Changes nothing. |
+| `gardener` skill | `/repair-docs` | Re-reads the code, fixes the prose, *then* refreshes the manifest. |
+| `npx agent-flow audit-risk` | `/audit-risk` | New risk surfaces since the baseline. |
+| `gardener` skill | `/sync-context` | Updates `DOCS_INDEX.md` with stale, missing and archived docs. |
+| all of the above, in order | `/garden` | Full maintenance pass. |
 
 The pipeline state lives in `AGENT_STATE.md`, sorted into **🔴 Needs Me**, **🔵 Working** and **🟢 Completed**.
 
@@ -123,7 +125,7 @@ issue ─▶ worktree ─▶ Implementer ─▶ classify ─▶ Reviewer ─▶ 
                             └──── ≤ 2 rounds ──────────┘──▶ round 3 = 🔴 Needs Me
 ```
 
-- **Separate processes.** Each role is its own `pi -p` with its own `AGENT_FLOW_ROLE`. The Reviewer launches with `--tools read,grep,find,ls`, so it has no write, edit or shell tool at all.
+- **Separate processes.** Each role is its own process with its own `AGENT_FLOW_ROLE` — `claude -p` on Claude Code, `codex exec` on Codex CLI, `pi -p` on Pi. The Reviewer launches read-only: the `reviewer` subagent on Claude Code, `codex exec --sandbox read-only` on Codex, `--tools read,grep,find,ls` on Pi. See [skills/invoking-agents/SKILL.md](./skills/invoking-agents/SKILL.md) for the exact command on each.
 - **Artifacts only.** Roles hand off `issue.md`, `diff.patch`, `classification.json`, `review-rN.json` and `qa-rN.json`. They never hand off reasoning.
 - **Issue text is untrusted.** It is wrapped in `<untrusted_issue>`. Every skill tells the model to treat it as requirements, never instructions. The guard blocks role changes and nested agent launches from inside a role.
 - **Critical changes** get a draft PR and a human. Low-risk changes can auto-merge only if you opt in (`pipeline.auto_merge_low_risk`).
@@ -132,13 +134,13 @@ issue ─▶ worktree ─▶ Implementer ─▶ classify ─▶ Reviewer ─▶ 
 
 Being straight about this is the point of the project.
 
-| | Pi | Claude Code | Codex | Gemini CLI | Cursor / Copilot |
+| | Claude Code | Codex CLI | Gemini CLI | Cursor / Copilot | Pi |
 |---|---|---|---|---|---|
-| Reviewer can't write | ✅ `--tools` + guard | ✅ subagent `tools: Read, Grep, Glob` | ⚠️ `sandbox_mode = "read-only"` (verify) | ⚠️ tool list (verify) | ❌ instruction only |
-| Protected paths | ✅ guard + hook | ✅ hook | ✅ hook | ✅ hook | ✅ hook |
-| Round cap / transitions | ✅ `state_update` | ✅ `npx agent-flow state` | ✅ CLI | ✅ CLI | ✅ CLI |
-| Drift + risk checks | ✅ tools + CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
-| Shell writes by read-only roles | ⚠️ best-effort pattern block | n/a (no shell) | sandbox | — | — |
+| Reviewer can't write | ✅ subagent `tools: Read, Grep, Glob` | ✅ `codex exec --sandbox read-only` | ⚠️ tool list (verify) | ❌ instruction only | ✅ `--tools` + guard |
+| Protected paths | ✅ hook | ✅ hook | ✅ hook | ✅ hook | ✅ guard + hook |
+| Round cap / transitions | ✅ `npx agent-flow state` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ `state_update` |
+| Drift + risk checks | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ tools + CLI |
+| Shell writes by read-only roles | n/a (no shell) | sandbox | — | — | ⚠️ best-effort pattern block |
 
 The ✅ cells in "Protected paths" come from the pre-commit hook. It runs at commit time, not at edit time, and a human can bypass it with `--no-verify`. The guard stops agents from doing that. Full details: [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md).
 
@@ -179,7 +181,7 @@ If the Implementer keeps editing your migrations, a better prompt won't stop it.
 
 ## Honest limits
 
-- **Shell analysis is best-effort.** Pattern matching can't catch every way to write a file through an interpreter. For a hard guarantee, launch read-only roles without a shell (`--tools read,grep,find,ls`) or in a container.
+- **Shell analysis is best-effort**, on the harnesses that only offer pattern-matched shell checks. Pattern matching can't catch every way to write a file through an interpreter. For a hard guarantee, launch read-only roles without a shell tool at all: Claude Code's subagent `tools:` list, Codex's `--sandbox read-only`, Pi's `--tools read,grep,find,ls`, or any of them inside a container.
 - **The risk audit is heuristic.** It gives you leads to review, not verdicts. It is tuned to rarely false-alarm, so it will miss things.
 - **The Pi guard and tools only exist in Pi.** Other harnesses get the same logic through the CLI and hook, which work at commit time rather than per tool call. Real cross-harness enforcement at tool-call time needs an MCP server ([ROADMAP](./ROADMAP.md)).
 - **One repo at a time** (FM-13). There is no model-provider fallback yet (FM-15).
@@ -199,7 +201,7 @@ See [SECURITY.md](./SECURITY.md) to audit these claims yourself.
 
 ## Contributing
 
-`npm install && npm test` runs 60+ tests against real git repos in temp directories, on Linux, macOS and Windows in CI. Read [CONTRIBUTING.md](./CONTRIBUTING.md), then pick a failure mode.
+`npm install && npm test` runs 65+ tests against real git repos in temp directories, on Linux, macOS and Windows in CI, covering every `install --harness` target. Read [CONTRIBUTING.md](./CONTRIBUTING.md), then pick a failure mode.
 
 ## License
 

@@ -162,20 +162,28 @@ export function analyzeShell(cmd: string): ShellFinding {
   return { mutating: why.length > 0, why: [...new Set(why)] };
 }
 
-/** Literal path prefixes from patterns, for "does this command mention a protected path". */
-function literalPrefix(pattern: string): string {
+/**
+ * Literal (non-glob) chunks of a pattern, for "does this command mention a
+ * protected path". A prefix-only check misses any pattern that starts with a
+ * wildcard — `*.env`, or a "secrets anywhere" glob — which are common ways to
+ * write `protected_paths`. Splitting on glob metacharacters catches those
+ * too: `*.env` -> [".env"], a `secrets` globbed on both sides -> ["secrets"].
+ */
+function literalChunks(pattern: string): string[] {
   const p = toPosix(pattern).replace(/^\.\//, "");
-  const cut = p.search(/[*?[]/);
-  return (cut === -1 ? p : p.slice(0, cut)).replace(/\/+$/, "");
+  return p
+    .split(/[*?[\]]+/)
+    .map((s) => s.replace(/^\/+|\/+$/g, ""))
+    .filter((s) => s.length >= 3);
 }
 
 function mentions(cmd: string, patterns: string[]): string | null {
   const hay = CASE_INSENSITIVE_FS ? cmd.toLowerCase() : cmd;
   for (const p of patterns) {
-    const lit = literalPrefix(p);
-    if (lit.length < 3) continue;
-    const needle = CASE_INSENSITIVE_FS ? lit.toLowerCase() : lit;
-    if (hay.includes(needle)) return p;
+    for (const chunk of literalChunks(p)) {
+      const needle = CASE_INSENSITIVE_FS ? chunk.toLowerCase() : chunk;
+      if (hay.includes(needle)) return p;
+    }
   }
   return null;
 }

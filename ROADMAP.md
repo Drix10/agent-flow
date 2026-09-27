@@ -11,7 +11,9 @@
 
 ## v1.2 — Prove it in the wild
 - [ ] Public demo repo with a recorded, unedited `/bootstrap` → `/implement` → `/garden` run
-- [ ] Probe results for the Codex sandbox and Gemini tool list (turn ⚠️ into ✅/❌ in the matrix)
+- [x] Claude Code reviewer subagent: live-verified (Task tool launch, told to write `TEST.md`, blocked — see [SECURITY.md](./SECURITY.md))
+- [ ] Codex: `--sandbox read-only` flag confirmed real (`codex exec --help`, v0.157.1); still need a live write-block probe against an authenticated session
+- [ ] Probe result for the Gemini tool list (turn ⚠️ into ✅/❌ in the matrix)
 - [ ] `agent-flow report`: summarize `.agent-flow/audit.jsonl` into trust signals (guard blocks per role, escalation reasons, rounds per issue)
 - [ ] Gardener consumes that report to propose `protected_paths` and lint rules automatically
 - [ ] GitHub Action wrapper (`uses: Drix10/agent-flow@v1`)

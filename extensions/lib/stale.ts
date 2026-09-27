@@ -66,8 +66,7 @@ export function extractProseRefs(markdown: string): { path: string; line: number
 function findPlaceholders(file: string, content: string) {
   const out: { file: string; line: number; text: string }[] = [];
   content.split(/\r?\n/).forEach((line, i) => {
-    const m = line.match(/\{\{[A-Z0-9_]+\}\}/);
-    if (m) out.push({ file, line: i + 1, text: m[0] });
+    for (const m of line.matchAll(/\{\{[A-Z0-9_]+\}\}/g)) out.push({ file, line: i + 1, text: m[0] });
   });
   return out;
 }

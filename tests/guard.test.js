@@ -75,6 +75,16 @@ test("protected paths are blocked for every role (and with no role), overridable
   assert.equal(d("implementer", "write", { path: "src/app.ts" }), null);
 });
 
+test("protected_paths written as a leading-wildcard glob still blocks a matching shell command", () => {
+  // literalPrefix-only matching missed any pattern that *starts* with a wildcard
+  // (`*.env`, `**/secrets/**`) because the "literal prefix" of those is empty.
+  const globManifest = { ...manifest, protected_paths: ["*.env", "**/secrets/**"] };
+  const dg = (role, toolName, input) => decide({ role, toolName, input, cwd: root, root, manifest: globManifest });
+  blocked(dg("implementer", "bash", { command: "rm production.env" }), "protected-path");
+  blocked(dg("implementer", "bash", { command: "cat config/secrets/keys.yaml > out.txt" }), "protected-path");
+  assert.equal(dg("implementer", "bash", { command: "npm test" }), null);
+});
+
 test("implementer is confined to its worktree and cannot edit context files", () => {
   const wt = join(root, ".worktrees", "issue-7");
   blocked(d("implementer", "write", { path: join(root, "src", "a.ts") }, { worktree: wt }), "worktree-confinement");

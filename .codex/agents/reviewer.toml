@@ -1,9 +1,21 @@
 # agent-flow Reviewer for Codex CLI.
-# Declare in .codex/config.toml:
-#   [agents.reviewer]
-#   description = "Read-only code reviewer"
-#   config_file = "./.codex/agents/reviewer.toml"
-# The read-only sandbox is the enforcement; verify with a "write TEST.md" probe before relying on it.
+#
+# Two ways to get this enforced, in order of how well we've verified them:
+#
+# 1. VERIFIED: launch the reviewer as its own process with a real, checked flag:
+#      codex exec --sandbox read-only "Use the reviewer skill. …"
+#    (`--sandbox read-only` is confirmed against `codex exec --help` on Codex CLI v0.157.1.)
+#    A `--profile reviewer` pointing at `sandbox_mode = "read-only"` in
+#    ~/.codex/reviewer.config.toml does the same thing via Codex's profile system
+#    (https://developers.openai.com/codex/config-advanced#profiles).
+#
+# 2. UNVERIFIED: this file as a subagent definition Codex discovers under .codex/agents/
+#    and spawns on its own. We could not confirm the exact declaration/invocation syntax
+#    against a live session (no Codex auth in our test environment) — treat `sandbox_mode`
+#    below as intent, not a proven guarantee, until you've run the "write TEST.md" probe
+#    from docs/HARNESS-MATRIX.md#verify-it-yourself against your Codex version.
+#
+# Either way: the read-only sandbox is the enforcement, not this file's prose.
 name = "reviewer"
 description = "Read-only agent-flow code reviewer. Reviews a diff packet and returns a JSON verdict. Cannot write."
 model_reasoning_effort = "high"

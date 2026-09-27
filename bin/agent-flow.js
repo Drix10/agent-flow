@@ -289,7 +289,7 @@ const TARGETS = {
   codex: {
     skills: ".agents/skills",
     agents: [[".codex/agents/reviewer.toml", ".codex/agents/reviewer.toml"]],
-    note: 'Declare the reviewer in .codex/config.toml:\n  [agents.reviewer]\n  description = "Read-only code reviewer"\n  config_file = "./.codex/agents/reviewer.toml"',
+    note: 'For a verified hard guarantee, launch the reviewer with `codex exec --sandbox read-only` (real flag, checked against `codex exec --help`) rather than relying on .codex/agents/reviewer.toml being auto-discovered — that subagent-definition path is unverified against a live Codex session. See skills/invoking-agents/SKILL.md.',
   },
   gemini: {
     skills: ".gemini/skills",

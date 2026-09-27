@@ -4,15 +4,18 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [1.1.0] - 2026-09-27
 
-A self-audit found that several documented guarantees were prose rather than code, and that the code had security bugs. This release fixes them. Full list: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).
+A self-audit found that several documented guarantees were prose rather than code, and that the code had security bugs. This release fixes them. A second, adversarial pass before the first tag found five more (round-cap bypass, a glob-matching gap in the guard, a lock-staleness race, and two minor path/regex bugs) plus a deploy gap where two GitHub-native files had silently reverted to their v1.0.2 content. Full list: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).
 
 ### Security
 - **Fixed shell injection** in `worktree_create`. `baseBranch` was interpolated into a shell string. All git calls now use `execFile` with validated refs.
 - **Fixed path traversal** in `bootstrap_write`. Writes are confined to the repo, can't escape through symlinks, and are limited to context-file types.
 - **Removed `npx ctxlint`**, which could download and execute a package. A locally installed ctxlint runs only on request.
 - **Confirmation is real.** `CONFIRM_*` strings (which the model could read and supply itself) are replaced by a Pi UI dialog. Headless writes need `AGENT_FLOW_HEADLESS_WRITES=1`.
-- **Claude Code and Gemini reviewer definitions no longer grant a shell.** A shell can write files, so "read-only" wasn't true. Codex reviewer uses `sandbox_mode = "read-only"`.
+- **Claude Code and Gemini reviewer definitions no longer grant a shell.** A shell can write files, so "read-only" wasn't true. Codex reviewer uses `sandbox_mode = "read-only"` via `codex exec --sandbox read-only` or a `--profile` (see below — the initial `[agents.reviewer]` config.toml syntax was corrected before release).
 - **Secret detection** in the risk audit, bootstrap and pre-commit hook. Values are never printed.
+- **`state_update`'s round cap could be bypassed.** `reopen: true` rewound the round counter on any session, not just a `Completed` one — a way to dodge the auto-escalation to `Needs Me` that rounds are supposed to guarantee. Now gated on the session actually being `Completed`.
+- **The guard's shell check missed leading-wildcard `protected_paths`** (`*.env`, a globbed `secrets` pattern) because it only matched a pattern's literal *prefix*, which is empty for those. Now matches any literal chunk of the pattern.
+- **`withLock` could break a live holder's lock**, not just a crashed one's — it only checked file age, with no way to tell the two apart. The lock now carries its holder's PID and is broken the moment that PID is confirmed dead, with age kept only as a fallback.
 
 ### Added
 - **Guard** (`extensions/guard.ts`). Pi `tool_call` hook with role-based enforcement via `AGENT_FLOW_ROLE`:
@@ -46,13 +49,14 @@ A self-audit found that several documented guarantees were prose rather than cod
   - the list comes from git;
   - `.worktrees/` is excluded locally.
 - **Orchestrator skill**:
-  - separate `pi -p` process per role;
+  - separate process per role, with the concrete launch command for Claude Code (`claude -p`), Codex CLI (`codex exec`) and Pi (`pi -p`) shown side by side, not just documented for Pi;
   - artifact packets;
-  - the Reviewer is launched with `--tools read,grep,find,ls`;
+  - the Reviewer is launched read-only: `--tools read,grep,find,ls` (Pi), the `reviewer` subagent (Claude Code, `tools: Read, Grep, Glob`), `--sandbox read-only` (Codex CLI);
   - QA flake re-run and a tree-mutation check;
   - draft PRs for critical changes;
   - opt-in auto-merge;
   - untrusted-issue handling.
+- **`install --harness`** is now tested for every target (`claude`, `codex`, `gemini`, `cursor`, `copilot`, `agents`), not just `claude`: `--dry-run` writes nothing, `--force` overwrites, re-running is a no-op. Claude Code and Codex CLI are the primary, most-tested targets; Pi remains fully supported but is no longer the lead example in the docs.
 - **Implementer skill**: commits *before* diffing. v1.0 diffed first (an empty diff) and committed `diff.patch` into the branch.
 - `detect_harness` reports Pi as the runtime and lists configured harnesses, instead of guessing from folder names.
 - `pi.extensions` names the compiled `extensions/index.js` explicitly. Verified with Pi's own loader: 14 tools, 2 hooks, no errors.
