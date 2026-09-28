@@ -231,3 +231,28 @@ test("check-staged blocks drift the commit introduces, only warns on pre-existin
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("state refuses a bare --issue instead of silently using issue 1, and --reason keeps `=`", () => {
+  const { dir } = repo();
+  try {
+    assert.equal(run(dir, "state", "show", "--issue").status, 2);
+    assert.equal(run(dir, "state", "update", "--issue", "--state", "Working").status, 2);
+    assert.equal(JSON.parse(run(dir, "state", "show", "--json").stdout).sessions.length, 0);
+    const r = run(dir, "state", "update", "--issue", "5", "--state", "Working", "--reason=a=b", "--json");
+    assert.equal(r.status, 0);
+    assert.equal(JSON.parse(r.stdout).reason, "a=b");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("doctor names a missing --manifest value instead of leaking a TypeError", () => {
+  const { dir } = repo();
+  try {
+    const r = run(dir, "doctor", "--manifest");
+    assert.equal(r.status, 2);
+    assert.ok(!/must be of type string/.test(r.stderr), `leaked internals: ${r.stderr}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

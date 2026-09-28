@@ -68,6 +68,11 @@ export interface LoadedManifest {
 export type LoadResult = { ok: true; value: LoadedManifest } | { ok: false; error: string; path: string };
 
 export function manifestPathFor(root: string, manifestPath?: string): string {
+  // The CLI passes `--manifest` straight through; a bare flag arrives as `true`.
+  // Fail here with a sentence, not deep inside path.isAbsolute with a TypeError.
+  if (manifestPath !== undefined && typeof manifestPath !== "string") {
+    throw new Error(`manifest path must be a string, got ${JSON.stringify(manifestPath)} — usage: --manifest <path>`);
+  }
   const p = manifestPath ?? MANIFEST_FILE;
   return isAbsolute(p) ? p : join(root, p);
 }

@@ -39,10 +39,16 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--")) {
-      const [k, v] = a.slice(2).split("=", 2);
-      if (v !== undefined) args[k] = v;
-      else if (argv[i + 1] !== undefined && !argv[i + 1].startsWith("--")) args[k] = argv[++i];
-      else args[k] = true;
+      // Split on the FIRST "=" only: `--reason=a=b` means "a=b".
+      // split("=", 2) truncated the value at the second "=".
+      const eq = a.indexOf("=");
+      if (eq === -1) {
+        const k = a.slice(2);
+        if (argv[i + 1] !== undefined && !argv[i + 1].startsWith("--")) args[k] = argv[++i];
+        else args[k] = true;
+      } else {
+        args[a.slice(2, eq)] = a.slice(eq + 1);
+      }
     } else args._.push(a);
   }
   return args;
@@ -428,7 +434,9 @@ function cmdState(args) {
   if (sub === "show") {
     const s = state.readState(rt);
     if (args.issue !== undefined) {
-      const n = Number(args.issue);
+      // A bare `--issue` parses as `true`; Number(true) is 1, which silently
+      // showed issue #1. Validate like every other issue-taking command.
+      const n = issueNumber(args.issue, "state show --issue <n>");
       const one = s.sessions.find((x) => x.issue === n) ?? null;
       const limit = manifestLib.maxReviewRounds(manifestLib.tryLoadManifest(rt));
       const view = { issue: n, state: one?.state ?? null, phase: one?.phase ?? null, round: one?.round ?? 0, max_review_rounds: limit, reason: one?.reason ?? null };
@@ -439,9 +447,8 @@ function cmdState(args) {
     return 0;
   }
   if (sub === "update") {
-    const issue = Number(args.issue);
     const p = {
-      issue,
+      issue: issueNumber(args.issue, "state update --issue <n> --state <s>"),
       state: args.state,
       phase: typeof args.phase === "string" ? args.phase : undefined,
       round: args.round !== undefined ? Number(args.round) : undefined,

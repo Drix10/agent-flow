@@ -688,3 +688,22 @@ test("detect_harness reports Pi as the runtime, not whatever dirs exist", async 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("stale_repair types an extensionless file as a file, not a directory", async () => {
+  const dir = tmp("repair-type");
+  try {
+    writeFileSync(join(dir, "LICENSE"), "hi\n");
+    writeFileSync(join(dir, "AGENTS.md"), "");
+    writeFileSync(
+      join(dir, "CONTEXT_MANIFEST.json"),
+      JSON.stringify({ context_files: [{ path: "AGENTS.md", references: [{ path: "LICENSE", last_verified: "2020-01-01T00:00:00.000Z" }] }] }),
+    );
+    const { repairStale } = await import("../extensions/lib/stale.js");
+    const r = repairStale(dir, {});
+    assert.equal(r.refreshed, 1);
+    const m = JSON.parse(readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8"));
+    assert.equal(m.context_files[0].references[0].type, "file");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

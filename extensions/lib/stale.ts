@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { IGNORED_DIRS, atomicWrite, existsExact, isoNow, readJson, readTextFile, toPosix, walk } from "./fsutil.js";
 import { ContextManifest, DEFAULT_STALENESS_DAYS, ManifestContextFile, loadManifest, normalizeManifest } from "./manifest.js";
@@ -372,7 +372,18 @@ export function repairStale(root: string, opts: { manifestPath?: string; now?: s
       if (existsExact(root, ref.path)) {
         ref.last_verified = now;
         ref.exists = true;
-        if (!ref.type) ref.type = existsSync(join(root, ref.path)) && !/\.[^/]+$/.test(ref.path) ? "directory" : "file";
+        // existsExact already proved it exists; ask the filesystem, not the
+        // name, whether it's a directory — extensionless FILES (LICENSE,
+        // Makefile) were recorded as directories.
+        if (!ref.type) {
+          let isDir = !/\.[^/]+$/.test(ref.path);
+          try {
+            isDir = statSync(join(root, ref.path)).isDirectory();
+          } catch {
+            /* keep the name heuristic */
+          }
+          ref.type = isDir ? "directory" : "file";
+        }
         refreshed++;
       } else {
         ref.exists = false;
