@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.2] - 2026-09-28
 
 ### Security
 - Bare `git push` (no refspec) is blocked: git would have pushed the checked-out branch, default branch included. Dry runs and tag-only pushes are unaffected.
