@@ -1,6 +1,6 @@
 {
   "name": "@drix10/agent-flow",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Agent Flow \u2014 self-healing context + an Implement \u2192 Review \u2192 QA pipeline with enforced guardrails (Pi) and a zero-dependency CLI for every other harness. Detects context drift, gates risky diffs, keeps the trust signals honest.",
   "type": "module",
   "main": "extensions/index.js",
