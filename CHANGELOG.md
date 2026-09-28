@@ -18,6 +18,10 @@ A self-audit found that several documented guarantees were prose rather than cod
 - **`withLock` could break a live holder's lock**, not just a crashed one's — it only checked file age, with no way to tell the two apart. The lock now carries its holder's PID and is broken the moment that PID is confirmed dead, with age kept only as a fallback.
 
 ### Added
+- **Zero-setup `doctor`.** With no manifest it finds every context file (AGENTS.md, CLAUDE.md, GEMINI.md, `.cursorrules`, Copilot and Windsurf rules), checks every path they mention, and suggests the likely rename ("did you mean …?").
+- **`agent-flow init`** writes a starter manifest (and an honest AGENTS.md skeleton if there is none) without an LLM.
+- **Runnable pipeline on four harnesses:** strict JSON schemas for Codex (`schema --strict`), Gemini envelope unwrapping, background role runs with timeouts, crash resume, idempotent PRs, per-launch budgets and an audit line per role run (`report --harness`).
+- Unknown commands, flags and harness names get a "did you mean" instead of a help dump.
 - **Guard** (`extensions/guard.ts`). Pi `tool_call` hook with role-based enforcement via `AGENT_FLOW_ROLE`:
   - reviewer/qa read-only;
   - implementer worktree confinement;
