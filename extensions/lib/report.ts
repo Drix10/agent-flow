@@ -20,14 +20,53 @@ export function reportSchema(role: ReportRole): Record<string, unknown> {
   return JSON.parse(readFileSync(join(schemaDir, `${REPORT_ROLES[role]}.schema.json`), "utf-8"));
 }
 
-type Schema = {
+export type Schema = {
   type?: string | string[];
   enum?: unknown[];
   properties?: Record<string, Schema>;
   required?: string[];
   items?: Schema;
   minimum?: number;
+  additionalProperties?: boolean;
+  [keyword: string]: unknown;
 };
+
+function allowsNull(s: Schema): boolean {
+  return Array.isArray(s.type) ? s.type.includes("null") : s.type === "null";
+}
+
+function nullable(s: Schema): Schema {
+  if (s.type === undefined || allowsNull(s)) return s;
+  const out: Schema = { ...s, type: [...(Array.isArray(s.type) ? s.type : [s.type]), "null"] };
+  if (out.enum && !out.enum.includes(null)) out.enum = [...out.enum, null];
+  return out;
+}
+
+/** Annotations and checks strict mode may reject. `validate` still enforces them locally. */
+const STRICT_DROP = new Set(["$schema", "$id", "title", "minimum"]);
+
+/**
+ * The strict-mode variant of a canonical schema, for `codex exec --output-schema`.
+ * OpenAI Structured Outputs requires every object to be closed
+ * (`additionalProperties: false`) with every property listed in `required`, so a
+ * field that is optional in the canonical schema becomes nullable instead.
+ * Derived, never hand-maintained: the canonical schema stays the single source of
+ * truth, and `checkReport` reads `null` in an optional field as "absent".
+ */
+export function strictSchema(schema: Schema): Schema {
+  const out: Schema = {};
+  for (const [k, v] of Object.entries(schema)) if (!STRICT_DROP.has(k)) out[k] = v;
+  if (schema.items) out.items = strictSchema(schema.items);
+  if (schema.properties) {
+    const required = new Set(schema.required ?? []);
+    const props: Record<string, Schema> = {};
+    for (const [k, v] of Object.entries(schema.properties)) props[k] = required.has(k) ? strictSchema(v) : nullable(strictSchema(v));
+    out.properties = props;
+    out.required = Object.keys(props);
+    out.additionalProperties = false;
+  }
+  return out;
+}
 
 function typeOf(v: unknown): string {
   if (v === null) return "null";
@@ -51,9 +90,27 @@ export function validate(value: unknown, schema: Schema, path = "$"): string[] {
   if (schema.properties && value && typeof value === "object" && !Array.isArray(value)) {
     const obj = value as Record<string, unknown>;
     for (const k of schema.required ?? []) if (!(k in obj)) out.push(`${path}.${k}: required`);
-    for (const [k, s] of Object.entries(schema.properties)) if (k in obj) out.push(...validate(obj[k], s, `${path}.${k}`));
+    for (const [k, s] of Object.entries(schema.properties)) {
+      if (!(k in obj)) continue;
+      // `null` in an optional field means "absent": strict-mode harnesses (Codex) must emit every key.
+      if (obj[k] === null && !schema.required?.includes(k) && !allowsNull(s)) continue;
+      out.push(...validate(obj[k], s, `${path}.${k}`));
+    }
   }
   if (schema.items && Array.isArray(value)) value.forEach((v, i) => out.push(...validate(v, schema.items!, `${path}[${i}]`)));
+  return out;
+}
+
+/** Drop optional fields set to `null` (unless the schema itself allows null), recursively. */
+export function dropNullOptionals(value: unknown, schema: Schema): unknown {
+  if (Array.isArray(value)) return schema.items ? value.map((v) => dropNullOptionals(v, schema.items!)) : value;
+  if (!value || typeof value !== "object" || !schema.properties) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const s = schema.properties[k];
+    if (v === null && s && !schema.required?.includes(k) && !allowsNull(s)) continue;
+    out[k] = s ? dropNullOptionals(v, s) : v;
+  }
   return out;
 }
 
@@ -84,12 +141,34 @@ function lastJsonObject(text: string): unknown {
   return found;
 }
 
+/** What the harness said about the run itself: cost, tokens, turns, and whether it failed. */
+export interface HarnessInfo {
+  harness: "claude" | "gemini";
+  error?: string;
+  session_id?: string;
+  cost_usd?: number;
+  num_turns?: number;
+  duration_ms?: number;
+  usage?: unknown;
+}
+
+export interface Extracted {
+  value?: unknown;
+  source: string;
+  harness?: HarnessInfo;
+}
+
+const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+const compact = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
+
 /**
- * The report inside whatever a harness printed: a `claude -p --output-format json`
- * envelope (`structured_output`, else `result`), a Codex `-o` last message,
- * raw JSON, or prose with a fenced ```json block.
+ * The report inside whatever a harness printed:
+ * - `claude -p --output-format json`: `{"type":"result", "structured_output"?, "result", "total_cost_usd", …}`
+ * - `gemini -p … -o json`: `{"response": "<text>", "stats": {…}, "error"?: {…}}`
+ * - a Codex `-o` last message, raw JSON, or prose with a fenced ```json block.
  */
-export function extractReport(raw: string): { value?: unknown; source: string } {
+export function extractReport(raw: string): Extracted {
   const text = raw.replace(/^﻿/, "").trim();
   let parsed: unknown;
   try {
@@ -99,12 +178,36 @@ export function extractReport(raw: string): { value?: unknown; source: string } 
   }
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
     const env = parsed as Record<string, unknown>;
-    if (env.type === "result" && ("structured_output" in env || "result" in env)) {
-      if (env.structured_output && typeof env.structured_output === "object") return { value: env.structured_output, source: "claude structured_output" };
+    if (env.type === "result" && ("structured_output" in env || "result" in env || "subtype" in env)) {
+      const failed = env.is_error === true || (typeof env.subtype === "string" && env.subtype !== "success");
+      const detail = typeof env.result === "string" && env.result ? `: ${env.result.slice(0, 300)}` : "";
+      const harness = compact<HarnessInfo>({
+        harness: "claude",
+        error: failed ? `${str(env.subtype) ?? "error"}${detail}` : undefined,
+        session_id: str(env.session_id),
+        cost_usd: num(env.total_cost_usd),
+        num_turns: num(env.num_turns),
+        duration_ms: num(env.duration_ms),
+        usage: env.usage,
+      });
+      if (env.structured_output && typeof env.structured_output === "object") return { value: env.structured_output, source: "claude structured_output", harness };
       if (typeof env.result === "string") {
         const inner = extractReport(env.result);
-        return { value: inner.value, source: `claude result → ${inner.source}` };
+        return { value: inner.value, source: `claude result → ${inner.source}`, harness };
       }
+      return { source: "claude envelope without a result", harness };
+    }
+    const geminiError = env.error && typeof env.error === "object" ? (env.error as Record<string, unknown>) : undefined;
+    if (typeof env.response === "string" || (geminiError && ("stats" in env || "session_id" in env))) {
+      const harness = compact<HarnessInfo>({
+        harness: "gemini",
+        error: geminiError ? (str(geminiError.message) ?? JSON.stringify(geminiError).slice(0, 300)) : undefined,
+        session_id: str(env.session_id),
+        usage: env.stats,
+      });
+      if (typeof env.response !== "string") return { source: "gemini envelope without a response", harness };
+      const inner = extractReport(env.response);
+      return { value: inner.value, source: `gemini response → ${inner.source}`, harness };
     }
     return { value: parsed, source: "raw JSON" };
   }
@@ -152,14 +255,19 @@ export interface ReportCheck {
   source: string;
   problems: string[];
   report?: Record<string, unknown>;
+  harness?: HarnessInfo;
 }
 
 export function checkReport(role: ReportRole, raw: string): ReportCheck {
-  const { value, source } = extractReport(raw);
+  const { value, source, harness } = extractReport(raw);
+  const base = { role, source, ...(harness ? { harness } : {}) };
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { ok: false, role, source, problems: ["no JSON object found in the output"] };
+    const problems = harness?.error ? [`harness error: ${harness.error}`] : ["no JSON object found in the output"];
+    return { ok: false, ...base, problems };
   }
-  const report = value as Record<string, unknown>;
-  const problems = [...validate(report, reportSchema(role) as Schema), ...semantic(role, report)];
-  return { ok: problems.length === 0, role, source, problems, report };
+  const schema = reportSchema(role) as Schema;
+  const report = dropNullOptionals(value, schema) as Record<string, unknown>;
+  // A run the harness itself flagged as failed (turn cap, budget, crash) never counts, even if JSON came out.
+  const problems = [...(harness?.error ? [`harness error: ${harness.error}`] : []), ...validate(report, schema), ...semantic(role, report)];
+  return { ok: problems.length === 0, ...base, problems, report };
 }

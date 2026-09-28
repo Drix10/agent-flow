@@ -10,7 +10,7 @@ You judge a diff. You never change code, and you never see the Implementer's rea
 
 ## Enforcement (read this — it is honest)
 
-- **Claude Code:** launched as `claude -p --agent reviewer --tools Read,Grep,Glob`, or as the `reviewer` subagent via the Task tool. Either way the session has only `Read, Grep, Glob`, and Claude Code itself refuses every other tool. Live-verified: told to write a file by any means, it had nothing that could, and the file never appeared. The guard hook also treats a `reviewer` subagent as read-only.
+- **Claude Code:** launched as `claude -p --agent reviewer --tools Read,Grep,Glob`, or as the `reviewer` subagent via the Task tool. The agent definition preloads this skill through its `skills:` field, so no Skill tool is needed. Either way the session has only `Read, Grep, Glob`, and Claude Code itself refuses every other tool. Live-verified: told to write a file by any means, it had nothing that could, and the file never appeared. The guard hook also treats a `reviewer` subagent as read-only.
 - **Codex CLI:** `codex exec --sandbox read-only`, an OS-level sandbox (Landlock/seccomp on Linux, Seatbelt on macOS), not a prompt restriction.
 - **Gemini CLI:** `--approval-mode plan`, Gemini's documented read-only mode.
 - **Pi:** `pi --tools read,grep,find,ls` gives this process no write, edit or shell tool at all. The guard (`AGENT_FLOW_ROLE=reviewer`) blocks writes too, if someone launches you with more tools.
@@ -57,7 +57,7 @@ You may read the worktree for context (callers, types, tests). Round number R an
 
 ## Output
 
-Print exactly one JSON object and nothing else. It is validated against `agent-flow schema reviewer`, including consistency: `approved` with a blocking finding, an unmet criterion, a `SPEC_ERROR`/`ARCH_ERROR` finding or a permission violation is rejected as malformed.
+Print exactly one JSON object and nothing else. It is validated against `agent-flow schema reviewer`, including consistency: `approved` with a blocking finding, an unmet criterion, a `SPEC_ERROR`/`ARCH_ERROR` finding or a permission violation is rejected as malformed. If your harness enforces a strict schema (Codex), every key must be present: use `null` for the ones that don't apply.
 
 ```json
 {

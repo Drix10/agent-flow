@@ -106,11 +106,15 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
   state update --issue <n> --state "Working|Needs Me|Completed" [--phase p] [--round r] [--reason t] [--reopen]
                             Exit 3 when the round cap escalated the issue to Needs Me
   worktree create <n> [--base <branch>] | remove <n> [--force] [--delete-branch] | list
-  schema <implementer|reviewer|qa|manifest> Print a JSON schema (role report, or CONTEXT_MANIFEST.json)
-  schema --dir <dir>        Write the three role-report schemas into <dir>
+  schema <implementer|reviewer|qa|manifest> [--strict]
+                            Print a JSON schema (role report, or CONTEXT_MANIFEST.json); --strict = the
+                            OpenAI strict-mode variant for \`codex exec --output-schema\`
+  schema --dir <dir>        Write the role-report schemas into <dir>: <role>.schema.json + <role>.strict.schema.json
   template [name]           List the context-file templates, or print one (e.g. AGENTS.md)
   report <implementer|reviewer|qa> <file> [--out <file>]
-                            Extract + validate a role's report (claude/codex/raw output); exit 1 if invalid
+                            Extract + validate a role's report (claude/gemini/codex/raw output); exit 1 if invalid
+      --harness <h> [--model m --exit n --seconds s --argv-file f --issue n --round r]
+                            Also append a role_run line (argv, exit, duration, cost/tokens) to .agent-flow/audit.jsonl
   repair --yes              Refresh manifest timestamps after the prose was re-verified (Gardener)
   guard                     Claude Code PreToolUse hook: reads the hook JSON on stdin, exit 2 = blocked
   guard --check             Exit 1 unless the Claude Code hook is installed and its target exists
@@ -510,12 +514,24 @@ function cmdTemplate(args) {
 }
 
 function cmdSchema(args) {
+  // `--strict` is a boolean; `schema --strict reviewer` would otherwise read "reviewer" as its value.
+  if (typeof args.strict === "string") {
+    args._.push(args.strict);
+    args.strict = true;
+  }
   if (typeof args.dir === "string") {
+    // Both variants, always: the canonical one for Claude/validation, the strict one for `codex exec --output-schema`.
     mkdirSync(args.dir, { recursive: true });
-    const written = Object.entries(report.REPORT_ROLES).map(([role, file]) => {
-      const p = join(args.dir, `${file === "implementer-report" ? "implementer" : file}.schema.json`);
-      writeFileSync(p, `${JSON.stringify(report.reportSchema(role))}\n`);
-      return p;
+    const written = Object.entries(report.REPORT_ROLES).flatMap(([role, file]) => {
+      const name = file === "implementer-report" ? "implementer" : file;
+      const canonical = report.reportSchema(role);
+      return [
+        [join(args.dir, `${name}.schema.json`), canonical],
+        [join(args.dir, `${name}.strict.schema.json`), report.strictSchema(canonical)],
+      ].map(([p, s]) => {
+        writeFileSync(p, `${JSON.stringify(s)}\n`);
+        return p;
+      });
     });
     out(args, { written }, () => written.forEach((p) => ok(`wrote ${p}`)));
     return 0;
@@ -525,9 +541,10 @@ function cmdSchema(args) {
     console.log(readFileSync(join(pkgRoot, "schemas", "context-manifest.schema.json"), "utf-8").trim());
     return 0;
   }
-  if (!(role in report.REPORT_ROLES)) return usage(`schema <${Object.keys(report.REPORT_ROLES).join("|")}|manifest>`);
+  if (!(role in report.REPORT_ROLES)) return usage(`schema <${Object.keys(report.REPORT_ROLES).join("|")}|manifest> [--strict]`);
   // Compact on one line so it can be passed straight to `claude -p --json-schema "$(…)"`.
-  console.log(JSON.stringify(report.reportSchema(role)));
+  const schema = report.reportSchema(role);
+  console.log(JSON.stringify(args.strict ? report.strictSchema(schema) : schema));
   return 0;
 }
 
@@ -539,6 +556,7 @@ function cmdReport(args) {
   const text = buf[0] === 0xff && buf[1] === 0xfe ? buf.subarray(2).toString("utf16le") : buf.toString("utf-8");
   const r = report.checkReport(role, text);
   if (r.ok && typeof args.out === "string") writeFileSync(args.out, `${JSON.stringify(r.report, null, 2)}\n`);
+  if (typeof args.harness === "string") auditRoleRun(role, file, args, r);
   if (args.json || (r.ok && typeof args.out !== "string")) {
     console.log(JSON.stringify(args.json ? r : r.report, null, 2));
   } else if (r.ok) ok(`${role} report valid (${r.source}) → ${args.out}`);
@@ -546,7 +564,43 @@ function cmdReport(args) {
     bad(`${role} report invalid (${r.source}):`);
     for (const p of r.problems) console.log(`    ${p}`);
   }
+  const h = r.harness;
+  if (!args.json && h && (h.cost_usd !== undefined || h.num_turns !== undefined)) {
+    console.log(dim(`    ${h.harness}: ${h.num_turns ?? "?"} turns, $${h.cost_usd ?? "?"}${h.session_id ? `, session ${h.session_id}` : ""}`));
+  }
   return r.ok ? 0 : 1;
+}
+
+/** One `.agent-flow/audit.jsonl` line per role launch: what ran, how long, what it cost, whether it counted. */
+function auditRoleRun(role, file, args, r) {
+  const intOr = (v) => (v === undefined || v === true || !Number.isFinite(Number(v)) ? undefined : Number(v));
+  let argv;
+  if (typeof args["argv-file"] === "string") {
+    try {
+      argv = readFileSync(args["argv-file"], "utf-8").trim().slice(0, 4000);
+    } catch {
+      /* the log line matters more than the argv */
+    }
+  }
+  const h = r.harness ?? {};
+  state.appendAudit(root(), {
+    event: "role_run",
+    role,
+    issue: intOr(args.issue),
+    round: intOr(args.round),
+    harness: args.harness,
+    model: typeof args.model === "string" ? args.model : null,
+    argv,
+    exit_code: intOr(args.exit),
+    duration_s: intOr(args.seconds),
+    raw: file,
+    ok: r.ok,
+    problems: r.problems.slice(0, 20),
+    cost_usd: h.cost_usd,
+    num_turns: h.num_turns,
+    usage: h.usage,
+    session_id: h.session_id,
+  });
 }
 
 function cmdRepair(args) {
