@@ -12,14 +12,22 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { atomicWrite, existsExact, isoNow, readJson, readTextFile, toPosix } from "./fsutil.js";
-import { ContextManifest, DEFAULT_STALENESS_DAYS, loadManifest, normalizeManifest } from "./manifest.js";
+import { basename, dirname, extname, join, relative } from "node:path";
+import { atomicWrite, existsExact, isoNow, readJson, readTextFile, toPosix, walk } from "./fsutil.js";
+import { ContextManifest, DEFAULT_STALENESS_DAYS, ManifestContextFile, loadManifest, normalizeManifest } from "./manifest.js";
+
+export interface MissingPath {
+  file: string;
+  path: string;
+  source: "manifest" | "prose";
+  /** A confident guess at where the path went (rename/move), or absent. */
+  suggestion?: string;
+}
 
 export interface StaleReport {
   stale_files: string[];
   missing_context_files: string[];
-  missing_paths: { file: string; path: string; source: "manifest" | "prose" }[];
+  missing_paths: MissingPath[];
   invalid_timestamps: { file: string; path: string; value: unknown }[];
   unfilled_placeholders: { file: string; line: number; text: string }[];
   schema_problems: string[];
@@ -29,8 +37,107 @@ export interface StaleReport {
 }
 
 export type DetectResult =
-  | { ok: true; healthy: boolean; report: StaleReport; manifest: string; legacy_schema: boolean }
+  | {
+      ok: true;
+      healthy: boolean;
+      report: StaleReport;
+      /** Manifest path, or null when running on auto-discovered context files only. */
+      manifest: string | null;
+      legacy_schema: boolean;
+      /** "discovered": no manifest (or one listing no context files) — prose checked on auto-discovered files. */
+      mode: "manifest" | "discovered";
+      context_files: string[];
+    }
   | { ok: false; error: string; path: string };
+
+/**
+ * Context files agents load, by harness, root and nested. Personal files
+ * (CLAUDE.local.md) are left out: they aren't shared, so their drift is the owner's.
+ */
+const CONTEXT_FILE_RE =
+  /(^|\/)(AGENTS|CLAUDE|GEMINI)\.md$|^\.cursorrules$|^\.windsurfrules$|^\.github\/copilot-instructions\.md$|(^|\/)\.cursor\/rules\/[^/]+\.mdc$|(^|\/)\.windsurf\/rules\/[^/]+\.md$/;
+
+export const isContextFile = (rel: string) => CONTEXT_FILE_RE.test(rel);
+
+/** Every context file in the repo: root first, then by depth and name. */
+export function discoverContextFiles(root: string, files: string[] = walk(root, { maxFiles: 50_000 }).files): string[] {
+  const depth = (p: string) => p.split("/").length;
+  return files.filter(isContextFile).sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : a > b ? 1 : 0));
+}
+
+export function editDistance(a: string, b: string, max = Infinity): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      rowMin = Math.min(rowMin, cur[j]);
+    }
+    if (rowMin > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/** The single lowest-scoring candidate, or null on a tie (a guess we can't defend). */
+function uniqueBest(cands: { path: string; score: number }[]): string | null {
+  if (cands.length === 0) return null;
+  cands.sort((a, b) => a.score - b.score);
+  return cands.length === 1 || cands[0].score < cands[1].score ? cands[0].path : null;
+}
+
+/**
+ * Where did a missing path probably go? Answers only when confident — a wrong
+ * "did you mean" costs more trust than none. In order: a case-only change; the
+ * same path under a new prefix; the same basename in exactly one place; a
+ * renamed sibling (`service.ts` → `user-service.ts`); a small typo in the path.
+ */
+export function suggestPath(missing: string, files: string[]): string | null {
+  const wantDir = missing.endsWith("/");
+  const clean = missing.replace(/\/+$/, "");
+  const dirs = new Set<string>();
+  for (const f of files) for (let d = dirname(f); d !== "." && !dirs.has(d); d = dirname(d)) dirs.add(d);
+  const pool = wantDir ? [...dirs] : extname(clean) ? files : [...files, ...dirs];
+  const fmt = (p: string) => (wantDir ? `${p}/` : p);
+
+  const lower = clean.toLowerCase();
+  const caseOnly = pool.filter((p) => p.toLowerCase() === lower);
+  if (caseOnly.length === 1) return fmt(caseOnly[0]);
+
+  const moved = pool.filter((p) => p.endsWith(`/${clean}`));
+  if (clean.includes("/") && moved.length === 1) return fmt(moved[0]);
+
+  const base = basename(clean);
+  const sameBase = pool.filter((p) => basename(p) === base);
+  if (sameBase.length === 1) return fmt(sameBase[0]);
+
+  const dir = dirname(clean);
+  const ext = extname(base);
+  const stem = base.slice(0, base.length - ext.length).toLowerCase();
+  const limit = Math.max(2, Math.floor(stem.length / 3));
+  const siblings: { path: string; score: number }[] = [];
+  for (const p of pool) {
+    if (dirname(p) !== dir) continue;
+    const b = basename(p);
+    if (extname(b) !== ext) continue;
+    const s = b.slice(0, b.length - ext.length).toLowerCase();
+    const d = editDistance(stem, s, limit);
+    const contains = Math.min(stem.length, s.length) >= 3 && (s.includes(stem) || stem.includes(s));
+    if (d <= limit || contains) siblings.push({ path: p, score: d });
+  }
+  const sib = uniqueBest(siblings);
+  if (sib) return fmt(sib);
+
+  const typos: { path: string; score: number }[] = [];
+  for (const p of pool) {
+    const d = editDistance(clean, p, 2);
+    if (d <= 2) typos.push({ path: p, score: d });
+  }
+  const typo = uniqueBest(typos);
+  return typo ? fmt(typo) : null;
+}
 
 const IGNORE_MARKER = "agent-flow:ignore-refs";
 
@@ -122,13 +229,26 @@ export interface DetectOptions {
   prose?: boolean;
   /** Run a locally-installed ctxlint. Default false. Never downloads. */
   ctxlint?: boolean;
+  /**
+   * With no manifest at all, check auto-discovered context files instead of
+   * failing with manifest_not_found. A manifest that lists no context files
+   * always falls back to discovery — otherwise `{}` would hide every broken ref.
+   */
+  discover?: boolean;
   now?: number;
 }
 
+const PLACEHOLDER = /\{\{[^}]*\}\}/;
+
 export function detectStale(root: string, opts: DetectOptions = {}): DetectResult {
   const loaded = loadManifest(root, opts.manifestPath);
-  if (!loaded.ok) return loaded;
-  const { files, manifest, legacySchema, problems } = loaded.value;
+  if (!loaded.ok && !(loaded.error === "manifest_not_found" && opts.discover)) return loaded as DetectResult;
+  const manifest: ContextManifest = loaded.ok ? loaded.value.manifest : {};
+  let repoFiles: string[] | null = null;
+  const listFiles = () => (repoFiles ??= walk(root, { maxFiles: 50_000 }).files);
+  let files: ManifestContextFile[] = loaded.ok ? loaded.value.files : [];
+  const mode = files.length ? "manifest" : "discovered";
+  if (mode === "discovered") files = discoverContextFiles(root, listFiles()).map((path) => ({ path, references: [] }));
 
   const report: StaleReport = {
     stale_files: [],
@@ -136,11 +256,18 @@ export function detectStale(root: string, opts: DetectOptions = {}): DetectResul
     missing_paths: [],
     invalid_timestamps: [],
     unfilled_placeholders: [],
-    schema_problems: problems,
+    schema_problems: loaded.ok ? loaded.value.problems : [],
     dead_commands: [],
     token_waste: [],
     ctxlint: "not_requested",
   };
+
+  // Placeholders anywhere in the manifest land here too, so an unfilled template
+  // can't pass "no unfilled placeholders" while the schema check flags the same values.
+  if (loaded.ok) {
+    const rel = toPosix(relative(root, loaded.value.path)) || loaded.value.path;
+    report.unfilled_placeholders.push(...findPlaceholders(rel, readTextFile(loaded.value.path) ?? ""));
+  }
 
   const days = typeof manifest.staleness_threshold_days === "number" && manifest.staleness_threshold_days > 0
     ? manifest.staleness_threshold_days
@@ -151,6 +278,7 @@ export function detectStale(root: string, opts: DetectOptions = {}): DetectResul
 
   for (const cf of files) {
     const cfPath = toPosix(cf.path).replace(/^\.\//, "");
+    if (PLACEHOLDER.test(cfPath)) continue; // already reported as an unfilled placeholder
 
     // The context file itself must exist — a deleted AGENTS.md used to report healthy.
     if (!existsExact(root, cfPath)) {
@@ -171,22 +299,23 @@ export function detectStale(root: string, opts: DetectOptions = {}): DetectResul
     }
 
     for (const ref of cf.references) {
-      if (!existsExact(root, ref.path)) {
-        report.missing_paths.push({ file: cfPath, path: ref.path, source: "manifest" });
-        continue;
-      }
-      const t = Date.parse(ref.last_verified);
+      // Judged whether or not the path exists (or is a placeholder), so this agrees with the schema check.
+      const t = typeof ref.last_verified === "string" && !PLACEHOLDER.test(ref.last_verified) ? Date.parse(ref.last_verified) : NaN;
       if (!Number.isFinite(t)) {
         // Unfilled `{{DATE}}` used to parse as NaN and silently count as fresh.
         report.invalid_timestamps.push({ file: cfPath, path: ref.path, value: ref.last_verified });
         if (!report.stale_files.includes(cfPath)) report.stale_files.push(cfPath);
-        continue;
-      }
-      if (now - t > thresholdMs && !report.stale_files.includes(cfPath)) report.stale_files.push(cfPath);
+      } else if (now - t > thresholdMs && !report.stale_files.includes(cfPath)) report.stale_files.push(cfPath);
+      if (!PLACEHOLDER.test(ref.path) && !existsExact(root, ref.path)) report.missing_paths.push({ file: cfPath, path: ref.path, source: "manifest" });
     }
   }
 
   if (opts.ctxlint) runLocalCtxlint(root, report);
+
+  for (const m of report.missing_paths) {
+    const s = suggestPath(m.path, listFiles());
+    if (s) m.suggestion = s;
+  }
 
   const healthy =
     report.stale_files.length === 0 &&
@@ -197,7 +326,15 @@ export function detectStale(root: string, opts: DetectOptions = {}): DetectResul
     report.dead_commands.length === 0 &&
     report.schema_problems.length === 0;
 
-  return { ok: true, healthy, report, manifest: loaded.value.path, legacy_schema: legacySchema };
+  return {
+    ok: true,
+    healthy,
+    report,
+    manifest: loaded.ok ? loaded.value.path : null,
+    legacy_schema: loaded.ok ? loaded.value.legacySchema : false,
+    mode,
+    context_files: files.map((f) => toPosix(f.path).replace(/^\.\//, "")),
+  };
 }
 
 export interface RepairResult {
