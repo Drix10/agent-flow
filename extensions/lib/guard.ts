@@ -965,6 +965,31 @@ function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision |
   if (["commit", "merge", "rebase", "am", "cherry-pick", "revert", "push"].includes(gc.sub) && skipsHook) {
     return block("no-verify", "`--no-verify` skips the pre-commit hook. Fix the hook failure instead.");
   }
+  if (gc.sub !== "push" && gc.sub !== "fetch" && gc.sub !== "update-ref" && gc.sub !== "replace") return null;
+  if (gc.sub === "fetch") {
+    // A refspec (`main:main`, `+HEAD:main`) rewrites LOCAL refs — including the
+    // default branch — while looking like a read. Plain fetches only move
+    // remote-tracking refs, so they stay allowed. URLs hold colons too, so
+    // they (and flag words) are excluded before looking for a refspec.
+    const toks = gc.args.split(/\s+/).filter((t) => t && !t.startsWith("-") && !/^[a-z][a-z0-9+.-]*:\/\//i.test(t));
+    if (toks.slice(1).some((t) => t.includes(":"))) {
+      return block("fetch-refspec", "fetch with a <src>:<dst> refspec rewrites local branches — fetch the remote (or a branch name) without a refspec instead.");
+    }
+    return null;
+  }
+  // Plumbing with no legitimate agent use: direct ref writes, and object
+  // replacement that changes what every branch (including the default one) shows.
+  if (gc.sub === "update-ref") {
+    return block("ref-rewrite", "git update-ref rewrites refs directly, bypassing every branch protection here. There is no agent workflow that needs it.");
+  }
+  if (gc.sub === "replace") {
+    // Bare or list-only (`-l`, `--format=…`) reads; anything else names objects to swap.
+    const rest = gc.args.replace(/--format([= ]\S+)?/g, " ").replace(/-l\b|--list\b/g, " ").trim();
+    if (rest) {
+      return block("ref-rewrite", "git replace swaps commits repo-wide, changing what the default branch shows. There is no agent workflow that needs it.");
+    }
+    return null;
+  }
   if (gc.sub !== "push") return null;
   const a = gc.args;
   const forced =
@@ -977,11 +1002,17 @@ function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision |
     hasLong(a, "--prune", 5);
   if (forced) return block("force-push", "force-push / delete rewrites shared history. Push a new commit instead.");
   if (hasLong(a, "--all", 4)) return block("push-default-branch", "`push --all` pushes the default branch too — push agent/issue-N only.");
+  // No refspec: git pushes the current branch, which may be the default one.
+  // (`--dry-run`/`-n` and tag-only pushes transfer no branch, so they stay allowed;
+  // git itself rejects `--dry-run=<value>`, so a prefix match can't hide a real push.)
   const refspecs = a
     .replace(/(^|\s)(-o|--push-option|--repo|--receive-pack|--exec)(=|\s+)\S+/g, " ")
     .split(/\s+/)
     .filter((t) => t && !t.startsWith("-"))
     .slice(1); // first positional is the remote
+  if (!refspecs.length && !hasLong(a, "--dry-run", 5) && !hasFlag(a, "n", []) && !hasLong(a, "--tags", 4)) {
+    return block("explicit-refspec", "push without a refspec pushes the current branch — name it explicitly (e.g. `git push origin agent/issue-N`).");
+  }
   for (const spec of refspecs) {
     const s = spec.replace(/^\+/, "");
     const dest = (s.includes(":") ? s.slice(s.lastIndexOf(":") + 1) : s).replace(/^refs\/heads\//, "");

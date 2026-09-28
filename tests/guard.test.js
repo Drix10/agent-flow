@@ -166,3 +166,35 @@ test("the Pi hook blocks and returns a reason; read-only roles lose write/edit a
     delete process.env.AGENT_FLOW_ROLE;
   }
 });
+
+test("guard: a push with no refspec is blocked — it pushes whatever branch is checked out", () => {
+  const push = (cmd) => d("implementer", "bash", { command: cmd })?.rule ?? null;
+  for (const cmd of ["git push", "git push origin", "git push -u origin", "git -C wt push"]) {
+    assert.equal(push(cmd), "explicit-refspec", cmd);
+  }
+  // Reads, not pushes: dry runs and tag-only pushes name no branch.
+  for (const cmd of ["git push --dry-run", "git push -n origin", "git push --tags", "git push origin --tags"]) {
+    assert.equal(push(cmd), null, cmd);
+  }
+  assert.equal(push("git push -u origin agent/issue-1"), null);
+});
+
+test("guard: fetch that rewrites local refs, update-ref and replace are blocked", () => {
+  const push = (cmd) => d("implementer", "bash", { command: cmd })?.rule ?? null;
+  // Even the reviewer: a fetch refspec rewrites whatever branch is checked out.
+  assert.equal(d("reviewer", "bash", { command: "git fetch origin +HEAD:main" })?.rule, "fetch-refspec");
+  for (const cmd of ["git fetch origin main:main", "git fetch origin +main:main", "git fetch origin refs/heads/main:refs/heads/other"]) {
+    assert.equal(push(cmd), "fetch-refspec", cmd);
+  }
+  // Plain fetches only move remote-tracking refs: allowed.
+  for (const cmd of ["git fetch", "git fetch origin", "git fetch origin main", "git fetch --prune origin"]) {
+    assert.equal(push(cmd), null, cmd);
+  }
+  for (const cmd of ["git update-ref refs/heads/main abc123", "git update-ref -d refs/heads/x", "git replace abc123 def456"]) {
+    assert.equal(push(cmd), "ref-rewrite", cmd);
+  }
+  // Listing replacements reads nothing sensitive.
+  for (const cmd of ["git replace", "git replace -l", "git replace --list"]) {
+    assert.equal(push(cmd), null, cmd);
+  }
+});
