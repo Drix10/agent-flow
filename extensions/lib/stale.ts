@@ -154,7 +154,7 @@ export function extractProseRefs(markdown: string): { path: string; line: number
       return;
     }
     if (inFence || line.includes(IGNORE_MARKER)) return;
-    for (const m of line.matchAll(/`([^`\s]+)`/g)) {
+    for (const m of line.matchAll(/`([^`\s]+)`(?![-‐](style|like|ish|esque)\b)/g)) {
       let tok = m[1].replace(/^\.\//, "").replace(/[),.;]+$/, "");
       tok = tok.replace(/(#L\d+(-L?\d+)?|:\d+(:\d+)?)$/, ""); // line anchors
       if (!tok.includes("/")) continue; // bare names are ambiguous — skip

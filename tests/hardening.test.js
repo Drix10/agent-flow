@@ -944,6 +944,8 @@ test("prose drift ignores prose (and/or, TCP/IP), build output and deps; underst
   const { extractProseRefs } = await import("../extensions/lib/stale.js");
   const refs = extractProseRefs("Use `and/or`, `TCP/IP`, `client/server`, `a/b`. Built to `dist/index.js` via `node_modules/.bin/tsc`. See `src/ünï/missing.ts` and `src/utils/` and `docs/guide.md`.").map((r) => r.path);
   assert.deepEqual(refs.sort(), ["docs/guide.md", "src/utils/", "src/ünï/missing.ts"].sort());
+  // Adjective use names a kind of thing, not a file (seen in a real AGENTS.md).
+  assert.deepEqual(extractProseRefs("`old/.env`-style accidents must stay impossible; `lib/x.ts`-like modules too.").map((r) => r.path), []);
 });
 
 test("manifest type errors are named, not reported as 'missing'", () => {

@@ -810,12 +810,18 @@ function installClaudeHook(rt, args) {
   return true;
 }
 
+const toPosixPath = (p) => p.replace(/\\/g, "/");
+
 function cmdHook(args) {
   if (args._[1] !== "install") return sub("hook", args._[1], ["install"], "hook install [--force]");
   const rt = root();
   requireRepo(rt);
   const hooksDir = resolve(rt, git.mustGit(["rev-parse", "--git-path", "hooks"], rt));
   const hook = join(hooksDir, "pre-commit");
+  // Non-Node repos (Python, Go…) have no node_modules: also try the CLI that ran
+  // `hook install`, unless it lives in npx's throwaway cache.
+  const self = toPosixPath(fileURLToPath(import.meta.url));
+  const selfLine = /\/_npx\//.test(self) ? "" : `if [ -f "${self}" ]; then exec node "${self}" check-staged; fi\n`;
   const body = `#!/bin/sh
 # agent-flow pre-commit — protected paths, secrets, broken context references.
 # Installed by \`agent-flow hook install\`. Never downloads anything.
@@ -824,10 +830,12 @@ main_root="$(cd "$(git rev-parse --git-common-dir)/.." 2>/dev/null && pwd)"
 for bin in "./node_modules/.bin/agent-flow" "$main_root/node_modules/.bin/agent-flow"; do
   if [ -x "$bin" ]; then exec "$bin" check-staged; fi
 done
-exec npx --no-install agent-flow check-staged
+${selfLine}if npx --no-install @drix10/agent-flow --version >/dev/null 2>&1; then exec npx --no-install @drix10/agent-flow check-staged; fi
+echo "agent-flow pre-commit: can't find the agent-flow CLI. Install it (npm i -D @drix10/agent-flow, or npm i -g @drix10/agent-flow in a non-Node repo) and re-run: agent-flow hook install" >&2
+exit 1
 `;
   if (existsSync(hook) && !readFileSync(hook, "utf-8").includes("agent-flow") && !args.force) {
-    bad(`${hook} already exists (not ours). Add \`npx --no-install agent-flow check-staged\` to it, or re-run with --force.`);
+    bad(`${hook} already exists (not ours). Add \`npx --no-install @drix10/agent-flow check-staged\` to it, or re-run with --force.`);
     return 1;
   }
   mkdirSync(hooksDir, { recursive: true });

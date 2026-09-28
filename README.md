@@ -94,7 +94,7 @@ Any other tool that reads [AGENTS.md](https://agents.md) — Aider, Zed, Warp, J
 pi install npm:@drix10/agent-flow
 ```
 
-**Everyone** should add the pre-commit gate and the CI checks:
+**Everyone** should add the pre-commit gate and the CI checks. In a non-Node repo (Python, Go, Rust…), install the CLI once with `npm i -g @drix10/agent-flow`; the hook finds it there.
 
 ```bash
 npx @drix10/agent-flow hook install                  # protected paths, secrets, broken context refs

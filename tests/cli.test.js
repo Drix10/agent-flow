@@ -177,6 +177,9 @@ test("hook install writes a pre-commit hook that never downloads", () => {
     const hook = readFileSync(join(dir, ".git", "hooks", "pre-commit"), "utf-8");
     assert.match(hook, /check-staged/);
     assert.match(hook, /--no-install/);
+    assert.match(hook, /npx --no-install @drix10\/agent-flow check-staged/, "scoped: the unscoped name is someone else's package");
+    assert.doesNotMatch(hook, /npx --no-install agent-flow /);
+    assert.match(hook, /can't find the agent-flow CLI/, "non-Node repos get a fix-it message, not an npm error");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
