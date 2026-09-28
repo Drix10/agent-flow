@@ -2,14 +2,17 @@
 // Each one reproduces a bypass or contract bug an independent reviewer confirmed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { decide, analyzeShell } from "../extensions/lib/guard.js";
-import { findSecrets } from "../extensions/lib/risk.js";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { decide, analyzeShell, roleMayRunCli } from "../extensions/lib/guard.js";
+import { findSecrets, isEnvFile } from "../extensions/lib/risk.js";
+import { loadManifest, matchAny } from "../extensions/lib/manifest.js";
 import { checkReport, extractReport } from "../extensions/lib/report.js";
+import { changedFiles, stagedFiles } from "../extensions/lib/git.js";
+import { withLock } from "../extensions/lib/fsutil.js";
 import { localInstall } from "./helpers.js";
 
 const BIN = fileURLToPath(new URL("../bin/agent-flow.js", import.meta.url));
@@ -301,7 +304,8 @@ test("check-staged: symlink swaps, an emptied manifest and .env files don't slip
     r = run(dir, ["check-staged"]);
     assert.equal(r.status, 1);
     assert.match(r.stdout, /environment file staged: \.env —/);
-    assert.ok(!/\.env\.example/.test(r.stdout.split("\n").filter((l) => /environment file/.test(l)).join("\n")), "templates are fine");
+    // The .env line's fix hint names .env.example; what matters is that the template itself isn't reported.
+    assert.doesNotMatch(r.stdout, /environment file staged: \.env\.example\b/, "templates are fine");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -427,4 +431,438 @@ test("prose drift ignores placeholder tokens like `agent/issue-N`", async () => 
   const { extractProseRefs } = await import("../extensions/lib/stale.js");
   const refs = extractProseRefs("PRs come from `agent/issue-N`; see `packages/X` and `src/real.ts`.").map((r) => r.path);
   assert.deepEqual(refs, ["src/real.ts"]);
+});
+
+// ---------------------------------------------------------------------------
+// Fourth pass (audit #49-60)
+// ---------------------------------------------------------------------------
+
+test("guard: `.git/` is a path segment, not a prefix — .gitignore and .github aren't tamper-proof", () => {
+  const root = tmp("dotgit");
+  try {
+    assert.equal(call(root, "implementer", "bash", { command: "echo node_modules >> .gitignore" }), null);
+    assert.equal(call(root, "implementer", "bash", { command: "printf '* text=auto\\n' > .gitattributes" }), null);
+    assert.equal(call(root, "implementer", "bash", { command: "rm .github/workflows/ci.yml" })?.rule, "agent-config");
+    for (const cmd of ["echo x > .git/hooks/pre-commit", "rm -rf .git", "cd .git && echo x > config"]) {
+      assert.equal(call(root, "implementer", "bash", { command: cmd })?.rule, "tamper-proof", cmd);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("guard: .risk-baseline.json can't be written directly; the baseline tool and CLI still can", () => {
+  const root = tmp("baseline");
+  try {
+    for (const role of [null, "implementer", "gardener", "bootstrap"]) {
+      assert.equal(call(root, role, "write", { path: ".risk-baseline.json" })?.rule, "tamper-proof", String(role));
+    }
+    assert.equal(call(root, "implementer", "bash", { command: "echo '{}' > .risk-baseline.json" })?.rule, "tamper-proof");
+    assert.equal(call(root, "gardener", "risk_baseline_update", {}), null, "the legitimate tool");
+    assert.equal(call(root, "gardener", "bash", { command: "npx agent-flow baseline accept --all --yes" }), null, "the legitimate CLI");
+    assert.equal(call(root, "implementer", "bash", { command: "npx agent-flow baseline accept --all --yes" })?.rule, "role-tool");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("guard: abbreviated git options and empty-source refspecs don't skip hooks or force-push", () => {
+  const root = tmp("abbrev");
+  try {
+    const rule = (cmd, role = "implementer") => call(root, role, "bash", { command: cmd })?.rule ?? null;
+    for (const cmd of ["git commit --no-verif -m x", "git commit --no-ver -m x", "git commit --no-v -m x", "git push --no-verif origin b", "git merge --no-verify b"]) {
+      assert.equal(rule(cmd), "no-verify", cmd);
+    }
+    for (const cmd of ["git push --forc origin b", "git push --for origin b", "git push --force-with-lea origin b", "git push --force-if-inc origin b", "git push --mirr origin", "git push --delet origin b", "git push --de origin b", "git push --prune origin 'refs/heads/*:refs/heads/*'", "git push origin :agent/issue-1", "git push origin +:x"]) {
+      assert.equal(rule(cmd), "force-push", cmd);
+    }
+    assert.equal(rule("git push --al origin"), "push-default-branch");
+    assert.equal(rule("git push origin :"), "push-default-branch", "matching refspec includes main");
+    assert.equal(rule("git push --follow-tags origin agent/issue-1"), null, "--follow-tags isn't --force");
+    assert.equal(rule("git push --verbose origin agent/issue-1"), null);
+    assert.equal(rule("git push -o ci.skip origin agent/issue-1"), null, "push-option values aren't refspecs");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("guard: hook-skipping, force-push, deletes and default-branch pushes are blocked with no role too", () => {
+  const root = tmp("norole");
+  try {
+    const rule = (role, cmd) => call(root, role, "bash", { command: cmd })?.rule ?? null;
+    for (const role of [null, "implementer", "orchestrator"]) {
+      assert.equal(rule(role, "git push --force origin main"), "force-push", `${role}`);
+      assert.equal(rule(role, "git push -f origin feature"), "force-push", `${role}`);
+      assert.equal(rule(role, "git push origin --delete feature"), "force-push", `${role}`);
+      assert.equal(rule(role, "git push origin main"), "push-default-branch", `${role}`);
+      assert.equal(rule(role, "git commit --no-verify -m x"), "no-verify", `${role}`);
+      assert.equal(rule(role, "git commit -nm x"), "no-verify", `${role}`);
+      assert.equal(rule(role, "git -c core.hooksPath=/dev/null commit -m x"), "no-verify", `${role}`);
+      assert.equal(rule(role, "git config core.hooksPath .nohooks"), "no-verify", `${role}`);
+      assert.equal(rule(role, "git push -u origin feature"), null, `${role}`);
+      assert.equal(rule(role, "git commit -m 'fix'"), null, `${role}`);
+      assert.equal(rule(role, "git config --get core.hooksPath"), null, `${role}: reading it is fine`);
+    }
+    // Everything else stays role-gated: an unconfined session may still edit agent config and write files.
+    assert.equal(rule(null, "rm -rf .claude/agents"), null);
+    assert.equal(rule(null, "echo x > ../elsewhere.txt"), null);
+    // Through the Claude Code hook with AGENT_FLOW_ROLE unset.
+    const { dir } = gitRepo("norole-hook");
+    try {
+      const r = run(dir, ["guard"], { input: JSON.stringify({ hook_event_name: "PreToolUse", cwd: dir, tool_name: "Bash", tool_input: { command: "git push --force origin main" } }), env: { AGENT_FLOW_ROLE: "" } });
+      assert.equal(r.status, 2, r.stderr);
+      assert.match(r.stderr, /force-push/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("guard: the CLI twins of the mutating tools follow the same per-role allow list", () => {
+  const root = tmp("clitwin");
+  try {
+    const rule = (role, cmd) => call(root, role, "bash", { command: cmd })?.rule ?? null;
+    const mutating = [
+      "agent-flow state update --issue 1 --state Completed",
+      "npx @drix10/agent-flow state update --issue 1 --state Completed",
+      "npx -y @drix10/agent-flow@1.1.0 baseline accept --all --yes",
+      "npx agent-flow repair --yes",
+      "node ./node_modules/@drix10/agent-flow/bin/agent-flow.js worktree create 3",
+      "node bin/agent-flow.js worktree remove 3 --force",
+      "agent-flow --json state update --issue 1 --state Completed",
+      "agent-flow --manifest m.json repair --yes",
+      "npm exec -- agent-flow hook install",
+      "cd x && npx agent-flow install --harness claude",
+      "bash -c 'agent-flow state update --issue 1 --state Completed'",
+    ];
+    for (const role of ["reviewer", "qa"]) for (const cmd of mutating) assert.equal(rule(role, cmd), "role-tool", `${role}: ${cmd}`);
+    for (const cmd of ["agent-flow doctor", "npx agent-flow audit-risk --fail-on-new", "npx agent-flow classify --issue 1", "agent-flow scan", "agent-flow state show --issue 1", "agent-flow state", "agent-flow report reviewer out.raw", "agent-flow schema reviewer", "agent-flow template AGENTS.md", "agent-flow check-staged", "agent-flow worktree list"]) {
+      assert.equal(rule("reviewer", cmd), null, cmd);
+    }
+    assert.equal(rule("orchestrator", "npx agent-flow state update --issue 1 --state Working"), null);
+    assert.equal(rule("orchestrator", "npx agent-flow worktree create 3"), null);
+    assert.equal(rule("orchestrator", "npx agent-flow repair --yes"), "role-tool");
+    assert.equal(rule("gardener", "npx agent-flow repair --yes"), null);
+    assert.equal(rule(null, "npx agent-flow install --harness claude"), null, "no role: a human-driven session");
+
+    // The exported helper the CLI reuses.
+    assert.equal(roleMayRunCli(null, ["state", "update"]), null);
+    assert.equal(roleMayRunCli("orchestrator", ["state", "update", "--issue", "1"]), null);
+    assert.match(roleMayRunCli("qa", ["state", "update", "--issue", "1"]), /state_update/);
+    assert.match(roleMayRunCli("reviewer", ["baseline", "accept", "--all"]), /risk_baseline_update/);
+    assert.match(roleMayRunCli("implementer", ["hook", "install"]), /human/);
+    assert.equal(roleMayRunCli("reviewer", ["state", "show"]), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("guard: a confined implementer's shell writes are resolved and kept inside its worktree", (t) => {
+  const root = tmp("confine");
+  try {
+    const wt = join(root, ".worktrees", "issue-1");
+    mkdirSync(join(wt, "src"), { recursive: true });
+    mkdirSync(join(root, ".worktrees", "issue-2"), { recursive: true });
+    const impl = (cmd, cwd = wt) => call(root, "implementer", "bash", { command: cmd }, { cwd, worktree: wt })?.rule ?? null;
+    for (const cmd of [
+      "echo x > ../issue-2/a.ts",
+      "cp evil.ts ../../src/app.ts",
+      "echo x >> ~/.bashrc",
+      "echo hi &> ../../README.md",
+      "echo hi >| ../x",
+      "npm test 2> ../../log.txt",
+      "cat a | tee ../x",
+      "tee -a src/ok.ts ../../x < a",
+      "mv a ../../b",
+      "mv ../../victim.ts src/",
+      "sed -i s/a/b/ ../../f",
+      "sed -i.bak -e s/a/b/ ../../f",
+      "perl -pi -e s/a/b/ ../../f",
+      "install -m 644 a ../../bin/x",
+      "ln -sf /etc/passwd ../../x",
+      "touch /tmp/outside",
+      "rm -rf ../issue-2",
+      "rmdir ../issue-2",
+      "mkdir -p ../../newdir",
+      "truncate -s 0 ../../f",
+      "dd if=/dev/zero of=../../f bs=1 count=1",
+      "cp -t ../.. a",
+      "cd .. && echo x > y",
+      "cd src && cd ../.. && rm README.md",
+      "sh -c 'cd .. && rm -rf issue-2'",
+      'echo x > "$HOME/x"',
+      "echo x > $(mktemp)",
+      "cd - && rm x",
+      "echo x > ~root/x",
+      "rm .*",
+      "cp a {..,.}/y",
+      "nice -n 5 rm ../../f",
+      "env X=1 cp a ../../b",
+    ]) {
+      assert.equal(impl(cmd), "worktree-confinement", cmd);
+    }
+    for (const cmd of ["echo x > src/a.ts", "cp a.ts src/b.ts", "cd src && echo x > a.ts", "npm test > /dev/null 2>&1", "mkdir -p src/new && touch src/new/x.ts", "sed -i s/a/b/ src/x.ts", "rm -f src/*.tmp", "echo 'a > ../b' | grep a", "cat <<'EOF' > src/gen.ts\nexport const x = '../../..';\nEOF", "git commit -m 'x > ../y'", "ls ../.."]) {
+      assert.equal(impl(cmd), null, cmd);
+    }
+    // A symlink inside the worktree can't carry a shell write out.
+    if (trySymlink(root, join(wt, "src", "up"), "dir")) assert.equal(impl("echo x > src/up/README.md"), "worktree-confinement", "symlink escape");
+    else t.diagnostic("symlink part skipped: no privilege");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("guard: shell writes to protected paths are caught through cd, globs and quoting", () => {
+  const root = tmp("protglob");
+  try {
+    mkdirSync(join(root, "config"), { recursive: true });
+    mkdirSync(join(root, "src", "auth"), { recursive: true });
+    writeFileSync(join(root, "config", "db.yml"), "x\n");
+    const m = { protected_paths: ["config/", "src/auth/**"], context_files: [] };
+    const rule = (cmd, extra = {}) => decide({ role: "implementer", toolName: "bash", input: { command: cmd }, cwd: root, root, manifest: m, ...extra })?.rule ?? null;
+    for (const cmd of ["rm c*/db.yml", "rm conf?g/x", "rm [c]onfig/db.yml", "cd src && rm auth/login.ts", "cd src/auth && echo x > login.ts", 'rm "config/db.yml"', "rm ./src/../config/db.yml"]) {
+      assert.equal(rule(cmd), "protected-path", cmd);
+    }
+    // Inside a worktree, protected paths are relative to the worktree.
+    const wt = join(root, ".worktrees", "issue-4");
+    mkdirSync(join(wt, "config"), { recursive: true });
+    assert.equal(rule("rm c*/x.yml", { cwd: wt, worktree: wt }), "protected-path");
+    assert.equal(rule("rm src/app.ts"), null);
+    assert.equal(rule("rm c*/db.yml", { allowProtected: true }), null, "the human override still works");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("guard: read-only roles can't write through option spellings, wrappers or quoting", () => {
+  const root = tmp("ro2");
+  try {
+    for (const cmd of [
+      "sed -i.bak s/a/b/ f",
+      "sed --in-place=.orig s/a/b/ f",
+      "perl -p -i -e s/a/b/ f",
+      "perl -pi.bak -e s/a/b/ f",
+      "cmd &>file",
+      "cmd &>>file",
+      "find . -delete",
+      "find . -name '*.tmp' -exec rm {} +",
+      "find . -exec rm {} \\;",
+      "git branch -D x",
+      "git branch --delete x",
+      "git pull",
+      "git clone https://x/y",
+      "npx prettier -w .",
+      "npx prettier --write .",
+      "python3 -m black .",
+      "python -m pip install x",
+      "curl -sSo f https://x",
+      "curl -sSLO https://x/f",
+      "curl -s -c jar https://x",
+      "wget -qO f https://x",
+      "gh api repos/x/y/issues -f title=x",
+      "gh api repos/x/y/issues -F title=x",
+      "gh api repos/x/y/issues --field title=x",
+      "gh api graphql --input q.json",
+      "nice -n 5 rm f",
+      "timeout 5 rm f",
+      "timeout -s KILL 5s rm f",
+      "env X=1 rm f",
+      "sudo -u root rm f",
+      "ls | xargs rm",
+      "ls | xargs -n 1 rm",
+      '"rm" f',
+      "'rm' f",
+      "\\rm f",
+      'r"m" f',
+      'echo x >"out.txt"',
+    ]) {
+      assert.match(call(root, "reviewer", "bash", { command: cmd })?.rule ?? "allowed", /^(read-only-role|qa-no-autofix)$/, cmd);
+    }
+    for (const cmd of [
+      "git fetch origin",
+      "git config --get user.email",
+      "git branch -a",
+      "git branch --list 'agent/*'",
+      "curl -s https://x | head",
+      "curl -X POST -s https://x/api",
+      "curl --compressed -s https://x",
+      "wget -qO- https://x",
+      "wget -q -O - https://x",
+      "gh api repos/x/y/pulls",
+      "gh api -X GET search/issues -f q=x",
+      "find . -name '*.ts' -exec grep -l TODO {} +",
+      "find . -type f",
+      "sed -n 1,5p f",
+      "sed -e s/a/b/ f",
+      "nice -n 5 npm test",
+      "timeout 60 npm test",
+      "grep -rn 'a > b' src",
+      "python3 -m pytest -q",
+    ]) {
+      const r = call(root, "reviewer", "bash", { command: cmd });
+      assert.equal(r, null, `${cmd} → ${r?.reason}`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("withLock: breaking a dead holder's lock never lets two processes in", async () => {
+  const dir = tmp("lock");
+  try {
+    const lock = join(dir, "state.lock");
+    const counter = join(dir, "n");
+    const worker = join(dir, "worker.mjs");
+    const fsutil = pathToFileURL(fileURLToPath(new URL("../extensions/lib/fsutil.js", import.meta.url))).href;
+    writeFileSync(
+      worker,
+      `import { withLock } from ${JSON.stringify(fsutil)};
+import { readFileSync, writeFileSync } from "node:fs";
+const [lock, counter, startAt, iters] = process.argv.slice(2);
+while (Date.now() < Number(startAt)) {}
+for (let i = 0; i < Number(iters); i++) {
+  withLock(lock, () => {
+    const n = Number(readFileSync(counter, "utf-8"));
+    for (const t = Date.now(); Date.now() - t < 2; ) {}
+    writeFileSync(counter, String(n + 1));
+  });
+}
+`,
+    );
+    const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+    const workers = 12;
+    const iters = 3;
+    // Both lock formats: current (pid@host) and a pre-upgrade bare PID.
+    for (const seed of [`${deadPid}@${hostname()}`, String(deadPid), `${deadPid}@${hostname()}`]) {
+      writeFileSync(counter, "0");
+      writeFileSync(lock, seed);
+      const startAt = Date.now() + 500;
+      await Promise.all(
+        Array.from(
+          { length: workers },
+          () =>
+            new Promise((res, rej) => {
+              const c = spawn(process.execPath, [worker, lock, counter, String(startAt), String(iters)], { stdio: ["ignore", "ignore", "pipe"] });
+              let err = "";
+              c.stderr.on("data", (d) => (err += d));
+              c.on("exit", (code) => (code === 0 ? res() : rej(new Error(err))));
+            }),
+        ),
+      );
+      assert.equal(readFileSync(counter, "utf-8"), String(workers * iters), "every increment survives");
+    }
+    // A lock held by a PID on another host is never judged by PID — only by age.
+    writeFileSync(lock, `${deadPid}@some-other-host.invalid`);
+    assert.throws(() => withLock(lock, () => {}, 200), /timed out/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("manifest: protected_paths given as a string is one pattern, never a crash or a char-by-char match", () => {
+  const root = tmp("strprot");
+  try {
+    writeFileSync(join(root, "CONTEXT_MANIFEST.json"), JSON.stringify({ protected_paths: "config/", context_files: [] }));
+    const loaded = loadManifest(root);
+    assert.ok(loaded.ok);
+    assert.deepEqual(loaded.value.manifest.protected_paths, ["config/"]);
+    assert.ok(loaded.value.problems.some((p) => /protected_paths must be an array/.test(p)), "reported as a warning");
+    writeFileSync(join(root, "CONTEXT_MANIFEST.json"), JSON.stringify({ protected_paths: ["config/", 7, null, ""], context_files: [] }));
+    assert.deepEqual(loadManifest(root).value.manifest.protected_paths, ["config/"]);
+
+    // The guard is handed raw manifests too; none of these may throw.
+    for (const pp of ["config/", 42, { a: 1 }, null, ["config/", 3]]) {
+      const m = { protected_paths: pp, context_files: "nope", default_branch: 5 };
+      for (const [tool, input] of [["write", { path: "config/x.yml" }], ["bash", { command: "rm config/x.yml" }], ["bash", { command: "git push origin main" }]]) {
+        assert.doesNotThrow(() => decide({ role: "implementer", toolName: tool, input, cwd: root, root, manifest: m }), `${JSON.stringify(pp)} ${tool}`);
+      }
+    }
+    assert.equal(decide({ role: null, toolName: "write", input: { path: "config/x.yml" }, cwd: root, root, manifest: { protected_paths: "config/" } })?.rule, "protected-path");
+    assert.equal(matchAny("config/", "c"), null, "a string isn't iterated char by char");
+    assert.equal(matchAny("config/", "config/a"), "config/");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("check-staged: non-ASCII file names are checked, not silently skipped as C-quoted strings", () => {
+  const { dir, g } = gitRepo("unicode");
+  try {
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ protected_paths: ["config/"], context_files: [] }));
+    g("add", "-A");
+    g("commit", "-qm", "init");
+    mkdirSync(join(dir, "config", "prod"), { recursive: true });
+    writeFileSync(join(dir, "config", "prod", "naïve.yml"), "a: 1\n");
+    g("add", "-A");
+    let r = run(dir, ["check-staged"]);
+    assert.equal(r.status, 1, r.stdout);
+    assert.match(r.stdout, /protected path staged: config\/prod\/naïve\.yml/);
+    g("reset", "-q");
+    rmSync(join(dir, "config"), { recursive: true, force: true });
+
+    writeFileSync(join(dir, "notes é.txt"), `token: ghp_${"a".repeat(36)}\n`);
+    g("add", "-A");
+    r = run(dir, ["check-staged"]);
+    assert.equal(r.status, 1, r.stdout);
+    assert.match(r.stdout, /possible GitHub token in notes é\.txt/);
+    assert.doesNotMatch(r.stdout, /ghp_a/, "the value is never printed");
+    g("reset", "-q");
+    rmSync(join(dir, "notes é.txt"));
+
+    writeFileSync(join(dir, "日本.md"), "x\n");
+    assert.ok(changedFiles(dir, "HEAD").includes("日本.md"), "untracked names come back verbatim");
+    g("add", "-A");
+    assert.deepEqual(stagedFiles(dir), ["日本.md"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("secret detection: env-file variants, more token shapes, long lines and per-match placeholders", () => {
+  for (const f of [".env", ".env.production", ".env.production.local", ".env.development.local", "app/.env.local", ".envrc", "prod.env", "deploy/staging.env"]) {
+    assert.ok(isEnvFile(f), `${f} is an env file`);
+  }
+  for (const f of [".env.example", ".env.sample", ".env.template", ".env.local.example", "prod.env.example", "x.env.sample", "src/env.ts", ".venv", "environment.yml"]) {
+    assert.ok(!isEnvFile(f), `${f} is not`);
+  }
+  const kinds = (s) => findSecrets(s).map((x) => x.kind);
+  const cases = [
+    ["Azure storage account key", `DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=${"Ab1+".repeat(21)}Ab==;EndpointSuffix=core.windows.net`],
+    ["URL with embedded password", "https://deploy:hunter2hunter2@example.com/repo.git"],
+    ["URL with embedded password", "ftp://backup:Sup3rS3cret@files.example.com/"],
+    ["database URL with password", "mongodb+srv://app:pa/ss9word@cluster0.example.net/db"],
+    ["database URL with password", "redis://default:r3d1sP4ss@cache:6379"],
+    ["database URL with password", "amqp://svc:qu3u3P4ss@mq/vhost"],
+    ["DigitalOcean token", `dop_v1_${"a1".repeat(32)}`],
+    ["Shopify token", `shpat_${"a1".repeat(16)}`],
+    ["npm auth token", `//registry.npmjs.org/:_authToken=${["0123abcd", "1234", "5678", "9abc", "0123456789ab"].join("-")}`],
+    ["npm auth token", `//registry.npmjs.org/:_authToken=npm_${"A".repeat(36)}`],
+    ["GitHub token", `${"x".repeat(30_000)} ghp_${"a".repeat(36)}`],
+    ["GitHub token", `${"y".repeat(4094)} ghp_${"b".repeat(36)} ${"y".repeat(9000)}`],
+    ["database URL with password", "a=postgres://u:password@h/x b=postgres://app:s3cr3tP4ss@db/x"],
+  ];
+  cases.forEach(([kind, s], i) => assert.ok(kinds(s).includes(kind), `missed ${kind} (case ${i})`));
+  for (const ok of [
+    "//registry.npmjs.org/:_authToken=${NPM_TOKEN}",
+    "https://user:password@example.com",
+    "http://localhost:3000/@fs/src/app.ts",
+    "https://example.com:8443/path/@scope/pkg",
+    "git clone https://github.com/x/y.git",
+    `AccountKey=${"A".repeat(20)}==`,
+    "postgres://u:password@h/x and postgres://u:${PW}@h/y",
+  ]) {
+    assert.deepEqual(kinds(ok), [], `false positive: ${ok.slice(0, 40)}`);
+  }
+  // Bounded cost: a pathological megabyte line is scanned, not skipped, and fast.
+  for (const [name, line] of [
+    ["jwt-ish", "-eyJ".repeat(250_000)],
+    ["url-ish", "postgres://a:".repeat(80_000)],
+    ["base64", "QUJD".repeat(250_000)],
+  ]) {
+    const t0 = Date.now();
+    findSecrets(line);
+    assert.ok(Date.now() - t0 < 1000, `${name}: 1 MB line took ${Date.now() - t0}ms`);
+  }
 });

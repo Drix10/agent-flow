@@ -115,7 +115,8 @@ export function validateManifest(m: unknown): string[] {
     if (typeof d !== "number" || !Number.isFinite(d) || d <= 0) problems.push("staleness_threshold_days must be a positive number");
   }
   if (man.protected_paths !== undefined) {
-    if (!Array.isArray(man.protected_paths)) problems.push("protected_paths must be an array of strings");
+    if (typeof man.protected_paths === "string") problems.push(`protected_paths must be an array — treating the string as ["${man.protected_paths}"]`);
+    else if (!Array.isArray(man.protected_paths)) problems.push("protected_paths must be an array of strings — ignored");
     else
       man.protected_paths.forEach((p, i) => {
         if (typeof p !== "string" || !p) problems.push(`protected_paths[${i}] must be a non-empty string`);
@@ -173,7 +174,18 @@ export function loadManifest(root: string, manifestPath?: string): LoadResult {
     return { ok: false, error: problems[0], path };
   }
   const { files, legacy } = normalizeManifest(parsed.value);
+  // Downstream code iterates protected_paths: a hand-written string would be
+  // walked char by char (or crash `.filter`). Validation above reports it.
+  if (parsed.value.protected_paths !== undefined) parsed.value.protected_paths = protectedPathsOf(parsed.value);
   return { ok: true, value: { path, manifest: parsed.value, files, legacySchema: legacy, problems } };
+}
+
+/** protected_paths as a clean string array, whatever shape the manifest has: a string is one pattern, junk entries are dropped. */
+export function protectedPathsOf(man: { protected_paths?: unknown } | null | undefined): string[] {
+  const p = man?.protected_paths;
+  if (typeof p === "string") return p.trim() ? [p] : [];
+  if (!Array.isArray(p)) return [];
+  return p.filter((x): x is string => typeof x === "string" && x.length > 0);
 }
 
 /** Load the manifest if present; never throws. Used by the guard and classifier. */
@@ -224,8 +236,8 @@ export function matchesPattern(pattern: string, file: string): boolean {
   return f === p || f.startsWith(`${p}/`);
 }
 
-export function matchAny(patterns: readonly string[] | undefined, file: string): string | null {
-  for (const p of patterns ?? []) if (typeof p === "string" && matchesPattern(p, file)) return p;
+export function matchAny(patterns: readonly string[] | string | undefined, file: string): string | null {
+  for (const p of protectedPathsOf({ protected_paths: patterns })) if (matchesPattern(p, file)) return p;
   return null;
 }
 
