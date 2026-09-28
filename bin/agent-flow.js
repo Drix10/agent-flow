@@ -14,10 +14,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -25,7 +25,9 @@ try {
 }
 
 const VERSION = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf-8")).version;
-const color = process.stdout.isTTY && !process.env.NO_COLOR;
+const { NO_COLOR, FORCE_COLOR } = process.env;
+// NO_COLOR beats FORCE_COLOR beats the TTY check (https://no-color.org, force-color.org).
+const color = NO_COLOR ? false : FORCE_COLOR !== undefined && FORCE_COLOR !== "" ? !["0", "false"].includes(FORCE_COLOR) : !!process.stdout.isTTY;
 const c = (code, s) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
 const ok = (s) => console.log(`${c(32, "✓")} ${s}`);
 const bad = (s) => console.log(`${c(31, "✗")} ${s}`);
@@ -58,12 +60,37 @@ function fixBools(args) {
   return args;
 }
 
+const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness"];
+const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
+
+/** Closest candidate within edit distance 2, or null. */
+function didYouMean(word, candidates) {
+  let best = null;
+  let bestD = 3;
+  for (const c of candidates) {
+    const d = stale.editDistance(String(word).toLowerCase(), c.toLowerCase(), 2);
+    if (d < bestD) [best, bestD] = [c, d];
+  }
+  return best;
+}
+
+function unknown(what, word, candidates, hint) {
+  const guess = didYouMean(word, candidates);
+  console.error(`agent-flow: unknown ${what} "${word}"${guess ? ` — did you mean "${guess}"?` : ""}`);
+  console.error(dim(`  ${hint}`));
+  return 2;
+}
+
 const HELP = `agent-flow ${VERSION} — context drift detection + guarded agent pipeline
 
 Usage: agent-flow <command> [options]
 
+Start here (no setup needed):
+  doctor                    Check every path your AGENTS.md / CLAUDE.md / .cursorrules / … mention
+  init [--yes] [--dry-run]  Write a starter CONTEXT_MANIFEST.json (+ AGENTS.md if missing) from a scan
+
 Checks (CI-safe, read-only):
-  doctor                    Validate CONTEXT_MANIFEST.json + context prose against the filesystem
+  doctor                    Context files vs the filesystem; with a manifest, also staleness
       --manifest <path>     Manifest path (default CONTEXT_MANIFEST.json)
       --no-prose            Skip checking \`backticked/paths\` inside context files
       --ctxlint             Also run a locally installed ctxlint (never downloads)
@@ -105,6 +132,26 @@ function root() {
   return fsutil.findRepoRoot(process.cwd());
 }
 
+/** An expected, user-fixable condition: printed as one line, no stack, no git noise. */
+class UserError extends Error {}
+
+function requireRepo(cwd = process.cwd()) {
+  if (!git.git(["rev-parse", "--git-dir"], cwd).ok) throw new UserError("not a git repository — run this inside a git checkout (or `git init` first)");
+}
+
+function requireCommits(cwd) {
+  requireRepo(cwd);
+  if (!git.git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], cwd).ok) throw new UserError("no commits yet — make a first commit, then re-run");
+}
+
+function issueNumber(raw, usageLine) {
+  const n = Number(raw);
+  if (raw === undefined || raw === true || !Number.isInteger(n) || n < 1) {
+    throw new UserError(raw === undefined || raw === true ? `needs an issue number — usage: agent-flow ${usageLine}` : `"${raw}" is not an issue number — usage: agent-flow ${usageLine}`);
+  }
+  return n;
+}
+
 /** The checkout we're standing in (a linked worktree has its own index and files). */
 function checkoutTop() {
   const r = git.git(["rev-parse", "--show-toplevel"], process.cwd());
@@ -113,58 +160,161 @@ function checkoutTop() {
 
 // ---------------------------------------------------------------------------
 
+const CONTEXT_FILE_NAMES = "AGENTS.md, CLAUDE.md, GEMINI.md, .cursorrules, .cursor/rules/*.mdc, .github/copilot-instructions.md, .windsurfrules";
+
+/** "Show the user the file, not the absolute path twice": strip the path from a loader error. */
+function manifestError(rt, error, path) {
+  const rel = relative(rt, path) || path;
+  const msg = error.split(path).join("").replace(/^invalid JSON in :?\s*/, "").replace(/^cannot read :?\s*/, "cannot read: ").trim();
+  if (error.startsWith("invalid JSON")) return `${rel} is not valid JSON (${msg}) — fix it, or delete it and run \`agent-flow init\``;
+  return `${rel}: ${msg}`;
+}
+
 function cmdDoctor(args) {
-  const r = stale.detectStale(root(), { manifestPath: args.manifest, prose: !args["no-prose"], ctxlint: !!args.ctxlint });
+  const rt = root();
+  const r = stale.detectStale(rt, { manifestPath: args.manifest, prose: !args["no-prose"], ctxlint: !!args.ctxlint, discover: args.manifest === undefined });
   if (!r.ok) {
     out(args, { healthy: false, error: r.error, path: r.path }, () => {
-      bad(`${r.error}: ${r.path}`);
-      if (r.error === "manifest_not_found") console.log(dim("  Ask your agent to bootstrap this repo (the `bootstrap` skill; /bootstrap on Pi) to create one."));
+      if (r.error === "manifest_not_found") bad(`manifest not found: ${relative(rt, r.path) || r.path}`);
+      else bad(manifestError(rt, r.error, r.path));
     });
     return 2;
   }
-  out(args, { healthy: r.healthy, report: r.report, manifest: r.manifest, legacy_schema: r.legacy_schema }, () => {
-    const rep = r.report;
+  const rep = r.report;
+  const none = r.mode === "discovered" && r.context_files.length === 0 && !r.manifest;
+  out(args, { healthy: r.healthy, mode: r.mode, context_files: r.context_files, report: rep, manifest: r.manifest, legacy_schema: r.legacy_schema }, () => {
+    // A fresh repo isn't broken: nothing to drift yet, so this is a note and exit 0 (CI stays green).
+    if (none) {
+      warn(`no agent context files found (${CONTEXT_FILE_NAMES})`);
+      console.log(dim("  Start one: `agent-flow init` writes a starter AGENTS.md + manifest, or ask your agent to use the bootstrap skill."));
+      return;
+    }
     const section = (label, items, fmt) => {
       if (items.length === 0) ok(label);
       else {
         bad(`${label} — ${items.length}`);
-        for (const i of items.slice(0, 25)) console.log(`    ${fmt(i)}`);
+        const lines = items.slice(0, 25).map(fmt);
+        const w = Math.min(40, Math.max(...lines.map((l) => (Array.isArray(l) ? l[0].length : 0))));
+        for (const l of lines) console.log(`    ${Array.isArray(l) ? `${l[0].padEnd(w)}  ${l[1]}` : l}`);
         if (items.length > 25) console.log(dim(`    … ${items.length - 25} more (use --json)`));
       }
     };
-    section("manifest schema", rep.schema_problems, (p) => p);
-    section("context files exist", rep.missing_context_files, (p) => p);
-    section("referenced paths exist", rep.missing_paths, (m) => `${m.file}: ${m.path} ${dim(`(${m.source})`)}`);
-    section("timestamps valid", rep.invalid_timestamps, (m) => `${m.file}: ${m.path} → ${JSON.stringify(m.value)}`);
-    section("verified within threshold", rep.stale_files, (p) => `${p} [STALE]`);
-    section("no unfilled placeholders", rep.unfilled_placeholders, (m) => `${m.file}:${m.line} ${m.text}`);
+    const discovered = r.mode === "discovered";
+    // Placeholder and timestamp problems have their own sections below; don't list them twice.
+    const schema = rep.schema_problems.filter((p) => !/unfilled template placeholder|not a valid ISO timestamp/.test(p));
+    if (r.manifest) section("manifest schema", schema, (p) => p);
+    if (discovered && !r.context_files.length) warn(`no agent context files found (${CONTEXT_FILE_NAMES})`);
+    else if (discovered) ok(`context files found: ${r.context_files.length > 4 ? `${r.context_files.slice(0, 4).join(", ")}, … ${r.context_files.length - 4} more` : r.context_files.join(", ")}`);
+    else section("context files exist", rep.missing_context_files, (p) => p);
+    const lineOf = proseLines(rt);
+    section("referenced paths exist", rep.missing_paths, (m) => [
+      `${m.file}${m.source === "prose" && lineOf(m.file, m.path) ? `:${lineOf(m.file, m.path)}` : ""}`,
+      `${m.path}${discovered ? "" : dim(` (${m.source})`)}${m.suggestion ? `  → did you mean ${c(1, m.suggestion)}?` : ""}`,
+    ]);
+    if (!discovered) {
+      section("timestamps valid", rep.invalid_timestamps, (m) => [`${m.file}: ${m.path}`, `→ ${JSON.stringify(m.value)}`]);
+      section("verified within threshold", rep.stale_files, (p) => `${p} [STALE]`);
+    }
+    section("no unfilled placeholders", rep.unfilled_placeholders, (m) => [`${m.file}:${m.line}`, m.text]);
     if (rep.ctxlint !== "not_requested") (rep.ctxlint === "ran" ? ok : warn)(`ctxlint: ${rep.ctxlint}`);
     if (rep.ctxlint === "ran") section("no dead commands", rep.dead_commands, (m) => `${m.file}: ${m.command}`);
-    console.log(r.healthy ? c(32, "\nhealthy") : c(31, "\nunhealthy — run /repair-docs (Gardener) after re-verifying the prose"));
+    if (discovered) console.log(dim(`note: ${r.manifest ? "the manifest lists no context files" : "no CONTEXT_MANIFEST.json"}, so only paths were checked — \`agent-flow init\` adds staleness tracking`));
+    console.log(r.healthy ? c(32, "\nhealthy") : `\n${c(31, "unhealthy")} — ${doctorNextStep(rep, schema)}`);
   });
-  return r.healthy ? 0 : 1;
+  return none || r.healthy ? 0 : 1;
+}
+
+/** Line of a prose reference, so the user can jump to it. Each context file is parsed once. */
+function proseLines(rt) {
+  const cache = new Map();
+  return (file, path) => {
+    if (!cache.has(file)) cache.set(file, stale.extractProseRefs(fsutil.readTextFile(join(rt, file)) ?? ""));
+    return cache.get(file).find((r) => r.path === path)?.line;
+  };
+}
+
+/** One next step, for whichever problem the user should fix first. */
+function doctorNextStep(rep, schema) {
+  if (rep.unfilled_placeholders.length && !rep.missing_paths.length) {
+    return "fill in the {{PLACEHOLDERS}} above (for a manifest, `agent-flow init` generates a filled one), then re-run `agent-flow doctor`";
+  }
+  if (rep.missing_paths.length || rep.missing_context_files.length) {
+    return "fix the references above (or ask your agent to use the gardener skill's /repair-docs procedure), then re-run `agent-flow doctor`";
+  }
+  if (schema.length) return "fix CONTEXT_MANIFEST.json (`agent-flow schema manifest` prints the schema)";
+  return "re-read the stale files against the code, then `agent-flow repair --yes` to refresh their timestamps";
+}
+
+/** agent-flow in the user's own package.json is the tool, not a risk surface to review. */
+const OWN_DEP = /^Dependency: @drix10\/agent-flow$/;
+
+const KIND_ORDER = ["secret", "payment", "auth", "exec", "data-mutation", "external-api", "dependency"];
+
+/** Surfaces as aligned rows: kind, file[:line], detail. Secret rows carry kind + line, never the value. */
+function surfaceRows(list, { group, keys }) {
+  const rows = [];
+  const sorted = [...list].sort((a, b) => KIND_ORDER.indexOf(a.type) - KIND_ORDER.indexOf(b.type) || a.path.localeCompare(b.path));
+  if (group) {
+    // One row per (kind, manifest) for dependencies — 80 packages shouldn't be 80 lines.
+    const deps = new Map();
+    for (const s of sorted) {
+      const dep = s.detail.match(/^Dependency: (.+)$/)?.[1];
+      if (!dep) {
+        rows.push(s);
+        continue;
+      }
+      const k = `${s.type}\0${s.path}`;
+      if (!deps.has(k)) rows.push(deps.set(k, { type: s.type, path: s.path, names: [] }).get(k));
+      deps.get(k).names.push(dep);
+    }
+  } else rows.push(...sorted);
+  const where = (s) => `${s.path}${s.lines ? `:${s.lines.join(",")}` : ""}`;
+  const what = (s) => {
+    if (s.names) return s.names.length > 8 ? `${s.names.slice(0, 8).join(", ")} +${s.names.length - 8} more` : s.names.join(", ");
+    if (s.type === "secret") return s.detail.replace(/^Possible /, "").replace(/ \(value redacted\)$/, "");
+    return s.detail.endsWith(" pattern") ? "" : s.detail.replace(/^Dependency: /, "");
+  };
+  const w = Math.min(48, Math.max(0, ...rows.map((s) => where(s).length)));
+  return rows.map((s) => `    ${s.type.padEnd(13)} ${where(s).padEnd(w)}  ${what(s)}${keys && s.key ? `  ${dim(s.key)}` : ""}`.trimEnd());
 }
 
 function cmdAudit(args) {
   const rt = root();
   const baseline = fsutil.resolveInside(rt, args.baseline ?? risk.BASELINE_FILE);
-  const r = risk.auditRisk(rt, baseline, { includeTests: !!args["include-tests"] });
+  const raw = risk.auditRisk(rt, baseline, { includeTests: !!args["include-tests"] });
+  const mine = (s) => !OWN_DEP.test(s.detail);
+  const surfaces = raw.surfaces.filter(mine);
+  const newList = raw.newSurfacesList.filter(mine);
+  const byType = {};
+  for (const s of surfaces) byType[s.type] = (byType[s.type] ?? 0) + 1;
+  const resolvedList = raw.resolvedList.filter((k) => !k.endsWith(":@drix10/agent-flow"));
+  const r = { ...raw, surfaces, newSurfacesList: newList, totalSurfaces: surfaces.length, newSurfaces: newList.length, byType, resolvedList, resolvedSurfaces: resolvedList.length };
+  const failNoBaseline = !!args["fail-on-new"] && !r.baselineExists;
   out(args, r, () => {
-    console.log(`${r.totalSurfaces} surface${r.totalSurfaces === 1 ? "" : "s"} across ${r.scannedFiles} files ${dim(JSON.stringify(r.byType))}${r.truncated ? c(33, " (truncated)") : ""}`);
-    if (!r.baselineExists) warn(`no baseline yet — review, then: agent-flow baseline accept --all --yes`);
-    else if (r.newSurfaces === 0) ok("no new risk surfaces since baseline");
+    const files = new Set(surfaces.map((s) => s.path)).size;
+    console.log(`${r.totalSurfaces} risk surface${r.totalSurfaces === 1 ? "" : "s"} in ${files} file${files === 1 ? "" : "s"} ${dim(`(${r.scannedFiles} scanned)`)}${r.truncated ? c(33, " (truncated)") : ""}`);
+    if (!r.baselineExists) {
+      const rows = surfaceRows(surfaces, { group: true, keys: false });
+      for (const l of rows.slice(0, 40)) console.log(l);
+      if (rows.length > 40) console.log(dim(`    … ${rows.length - 40} more (use --json)`));
+      if (failNoBaseline) bad("--fail-on-new has no baseline to compare against, so it would check nothing");
+      else warn("no baseline yet");
+      console.log(dim("  Review the list above, then `agent-flow baseline accept --all --yes` and commit .risk-baseline.json."));
+    } else if (r.newSurfaces === 0) ok("no new risk surfaces since baseline");
     else {
       bad(`${r.newSurfaces} new risk surface(s):`);
-      for (const s of r.newSurfacesList.slice(0, 50)) console.log(`    ${s.type.padEnd(13)} ${s.path}${s.lines ? `:${s.lines[0]}` : ""}  ${dim(s.detail)}  ${dim(s.key)}`);
+      for (const l of surfaceRows(newList, { group: false, keys: true }).slice(0, 50)) console.log(l);
+      console.log(dim("  Accept after review: `agent-flow baseline accept <key>... --yes`"));
     }
     if (r.resolvedSurfaces) console.log(dim(`${r.resolvedSurfaces} baseline surface(s) no longer present`));
   });
-  if (args["fail-on-new"] && r.baselineExists && r.newSurfaces > 0) return 1;
+  if (failNoBaseline) return 1;
+  if (args["fail-on-new"] && r.newSurfaces > 0) return 1;
   return 0;
 }
 
 function cmdBaseline(args) {
-  if (args._[1] !== "accept") return usage("baseline accept --all --yes | baseline accept <key>... --yes");
+  if (args._[1] !== "accept") return sub("baseline", args._[1], ["accept"], "baseline accept --all --yes | baseline accept <key>... --yes");
   if (!args.yes) return usage("baseline accept writes .risk-baseline.json — re-run with --yes after reviewing `agent-flow audit-risk`");
   const keys = args.all ? undefined : args._.slice(2);
   if (keys && keys.length === 0) return usage("pass --all or one or more surface keys");
@@ -177,8 +327,28 @@ function cmdBaseline(args) {
 
 function cmdClassify(args) {
   const rt = root();
-  const cwd = args.issue ? fsutil.resolveInside(rt, worktree.worktreeRel(Number(args.issue))) : process.cwd();
-  const r = classify.classifyDiff(cwd, rt, manifestLib.tryLoadManifest(rt), args.base, args.head);
+  let cwd = process.cwd();
+  if (args.issue !== undefined) {
+    const n = issueNumber(args.issue, "classify --issue <n>");
+    cwd = fsutil.resolveInside(rt, worktree.worktreeRel(n));
+    if (!existsSync(cwd)) throw new UserError(`no worktree for issue #${n} (${worktree.worktreeRel(n)}) — create it with \`agent-flow worktree create ${n}\``);
+  }
+  requireCommits(cwd);
+  for (const flag of ["base", "head"]) {
+    if (args[flag] === undefined) continue;
+    if (typeof args[flag] !== "string") throw new UserError(`--${flag} needs a branch or commit`);
+    git.validateRevision(args[flag]);
+    if (!git.git(["rev-parse", "--verify", "--quiet", `${args[flag]}^{commit}`], cwd).ok) {
+      throw new UserError(`--${flag} "${args[flag]}": no such branch, tag or commit here (\`git branch -a\` lists them)`);
+    }
+  }
+  let r;
+  try {
+    r = classify.classifyDiff(cwd, rt, manifestLib.tryLoadManifest(rt), args.base, args.head);
+  } catch (e) {
+    if (/cannot determine a default branch/.test(e.message)) throw new UserError("can't tell which branch to diff against — pass --base <branch>");
+    throw e;
+  }
   out(args, r, () => {
     const col = r.risk_level === "critical" ? 31 : r.risk_level === "medium" ? 33 : 32;
     console.log(`risk: ${c(col, r.risk_level)}  reviewer: ${r.reviewer_tier}  human approval: ${r.human_approval_required ? "required" : "no"}  ${dim(`${r.files.length} files vs ${r.base}`)}`);
@@ -193,6 +363,7 @@ function cmdClassify(args) {
 function cmdCheckStaged(args) {
   // Inside .worktrees/issue-N the hook must check THAT worktree's index and files,
   // not the main checkout's.
+  requireRepo();
   const rt = checkoutTop();
   const files = git.stagedFiles(rt);
   const man = manifestLib.tryLoadManifest(rt);
@@ -287,29 +458,32 @@ function cmdState(args) {
     // Distinct exit code so a script can't miss the escalation by only checking for failure.
     return r.escalated ? 3 : 0;
   }
-  return usage("state [show] | state update --issue <n> --state <s> …");
+  return sub("state", args._[1], ["show", "update"], "state [show] | state update --issue <n> --state <s> …");
 }
 
 function cmdWorktree(args) {
   const rt = root();
-  const sub = args._[1];
-  if (sub === "list") {
+  const s = args._[1];
+  requireRepo(rt);
+  if (s === "list") {
     const l = worktree.listWorktrees(rt);
     out(args, l, () => (l.length ? l.forEach((w) => console.log(`#${w.issue}  ${w.branch}  ${w.path}`)) : console.log("no agent worktrees")));
     return 0;
   }
-  const n = Number(args._[2]);
-  if (sub === "create") {
+  if (s === "create") {
+    const n = issueNumber(args._[2], "worktree create <issue-number> [--base <branch>]");
+    requireCommits(rt);
     const r = worktree.createWorktree(rt, n, typeof args.base === "string" ? args.base : undefined);
     out(args, r, () => ("error" in r ? bad(`${r.error}: ${r.path}`) : ok(r.message)));
     return "error" in r ? 1 : 0;
   }
-  if (sub === "remove") {
+  if (s === "remove") {
+    const n = issueNumber(args._[2], "worktree remove <issue-number> [--force] [--delete-branch]");
     const r = worktree.removeWorktree(rt, n, { force: !!args.force, deleteBranch: !!args["delete-branch"] });
     out(args, r, () => ("error" in r ? bad(`${r.error}: ${r.path}${r.hint ? ` — ${r.hint}` : ""}`) : ok(`removed ${r.removed}; branch ${r.branch_note}`)));
     return "error" in r ? 1 : 0;
   }
-  return usage("worktree create <n> | remove <n> | list");
+  return sub("worktree", s, ["create", "remove", "list"], "worktree create <n> | remove <n> | list");
 }
 
 function cmdScan(args) {
@@ -330,7 +504,7 @@ function cmdTemplate(args) {
     return 0;
   }
   const name = names.find((n) => n.toLowerCase() === String(want).toLowerCase().replace(/\.template$/, ""));
-  if (!name) return usage(`template <${names.join("|")}>`);
+  if (!name) return unknown("template", want, names, `usage: agent-flow template <${names.join("|")}>`);
   process.stdout.write(readFileSync(join(dir, `${name}.template`), "utf-8"));
   return 0;
 }
@@ -377,9 +551,10 @@ function cmdReport(args) {
 
 function cmdRepair(args) {
   if (!args.yes) {
-    return usage("repair --yes — refreshes every manifest timestamp. Only run it after re-reading the code each flagged claim describes (skills/gardener: /repair-docs).");
+    return usage("repair --yes — refreshes every manifest timestamp. Only run it after re-reading the code each flagged claim describes (the gardener skill's /repair-docs procedure).");
   }
   const rt = root();
+  if (!existsSync(manifestLib.manifestPathFor(rt, args.manifest))) throw new UserError("no CONTEXT_MANIFEST.json to repair — `agent-flow init` creates one");
   const r = stale.repairStale(rt, { manifestPath: args.manifest });
   state.appendAudit(rt, { event: "stale_repair", via: "cli", refreshed: r.refreshed });
   out(args, r, () => {
@@ -460,7 +635,7 @@ function cmdGuard(args) {
 // --- install --------------------------------------------------------------
 
 const TARGETS = {
-  claude: { skills: ".claude/skills", agents: [[".claude/agents/reviewer.md", ".claude/agents/reviewer.md"]], note: "Add `@AGENTS.md` to CLAUDE.md so Claude Code loads the root context." },
+  claude: { skills: ".claude/skills", agents: [[".claude/agents/reviewer.md", ".claude/agents/reviewer.md"]], note: "" },
   codex: {
     skills: ".agents/skills",
     agents: [[".codex/agents/reviewer.toml", ".codex/agents/reviewer.toml"]],
@@ -490,8 +665,10 @@ function sameTree(a, b) {
 }
 
 function cmdInstall(args) {
-  const t = TARGETS[args.harness];
-  if (!t) return usage(`install --harness <${Object.keys(TARGETS).join("|")}>`);
+  const t = Object.hasOwn(TARGETS, args.harness) ? TARGETS[args.harness] : null;
+  const harnesses = Object.keys(TARGETS);
+  if (!t && typeof args.harness === "string") return unknown("harness", args.harness, harnesses, `usage: agent-flow install --harness <${harnesses.join("|")}>`);
+  if (!t) return usage(`install --harness <${harnesses.join("|")}>`);
   const rt = root();
   const plan = [];
   for (const name of readdirSync(join(pkgRoot, "skills")).sort()) {
@@ -520,10 +697,24 @@ function cmdInstall(args) {
     wrote++;
     ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
   }
-  if (args.harness === "claude" && !installClaudeHook(rt, args)) conflicts.push(".claude/settings.json");
-  console.log(`\n${t.note}`);
-  console.log(dim("Skills call `npx @drix10/agent-flow …` for state, worktrees, classify, reports, doctor and audit."));
+  if (args.harness === "claude") {
+    if (!installClaudeHook(rt, args)) conflicts.push(".claude/settings.json");
+    importAgentsMd(rt, args);
+  }
+  if (t.note) console.log(`\n${t.note}`);
+  const who = args.harness === "claude" ? "Claude" : "your agent";
+  console.log(`\nNext:\n  1. npx @drix10/agent-flow doctor\n  2. ask ${who}: "use the bootstrap skill to set up this repo"\n  3. npx @drix10/agent-flow hook install`);
   return conflicts.length ? 1 : 0;
+}
+
+/** Claude Code reads CLAUDE.md, not AGENTS.md; an `@AGENTS.md` line imports it. */
+function importAgentsMd(rt, args) {
+  const path = join(rt, "CLAUDE.md");
+  const cur = existsSync(path) ? readFileSync(path, "utf-8") : null;
+  if (cur !== null && /^[ \t]*@AGENTS\.md[ \t]*$/m.test(cur)) return console.log(dim("= CLAUDE.md (imports @AGENTS.md)"));
+  const next = cur === null ? "@AGENTS.md\n" : `${cur}${cur === "" || cur.endsWith("\n") ? "" : "\n"}\n@AGENTS.md\n`;
+  if (!args["dry-run"]) writeFileSync(path, next);
+  ok(`${args["dry-run"] ? "would write" : "wrote"} CLAUDE.md (${cur === null ? "new, imports" : "appended"} @AGENTS.md)`);
 }
 
 const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|mcp__.*";
@@ -573,8 +764,9 @@ function installClaudeHook(rt, args) {
 }
 
 function cmdHook(args) {
-  if (args._[1] !== "install") return usage("hook install [--force]");
+  if (args._[1] !== "install") return sub("hook", args._[1], ["install"], "hook install [--force]");
   const rt = root();
+  requireRepo(rt);
   const hooksDir = resolve(rt, git.mustGit(["rev-parse", "--git-path", "hooks"], rt));
   const hook = join(hooksDir, "pre-commit");
   const body = `#!/bin/sh
@@ -602,17 +794,106 @@ exec npx --no-install agent-flow check-staged
   return 0;
 }
 
+async function cmdInit(args) {
+  const rt = root();
+  const plan = initLib.planInit(rt, { version: VERSION });
+  const todo = plan.files.filter((f) => !f.exists);
+  const dry = !!args["dry-run"];
+  const interactive = !args.json && !!process.stdin.isTTY && !!process.stdout.isTTY;
+  if (args.json && !args.yes) {
+    console.log(JSON.stringify({ written: [], plan: plan.files.map((f) => ({ path: f.path, action: f.exists ? "skip_exists" : "write", content: f.content })), references: plan.references, missing_references: plan.missing_references }, null, 2));
+    return 0;
+  }
+  if (!args.json) {
+    for (const f of plan.files) if (f.exists) warn(`${f.path} exists — not overwritten`);
+    if (todo.length && !args.yes) {
+      for (const f of todo) console.log(`${dim(`--- ${f.path} (would write) ---`)}\n${f.content.trimEnd()}\n`);
+    }
+  }
+  if (!todo.length) {
+    if (!args.json) ok("nothing to write — run `agent-flow doctor`");
+    else console.log(JSON.stringify({ written: [] }));
+    return 0;
+  }
+  if (dry) {
+    console.log(dim("dry run — nothing written"));
+    return 0;
+  }
+  if (!args.yes) {
+    if (!interactive) {
+      console.log(dim("nothing written (not a terminal) — re-run with --yes to write these files"));
+      return 0;
+    }
+    const { createInterface } = await import("node:readline/promises");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question(`Write ${todo.map((f) => f.path).join(" and ")}? [y/N] `);
+    rl.close();
+    if (!/^y(es)?$/i.test(answer.trim())) {
+      console.log("nothing written");
+      return 0;
+    }
+  }
+  const written = [];
+  for (const f of todo) {
+    try {
+      writeFileSync(join(rt, f.path), f.content, { flag: "wx" }); // wx: never clobber a file that appeared meanwhile
+      written.push(f.path);
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      warn(`${f.path} appeared meanwhile — not overwritten`);
+    }
+  }
+  const manifestSkipped = plan.files.some((f) => f.path === manifestLib.MANIFEST_FILE && f.exists);
+  out(args, { written, references: plan.references, missing_references: plan.missing_references }, () => {
+    for (const p of written) {
+      ok(`wrote ${p}${p === manifestLib.MANIFEST_FILE ? ` — ${plan.references} reference(s) from ${plan.context_files.length} context file(s)` : ""}`);
+    }
+    if (plan.missing_references.length) warn(`${plan.missing_references.length} referenced path(s) don't exist, so they weren't recorded — \`agent-flow doctor\` lists them`);
+    if (written.includes("AGENTS.md") && manifestSkipped) warn("add AGENTS.md to context_files in your existing CONTEXT_MANIFEST.json");
+    console.log(dim(`\nnext: ${written.includes("AGENTS.md") ? "replace the [NEEDS VERIFICATION] lines in AGENTS.md, then " : ""}\`agent-flow doctor\` (and add it to CI)`));
+  });
+  return 0;
+}
+
 function usage(msg) {
   console.error(`usage: agent-flow ${msg}`);
+  return 2;
+}
+
+/** A missing or misspelled subcommand. */
+function sub(cmdName, word, choices, usageLine) {
+  if (word === undefined) return usage(usageLine);
+  return unknown(`${cmdName} subcommand`, word, choices, `usage: agent-flow ${usageLine}`);
+}
+
+// Commands that change shared pipeline state, per confined role. Mirrors the shell
+// guard's allow-list (guard.ts) so the CLI can't be used to route around it; the two
+// tables should be unified once both land.
+const PIPELINE_WRITES = ["state update", "baseline accept", "repair", "worktree create", "worktree remove", "install", "hook install", "init"];
+const ROLE_DENY = {
+  reviewer: new Set(PIPELINE_WRITES),
+  qa: new Set(PIPELINE_WRITES),
+  implementer: new Set(["baseline accept", "repair", "install", "hook install", "init"]),
+};
+
+function roleRefusal(args) {
+  const raw = process.env.AGENT_FLOW_ROLE;
+  const { role } = guardLib.parseRole(raw);
+  const op = ["state", "baseline", "worktree", "hook"].includes(args._[0]) ? `${args._[0]} ${args._[1] ?? ""}`.trim() : args._[0];
+  if (!role || !ROLE_DENY[role]?.has(op)) return 0;
+  console.error(`agent-flow: \`${op}\` is not allowed for the ${role} role (AGENT_FLOW_ROLE=${raw}) — it changes shared pipeline state. Report back to the orchestrator instead.`);
   return 2;
 }
 
 // ---------------------------------------------------------------------------
 
 const args = fixBools(parseArgs(process.argv.slice(2)));
+if (args._[0] === "-h") args.help = true;
+if (args._[0] === "-v" || args._[0] === "-V") args.version = true;
 const cmd = args._[0];
 const table = {
   doctor: cmdDoctor,
+  init: cmdInit,
   "audit-risk": cmdAudit,
   baseline: cmdBaseline,
   classify: cmdClassify,
@@ -633,13 +914,18 @@ if (args.version || cmd === "version") {
   console.log(VERSION);
   process.exit(0);
 }
-if (!cmd || args.help || cmd === "help" || !table[cmd]) {
-  (cmd && !table[cmd] && cmd !== "help" ? console.error : console.log)(HELP);
-  process.exit(cmd && !table[cmd] && cmd !== "help" ? 2 : 0);
+const badFlag = Object.keys(args).find((k) => k !== "_" && !KNOWN_FLAGS.has(k));
+if (badFlag !== undefined) process.exit(unknown("flag", `--${badFlag}`, [...KNOWN_FLAGS].map((f) => `--${f}`), "run `agent-flow --help` for options"));
+if (!cmd || args.help || cmd === "help") {
+  console.log(HELP);
+  process.exit(0);
 }
+if (!Object.hasOwn(table, cmd)) process.exit(unknown("command", cmd, Object.keys(table), "run `agent-flow --help` for the list"));
 try {
-  process.exit(table[cmd](args));
+  process.exit(roleRefusal(args) || (await table[cmd](args)));
 } catch (e) {
-  console.error(`${c(31, "agent-flow:")} ${e.message}`);
+  const msg = String(e.message ?? e).split("\n")[0];
+  const friendly = /not a git repository/i.test(msg) ? "not a git repository — run this inside a git checkout (or `git init` first)" : msg;
+  console.error(`${c(31, "agent-flow:")} ${friendly}`);
   process.exit(2);
 }

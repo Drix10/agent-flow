@@ -33,7 +33,7 @@ function repo() {
   return { dir, g };
 }
 
-test("doctor: exit 0 healthy, 1 on drift, 2 without a manifest", () => {
+test("doctor: exit 0 healthy, 1 on drift (with or without a manifest), 2 for a named manifest that's missing", () => {
   const { dir } = repo();
   try {
     assert.equal(run(dir, "doctor").status, 0);
@@ -42,7 +42,8 @@ test("doctor: exit 0 healthy, 1 on drift, 2 without a manifest", () => {
     assert.equal(r.status, 1);
     assert.equal(JSON.parse(r.stdout).healthy, false);
     rmSync(join(dir, "CONTEXT_MANIFEST.json"));
-    assert.equal(run(dir, "doctor").status, 2);
+    assert.equal(run(dir, "doctor").status, 1, "no manifest: auto-discovered AGENTS.md still catches the drift");
+    assert.equal(run(dir, "doctor", "--manifest", "nope.json").status, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -70,11 +71,14 @@ test("check-staged blocks protected paths and secrets; human override works", ()
   }
 });
 
-test("audit-risk --fail-on-new fails only after a baseline exists and something new appears", () => {
+test("audit-risk --fail-on-new fails without a baseline (it would check nothing) and when something new appears", () => {
   const { dir } = repo();
   try {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies: { lodash: "1" } }));
-    assert.equal(run(dir, "audit-risk", "--fail-on-new").status, 0);
+    const none = run(dir, "audit-risk", "--fail-on-new");
+    assert.equal(none.status, 1);
+    assert.match(none.stdout, /baseline accept --all --yes/);
+    assert.equal(run(dir, "audit-risk").status, 0);
     assert.equal(run(dir, "baseline", "accept", "--all").status, 2, "requires --yes");
     assert.equal(run(dir, "baseline", "accept", "--all", "--yes").status, 0);
     writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies: { lodash: "1", stripe: "1" } }));
