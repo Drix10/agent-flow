@@ -81,7 +81,10 @@ test("protected_paths written as a leading-wildcard glob still blocks a matching
   const globManifest = { ...manifest, protected_paths: ["*.env", "**/secrets/**"] };
   const dg = (role, toolName, input) => decide({ role, toolName, input, cwd: root, root, manifest: globManifest });
   blocked(dg("implementer", "bash", { command: "rm production.env" }), "protected-path");
-  blocked(dg("implementer", "bash", { command: "cat config/secrets/keys.yaml > out.txt" }), "protected-path");
+  blocked(dg("implementer", "bash", { command: "echo x > config/secrets/keys.yaml" }), "protected-path"); // resolved write
+  blocked(dg("implementer", "bash", { command: "git rm config/secrets/keys.yaml" }), "protected-path"); // text fallback
+  // protected means "don't modify": reading one into another file is not a write to it.
+  assert.equal(dg("implementer", "bash", { command: "cat config/secrets/keys.yaml > out.txt" }), null);
   assert.equal(dg("implementer", "bash", { command: "npm test" }), null);
 });
 

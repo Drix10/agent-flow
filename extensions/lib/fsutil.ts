@@ -215,8 +215,7 @@ function breakStaleLock(lockPath: string, seen: string, staleMs: number): void {
     } catch {
       return; // released or broken meanwhile
     }
-    const aged = Date.now() - statSync(lockPath).mtimeMs > staleMs;
-    if (now === seen && (holderDead(now) || aged)) unlinkSync(lockPath);
+    if (now === seen && lockAbandoned(now, statSync(lockPath).mtimeMs, staleMs)) unlinkSync(lockPath);
   } finally {
     closeSync(fd);
     try {
@@ -225,6 +224,24 @@ function breakStaleLock(lockPath: string, seen: string, staleMs: number): void {
       /* ignore */
     }
   }
+}
+
+/** An empty lock is a holder killed between create and PID write; give it a second, not `staleMs`. */
+const EMPTY_LOCK_GRACE_MS = 1_000;
+
+/** Is the holder a live process on this machine? Such a lock is never broken by age, however slow. */
+function holderAliveHere(content: string): boolean {
+  const m = content.trim().match(/^(\d+)(?:@(.*))?$/);
+  if (!m || (m[2] !== undefined && m[2] !== hostname())) return false;
+  const pid = Number(m[1]);
+  return pid === process.pid || processAlive(pid);
+}
+
+function lockAbandoned(content: string, mtimeMs: number, staleMs: number): boolean {
+  const age = Date.now() - mtimeMs;
+  if (!content.trim()) return age > Math.min(EMPTY_LOCK_GRACE_MS, staleMs);
+  if (holderAliveHere(content)) return false;
+  return holderDead(content) || age > staleMs;
 }
 
 /**
@@ -238,24 +255,26 @@ function breakStaleLock(lockPath: string, seen: string, staleMs: number): void {
  * itself is always a fast, synchronous, in-process critical section, so a
  * legitimate holder should never take anywhere near `staleMs`.
  */
-export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, staleMs = 30_000): T {
+export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, staleMs = 5_000): T {
   mkdirSync(dirname(lockPath), { recursive: true });
   const deadline = Date.now() + timeoutMs;
   let fd: number | null = null;
+  let holder = "";
   while (fd === null) {
     try {
       fd = openSync(lockPath, "wx");
     } catch (e: any) {
       if (e.code !== "EEXIST") throw e;
       try {
-        const seen = readFileSync(lockPath, "utf-8");
-        const stale = Date.now() - statSync(lockPath).mtimeMs > staleMs;
-        if (holderDead(seen) || stale) breakStaleLock(lockPath, seen, staleMs);
+        holder = readFileSync(lockPath, "utf-8");
+        if (lockAbandoned(holder, statSync(lockPath).mtimeMs, staleMs)) breakStaleLock(lockPath, holder, staleMs);
       } catch (err: any) {
         if (err?.code !== "ENOENT") throw err;
         continue; // lock vanished between calls — retry immediately
       }
-      if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
+      if (Date.now() > deadline) {
+        throw new Error(`timed out waiting for lock ${lockPath}${holder.trim() ? ` (held by ${holder.trim()})` : ""} — if no agent-flow process is running, delete it`);
+      }
       sleep(5 + Math.floor(Math.random() * 20));
     }
   }

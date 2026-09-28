@@ -43,6 +43,11 @@ export interface GuardInput {
   worktree?: string;
   /** Human override for protected paths (AGENT_FLOW_ALLOW_PROTECTED=1). */
   allowProtected?: boolean;
+  /**
+   * Set when CONTEXT_MANIFEST.json exists but can't be loaded. Protected paths are
+   * then unknown, so writes fail closed (a trailing comma must not switch the guard off).
+   */
+  manifestError?: string;
 }
 
 export interface GuardDecision {
@@ -164,6 +169,7 @@ const FORMATTER = /^(prettier\b.*\s(-w|--write)\b|gofmt\s+.*-[a-z]*w|go\s+fmt\b|
 const FORMATTER_CHECK_ONLY = /\s(--check|--diff|-check|-l|--list-different|--dry-run)(\s|$)/i;
 const SNAPSHOT_OR_FIX = /(--update-?snapshots?|--updateSnapshot|--snapshot-update|--fix\b|--write\b|(\b(jest|vitest|playwright)\b.*\s-u\b))/i;
 // curl short options cluster (`-sSo f`); -D/-c write header dumps and cookie jars. `-X` is skipped: `-XPOST` isn't -O.
+const DOWNLOAD_TO_NOWHERE = /(\s-[a-zA-Z]*o|\s--output)(\s+|=)(\/dev\/null|-)(\s|$)/;
 const DOWNLOAD_TO_FILE = /\bcurl\b[^|;&\n]*\s(-(?![-X])[a-zA-Z]*[oODc]|--(output|remote-name|output-dir|dump-header|cookie-jar|trace|trace-ascii|stderr)\b)|\bwget\b(?![^|;&\n]*(\s-[a-zA-Z]*O\s*-(\s|$)|--output-document=-))/;
 const AGENT_CLIS = new Set(["pi", "claude", "claude-code", "codex", "gemini", "gemini-cli", "cursor-agent", "aider", "opencode", "goose", "amp", "qwen", "crush", "pi-coding-agent"]);
 
@@ -314,7 +320,8 @@ export function analyzeShell(cmd: string, depth = 0): ShellFinding {
     if (hasRedirectWrite(c)) why.push("output redirection to a file");
     for (const seg of segments(stripQuoted(c))) {
       const verb = verbOf(seg);
-      if (WRITE_VERBS.has(verb)) why.push(`\`${verb}\` modifies the filesystem`);
+      const onlyDevices = verb === "tee" && seg.split(/\s+/).slice(1).filter((w) => !w.startsWith("-")).every((w) => DEVICE.test(w));
+      if (WRITE_VERBS.has(verb) && !onlyDevices) why.push(`\`${verb}\` modifies the filesystem`);
       if (verb === "find") {
         if (/\s-(delete|fprint0?|fprintf|fls)\b/.test(seg)) why.push("`find` deletes or writes files");
         for (const m of seg.matchAll(/\s-(?:exec|execdir|ok|okdir)\s+(.+?)(?=\s(?:\\|\+)(?:\s|$)|$)/g)) {
@@ -322,7 +329,7 @@ export function analyzeShell(cmd: string, depth = 0): ShellFinding {
         }
       }
       const g = parseGit(seg);
-      if (g && GIT_MUTATING_SUB.test(`${g.sub} ${g.args}`)) why.push(`mutating git command (git ${g.sub})`);
+      if (g && GIT_MUTATING_SUB.test(`${g.sub} ${g.args}`) && !gitReadOnly(g)) why.push(`mutating git command (git ${g.sub})`);
       if (PKG_MUTATING.test(seg) && !CLEAN_INSTALL.test(seg)) why.push("package install changes dependencies or the lockfile");
       if (CLEAN_INSTALL.test(seg)) why.push("lockfile install");
       if (GH_MUTATING.test(seg)) why.push("mutating GitHub CLI call");
@@ -330,7 +337,7 @@ export function analyzeShell(cmd: string, depth = 0): ShellFinding {
     }
     if (INLINE_WRITE.test(c)) why.push("inline interpreter/in-place edit that writes files");
     if (OPAQUE_SCRIPT.test(c)) why.push("script fed on stdin (contents can't be checked)");
-    if (DOWNLOAD_TO_FILE.test(c)) why.push("download written to disk");
+    if (DOWNLOAD_TO_FILE.test(c) && !DOWNLOAD_TO_NOWHERE.test(c)) why.push("download written to disk");
   }
   return { mutating: why.length > 0, why: [...new Set(why)] };
 }
@@ -340,9 +347,9 @@ export function analyzeShell(cmd: string, depth = 0): ShellFinding {
  * protected path". Splitting on glob metacharacters also catches patterns that
  * start with a wildcard: `*.env` -> [".env"].
  */
-function literalChunks(pattern: string): { text: string; whole: boolean; starts: boolean }[] {
+function literalChunks(pattern: string): { text: string; whole: boolean; starts: boolean; root: boolean }[] {
   const p = toPosix(pattern).replace(/^\.\//, "");
-  const out: { text: string; whole: boolean; starts: boolean }[] = [];
+  const out: { text: string; whole: boolean; starts: boolean; root: boolean }[] = [];
   for (const m of p.matchAll(/[^*?[\]]+/g)) {
     const after = p[m.index + m[0].length];
     const text = m[0].replace(/^\/+|\/+$/g, "");
@@ -350,21 +357,25 @@ function literalChunks(pattern: string): { text: string; whole: boolean; starts:
     // `*.env`) must end a segment in the command too: `.git` is not `.github`.
     // Likewise one that starts a segment must start one: `config/` is not `myconfig`.
     const starts = m.index === 0 || p[m.index - 1] === "/" || m[0].startsWith("/");
-    if (text.length >= 3) out.push({ text, whole: after === undefined || m[0].endsWith("/"), starts });
+    if (text.length >= 3) out.push({ text, whole: after === undefined || m[0].endsWith("/"), starts, root: m.index === 0 });
   }
   return out;
 }
 
 const PATH_END = /^($|[\s/'"`;&|)<>])/;
 const PATH_START = /(^|[\s/'"`;&|(<>=:])$/;
+const ROOT_START = /(^|[\s'"`;&|(<>=:])(\.\/)?$/;
 
 function mentions(cmd: string, patterns: readonly string[]): string | null {
   const hay = fold(cmd);
   for (const p of patterns) {
-    for (const { text, whole, starts } of literalChunks(p)) {
+    for (const { text, whole, starts, root } of literalChunks(p)) {
       const needle = fold(text);
       for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) {
         if (starts && !PATH_START.test(hay.slice(Math.max(0, i - 1), i))) continue;
+        // `config/` means the repo's config/, not src/config/ (same as the file-tool check).
+        // `./config/` still counts.
+        if (root && !ROOT_START.test(hay.slice(Math.max(0, i - 3), i))) continue;
         if (!whole || PATH_END.test(hay.slice(i + needle.length, i + needle.length + 1))) return p;
       }
     }
@@ -372,14 +383,86 @@ function mentions(cmd: string, patterns: readonly string[]): string | null {
   return null;
 }
 
-/** The command with each git invocation's subcommand word removed: in `git config user.name`, `config` is not a path. */
-function withoutGitVerbs(cmd: string): string {
-  return segments(cmd)
-    .map((seg) => {
-      const g = parseGit(seg);
-      return g ? `git ${g.args}` : seg;
-    })
-    .join(" ; ");
+/** Mutation reasons whose targets `shellWrites` resolves to real paths (redirects, the verbs in WRITE_ARGS). */
+const resolvedWhy = (why: string) =>
+  why === "output redirection to a file" || Object.keys(WRITE_ARGS).some((v) => why === `\`${v}\` modifies the filesystem`);
+const DATA_VERBS = new Set(["echo", "printf", "print", "logger", "write-host", "write-output", "say"]);
+const PATTERN_VERBS = new Set(["grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "gawk", "perl"]);
+const MESSAGE_OPT = /^(-m|--message|-t|--title|-b|--body|--subject)$/;
+
+/**
+ * The words of a command that can name a file: quotes removed, and data dropped —
+ * commit/PR messages, echo/printf text, search patterns and sed/awk scripts. A
+ * commit message saying "load config/ lazily" writes nothing to config/.
+ * Heredoc-fed interpreters keep their raw text: that body is code, not data.
+ */
+function pathWords(cmd: string): string {
+  if (OPAQUE_SCRIPT.test(cmd)) return cmd;
+  const out: string[] = [];
+  for (const sc of lexShell(cmd)) {
+    out.push(...sc.writes.map((w) => w.text));
+    // `F=config/x; rm $F`: an assigned value may be the path a later word expands to.
+    for (const w of sc.words) {
+      const as = w.text.match(/^[A-Za-z_]\w*=(.+)$/);
+      if (as) out.push(as[1]);
+    }
+    let a = effectiveArgv(sc.words).map((w) => w.text);
+    const v = cmdName(effectiveArgv(sc.words)[0]);
+    if (DATA_VERBS.has(v)) continue;
+    if (v === "git") {
+      const g = parseGit(a.join(" "));
+      const at = g ? a.findIndex((w, i) => i > 0 && w.toLowerCase() === g.sub) : -1;
+      a = a.slice(at > 0 ? at + 1 : 1);
+    } else {
+      out.push(a[0] ?? "");
+      a = a.slice(1);
+    }
+    let patternTaken = !PATTERN_VERBS.has(v) || v === "perl";
+    let endOpts = false;
+    for (let i = 0; i < a.length; i++) {
+      const w = a[i];
+      if (w === "--" && !endOpts) {
+        endOpts = true;
+        continue;
+      }
+      if (endOpts) {
+        if (!patternTaken) patternTaken = true;
+        else out.push(w);
+        continue;
+      }
+      if (MESSAGE_OPT.test(w) || (/^-[a-zA-Z]*m$/.test(w) && v === "git") || ((w === "-e" || w === "--regexp" || w === "--expression") && PATTERN_VERBS.has(v))) {
+        i++;
+        if (w === "-e" || w === "--regexp" || w === "--expression") patternTaken = true;
+        continue;
+      }
+      if (/^(--message|--title|--body|--subject|--regexp|--expression)=/.test(w) || (/^-m./.test(w) && v === "git")) continue;
+      if (!patternTaken && !w.startsWith("-")) {
+        patternTaken = true;
+        continue;
+      }
+      out.push(w);
+    }
+  }
+  return out.join(" ");
+}
+
+/** git reads that the mutating-subcommand regex would otherwise flag. */
+function gitReadOnly(g: GitCall): boolean {
+  const a = g.args.trim();
+  const pos = a.split(/\s+/).filter((w) => w && !w.startsWith("-"));
+  switch (g.sub) {
+    case "stash":
+      return /^(list|show)\b/.test(a);
+    case "notes":
+      return a === "" || /^(list|show)\b/.test(a);
+    case "tag":
+      return a === "" || /^(-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged|--no-merged|-v|--verify|--sort|--format)\b/.test(a);
+    case "config":
+      if (/^(get|list)\b/.test(a)) return true;
+      return pos.length === 1 && !/(^|\s)(--(add|unset|unset-all|replace-all|rename-section|remove-section|edit)|-e)\b/.test(a);
+    default:
+      return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,7 +1121,7 @@ function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFi
     }
   }
 
-  if (role && READ_ONLY_ROLES.includes(role) && SNAPSHOT_OR_FIX.test(cmd)) {
+  if (role && READ_ONLY_ROLES.includes(role) && SNAPSHOT_OR_FIX.test(` ${pathWords(cmd)} `)) {
     return block("qa-no-autofix", "snapshot updates / --fix / --write change the code under test. Report the failure verbatim instead.");
   }
 
@@ -1058,18 +1141,24 @@ function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFi
     const d = decideShellTarget(g, t, protectedPaths, ctxFiles);
     if (d) return d;
   }
-  if (!finding.mutating) return null;
-  const tamper = mentions(cmd, TAMPER_PROOF);
+  // Every write was resolved to a real path and checked above; the text scan below
+  // is only for what couldn't be (`git rm`, formatters, variables…). Without this,
+  // `ls migrations/ > list.txt` is "a mutating command that mentions migrations/".
+  const fullyResolved =
+    writes.length > 0 && writes.every((t) => !t.word.dynamic && resolveShellPath(t.cwd, t.word.text)) && finding.why.every(resolvedWhy);
+  if (!finding.mutating || fullyResolved) return null;
+  const hay = pathWords(cmd);
+  const tamper = mentions(hay, TAMPER_PROOF);
   if (tamper && role) return block("tamper-proof", `command writes near ${tamper}, which only agent-flow tools may change.`);
   // Not for the orchestrator: its launch prompts legitimately name `.claude/agents/…`.
   if (role && role !== "orchestrator") {
-    const cfg = mentions(cmd, AGENT_CONFIG);
+    const cfg = mentions(hay, AGENT_CONFIG);
     if (cfg) return block("agent-config", `mutating command references agent/CI configuration (${cfg}). Escalate to a human.`);
   }
-  const prot = mentions(withoutGitVerbs(cmd), protectedPaths);
+  const prot = mentions(hay, protectedPaths);
   if (prot && !g.allowProtected) return block("protected-path", `mutating command references protected path ${prot}. Escalate to Needs Me instead.`);
   if (role === "implementer") {
-    const ctx = mentions(cmd, ctxFiles.filter((f) => f.length >= 3));
+    const ctx = mentions(hay, ctxFiles.filter((f) => f.length >= 3));
     if (ctx) return block("context-file", `mutating command references context file ${ctx} — only the Gardener edits context.`);
   }
   return null;
@@ -1078,6 +1167,26 @@ function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFi
 // ---------------------------------------------------------------------------
 
 export function decide(g: GuardInput): GuardDecision | null {
+  const d = decideKnown(g);
+  if (d || !g.manifestError) return d;
+  const { toolName, input } = g;
+  const words = toolWords(toolName);
+  const tool = toolName.toLowerCase();
+  const cmd = [input.command, input.cmd, input.script].find((c): c is string => typeof c === "string" && c.length > 0);
+  const isShell = tool === "bash" || tool === "powershell" || tool === "shell" || words === "run_shell_command" || words === "exec_command";
+  const isFileWrite = !HARMLESS.has(words) && (FILE_WRITE_TOOLS.has(tool) || (!AGENT_FLOW_MUTATORS.has(tool) && MUTATING_CUSTOM.test(words)));
+  let writes = false;
+  if (isShell && cmd) writes = expandCommand(cmd).some((c) => analyzeShell(c).mutating || shellWrites(c, g.cwd).some((t) => !DEVICE.test(t.word.text)));
+  else if (isFileWrite) {
+    const paths = targetPaths(input, /patch|diff/.test(words));
+    // Fixing the manifest itself is how you get out of this state.
+    writes = !(paths.length > 0 && paths.every((p) => basename(toPosix(p)) === MANIFEST_FILE));
+  }
+  if (!writes) return null;
+  return block("manifest-unreadable", `${MANIFEST_FILE} can't be loaded (${g.manifestError}), so protected paths are unknown and writes are refused. Fix the manifest first (\`agent-flow doctor\` shows the problem).`);
+}
+
+function decideKnown(g: GuardInput): GuardDecision | null {
   const { role, toolName, input } = g;
   const tool = toolName.toLowerCase();
   const words = toolWords(toolName);

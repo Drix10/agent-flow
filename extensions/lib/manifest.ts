@@ -89,12 +89,21 @@ export function validateManifest(m: unknown): string[] {
   if (man.contexts && !man.context_files) {
     problems.push("legacy `contexts`/`covers` schema (FM-17) — migrate to `context_files` with per-reference `last_verified`");
   }
+  if (man.version !== undefined && typeof man.version !== "string") problems.push(`version must be a string ("2"), got ${JSON.stringify(man.version)}`);
+  if (man.default_branch !== undefined && (typeof man.default_branch !== "string" || !man.default_branch.trim())) {
+    problems.push(`default_branch must be a branch name string, got ${JSON.stringify(man.default_branch)} — ignored`);
+  }
   if (!man.context_files && !man.contexts) problems.push("missing `context_files` array");
   if (man.context_files !== undefined && !Array.isArray(man.context_files)) problems.push("`context_files` must be an array");
 
   if (Array.isArray(man.context_files)) {
     man.context_files.forEach((cf, i) => {
-      if (!cf || typeof cf.path !== "string" || !cf.path) problems.push(`context_files[${i}].path missing`);
+      if (!cf || typeof cf !== "object" || Array.isArray(cf)) {
+        problems.push(`context_files[${i}] must be an object like {"path": "AGENTS.md", "references": []}, got ${JSON.stringify(cf)}`);
+        return;
+      }
+      if (cf.path !== undefined && typeof cf.path !== "string") problems.push(`context_files[${i}].path must be a string, got ${JSON.stringify(cf.path)}`);
+      else if (!cf.path) problems.push(`context_files[${i}].path missing`);
       else if (PLACEHOLDER.test(cf.path)) problems.push(`context_files[${i}].path is an unfilled template placeholder: ${cf.path}`);
       if (!Array.isArray(cf?.references)) {
         problems.push(`context_files[${i}].references must be an array`);
@@ -102,7 +111,12 @@ export function validateManifest(m: unknown): string[] {
       }
       cf.references.forEach((r, j) => {
         const where = `context_files[${i}].references[${j}]`;
-        if (!r || typeof r.path !== "string" || !r.path) problems.push(`${where}.path missing`);
+        if (!r || typeof r !== "object" || Array.isArray(r)) {
+          problems.push(`${where} must be an object with path/type/last_verified, got ${JSON.stringify(r)}`);
+          return;
+        }
+        if (r.path !== undefined && typeof r.path !== "string") problems.push(`${where}.path must be a string, got ${JSON.stringify(r.path)}`);
+        else if (!r.path) problems.push(`${where}.path missing`);
         else if (PLACEHOLDER.test(r.path)) problems.push(`${where}.path is an unfilled template placeholder: ${r.path}`);
         if (!validTimestamp(r?.last_verified)) problems.push(`${where}.last_verified is not a valid ISO timestamp: ${JSON.stringify(r?.last_verified)}`);
         else if (Date.parse(r.last_verified) > Date.now() + 24 * 3600_000) problems.push(`${where}.last_verified is in the future: ${r.last_verified}`);
@@ -196,10 +210,20 @@ export function protectedPathsOf(man: { protected_paths?: unknown } | null | und
   return p.filter((x): x is string => typeof x === "string" && x.length > 0);
 }
 
-/** Load the manifest if present; never throws. Used by the guard and classifier. */
+/** Load the manifest if present; never throws. Used by the classifier and state machine. */
 export function tryLoadManifest(root: string): ContextManifest | null {
   const r = loadManifest(root);
   return r.ok ? r.value.manifest : null;
+}
+
+/**
+ * For the guard: the manifest, or why an existing one can't be loaded. "Absent"
+ * and "present but unparseable" must differ — the second fails closed.
+ */
+export function loadManifestForGuard(root: string): { manifest: ContextManifest | null; error?: string } {
+  const r = loadManifest(root);
+  if (r.ok) return { manifest: r.value.manifest };
+  return r.error === "manifest_not_found" ? { manifest: null } : { manifest: null, error: r.error };
 }
 
 // ---------------------------------------------------------------------------

@@ -654,13 +654,15 @@ function cmdGuard(args) {
   try {
     const cwd = typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd();
     const rt = fsutil.findRepoRoot(cwd);
+    const loaded = manifestLib.loadManifestForGuard(rt);
     const decision = guardLib.decide({
       role,
       toolName: String(ev.tool_name ?? ""),
       input: ev.tool_input && typeof ev.tool_input === "object" ? ev.tool_input : {},
       cwd,
       root: rt,
-      manifest: manifestLib.tryLoadManifest(rt),
+      manifest: loaded.manifest,
+      manifestError: loaded.error,
       worktree: process.env.AGENT_FLOW_WORKTREE ? resolve(rt, process.env.AGENT_FLOW_WORKTREE) : undefined,
       allowProtected: process.env.AGENT_FLOW_ALLOW_PROTECTED === "1",
     });

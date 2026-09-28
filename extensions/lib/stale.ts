@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
-import { atomicWrite, existsExact, isoNow, readJson, readTextFile, toPosix, walk } from "./fsutil.js";
+import { IGNORED_DIRS, atomicWrite, existsExact, isoNow, readJson, readTextFile, toPosix, walk } from "./fsutil.js";
 import { ContextManifest, DEFAULT_STALENESS_DAYS, ManifestContextFile, loadManifest, normalizeManifest } from "./manifest.js";
 
 export interface MissingPath {
@@ -162,7 +162,11 @@ export function extractProseRefs(markdown: string): { path: string; line: number
       if (/[*?<>{}$=(\[|~^!]/.test(tok)) continue; // globs, placeholders, code
       if (tok.startsWith("@") || tok.startsWith("-") || tok.startsWith("/") || tok.startsWith("~")) continue;
       if (/^\.\.?\/?$/.test(tok) || tok.startsWith("../")) continue;
-      if (!/^[\w.\-/]+$/.test(tok)) continue;
+      if (!/^[\p{L}\p{N}_.\-/]+$/u.test(tok)) continue;
+      const segs = tok.replace(/\/+$/, "").split("/");
+      // `and/or`, `TCP/IP`, `client/server`: two dotless words are prose, not a path.
+      if (segs.length === 2 && !tok.endsWith("/") && !segs.some((s) => s.includes("."))) continue;
+      if (IGNORED_DIRS.has(segs[0])) continue; // build output and deps: absent on a fresh checkout by design
       if (/^\d+(\.\d+)*\/\d/.test(tok)) continue; // ratios, versions
       if (/[-_.][A-Z]$|\/[A-Z]$/.test(tok)) continue; // placeholders: `agent/issue-N`, `packages/X`
       out.push({ path: tok, line: idx + 1 });

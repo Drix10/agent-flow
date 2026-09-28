@@ -93,7 +93,8 @@ export function classifyFiles(allFiles: string[], manifest: ContextManifest | nu
 }
 
 export function classifyDiff(cwd: string, root: string, manifest: ContextManifest | null, base?: string, head?: string): Classification & { base: string; head: string } {
-  const b = base ?? recordedBase(cwd) ?? manifest?.default_branch ?? defaultBranch(root);
+  const manifestBase = typeof manifest?.default_branch === "string" && manifest.default_branch.trim() ? manifest.default_branch : null;
+  const b = base ?? recordedBase(cwd) ?? manifestBase ?? defaultBranch(root);
   const files = changedFiles(cwd, b, head);
   return { ...classifyFiles(files, manifest), base: b, head: head ?? "(working tree)" };
 }

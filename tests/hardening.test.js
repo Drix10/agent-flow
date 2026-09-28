@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { decide, analyzeShell, roleMayRunCli } from "../extensions/lib/guard.js";
 import { findSecrets, isEnvFile } from "../extensions/lib/risk.js";
-import { loadManifest, matchAny } from "../extensions/lib/manifest.js";
+import { loadManifest, matchAny, validateManifest as validateManifestForTest } from "../extensions/lib/manifest.js";
 import { checkReport, extractReport } from "../extensions/lib/report.js";
 import { changedFiles, stagedFiles } from "../extensions/lib/git.js";
 import { withLock } from "../extensions/lib/fsutil.js";
@@ -878,4 +878,78 @@ test("protected directory names only match as path segments: `git config` and `m
   for (const c of ["rm config/db.yml", "rm -rf config", "git rm config/a.yml", "git checkout -- config/a.yml", "cat x | tee config/y", "rm production.env", "cd src && rm auth/login.ts"]) {
     assert.equal(at(c), "protected-path", c);
   }
+});
+
+test("QA sweep: ordinary commands pass for every role that should run them; real writes to protected paths still block", () => {
+  const root = mkdtempSync(join(tmpdir(), "af-fp-"));
+  const wt = join(root, ".worktrees", "issue-1");
+  mkdirSync(wt, { recursive: true });
+  try {
+    const m = { version: "2", context_files: [{ path: "AGENTS.md", references: [] }], protected_paths: ["config/", "migrations/**", "package-lock.json", "*.env"] };
+    const at = (c, role) =>
+      decide({ role, toolName: "bash", input: { command: c }, cwd: role === "implementer" ? wt : root, root, manifest: m, worktree: role === "implementer" ? wt : undefined })?.rule ?? "ok";
+    const pass = [
+      [null, 'git commit -m "fix: load config/ lazily"'], [null, 'git commit -m "bump package-lock.json"'], [null, 'git commit -am "chore: rm unused migrations/ helper"'],
+      [null, 'grep -rn "config/" src > hits.txt'], [null, "ls migrations/ > list.txt"], [null, 'echo "see config/ dir" > notes.txt'],
+      [null, 'cat <<EOF > src/x.ts\nconst p = "config/";\nEOF'], ["implementer", 'git add src && git commit -m "docs: mention AGENTS.md"'],
+      ["implementer", 'git commit -m "refactor .github/workflows reference"'], [null, "mkdir -p src/config"], ["implementer", "mkdir -p src/config"],
+      ["reviewer", "git stash list"], ["reviewer", "git tag -l"], ["reviewer", "git notes show"], ["reviewer", "git config user.email"],
+      ["reviewer", "tee /dev/null"], ["reviewer", "echo x | tee /dev/null"], ["reviewer", 'curl -sSo /dev/null -w "%{http_code}" https://x.dev'],
+      ["qa", 'echo "--fix is bad"'], ["qa", "grep -- --write README.md"], ["qa", "git config --get user.email"],
+      ["implementer", "npm test 2>&1 | tee test.log"], [null, "git log --oneline -- config/ > log.txt"],
+    ];
+    const block = [
+      [null, "rm config/db.yml"], [null, "git rm -r migrations/0001.sql"], [null, "echo x > config/a.yml"], [null, "sed -i s/a/b/ config/app.yml"],
+      [null, 'python3 - <<EOF\nopen("config/db.yml","w").write("x")\nEOF'], ["reviewer", "git stash"], ["reviewer", "git tag v1"],
+      ["reviewer", "git config user.email x@y"], ["reviewer", "tee out.txt"], ["reviewer", "curl -sSo out.bin https://x.dev"], ["qa", "npx eslint --fix ."],
+      ["qa", "jest -u"], [null, "rm production.env"], ["implementer", 'perl -pi -e "s/a/b/" config/x.yml'], [null, "cp a ./config/b"], [null, "rm c*/db.yml"],
+      [null, "F=config/x; rm $F"], [null, "git checkout -- config/a.yml"], [null, "npx prettier --write config/"],
+    ];
+    for (const [r, c] of pass) assert.equal(at(c, r), "ok", `${r} ${c}`);
+    for (const [r, c] of block) assert.notEqual(at(c, r), "ok", `${r} ${c}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an existing but unparseable manifest fails closed for writes (and still lets you fix the manifest)", () => {
+  const g = (toolName, input, role = null) =>
+    decide({ role, toolName, input, cwd: process.cwd(), root: process.cwd(), manifest: null, manifestError: "invalid JSON" })?.rule ?? "ok";
+  assert.equal(g("write", { path: "config/a.yml" }), "manifest-unreadable");
+  assert.equal(g("bash", { command: "echo x > config/a.yml" }), "manifest-unreadable");
+  assert.equal(g("bash", { command: "git rm config/a.yml" }, "implementer"), "manifest-unreadable");
+  assert.equal(g("edit", { path: "CONTEXT_MANIFEST.json" }), "ok");
+  assert.equal(g("bash", { command: "cat CONTEXT_MANIFEST.json" }), "ok");
+  assert.equal(g("read", { path: "config/a.yml" }), "ok");
+});
+
+test("an empty lock left by a crash (killed before writing its PID) is recovered in about a second, not by timing out", async () => {
+  const { withLock } = await import("../extensions/lib/fsutil.js");
+  const { utimesSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "af-emptylock-"));
+  try {
+    const lock = join(dir, "state.lock");
+    writeFileSync(lock, "");
+    const old = new Date(Date.now() - 2_000);
+    utimesSync(lock, old, old);
+    const t = Date.now();
+    assert.equal(withLock(lock, () => "ok", 3_000), "ok");
+    assert.ok(Date.now() - t < 1_000);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("prose drift ignores prose (and/or, TCP/IP), build output and deps; understands unicode paths", async () => {
+  const { extractProseRefs } = await import("../extensions/lib/stale.js");
+  const refs = extractProseRefs("Use `and/or`, `TCP/IP`, `client/server`, `a/b`. Built to `dist/index.js` via `node_modules/.bin/tsc`. See `src/ünï/missing.ts` and `src/utils/` and `docs/guide.md`.").map((r) => r.path);
+  assert.deepEqual(refs.sort(), ["docs/guide.md", "src/utils/", "src/ünï/missing.ts"].sort());
+});
+
+test("manifest type errors are named, not reported as 'missing'", () => {
+  const p = validateManifestForTest({ version: 2, default_branch: 5, context_files: ["AGENTS.md", { path: 5, references: [] }] });
+  assert.ok(p.some((x) => /version must be a string/.test(x)));
+  assert.ok(p.some((x) => /default_branch must be a branch name string/.test(x)));
+  assert.ok(p.some((x) => /context_files\[0\] must be an object/.test(x)));
+  assert.ok(p.some((x) => /context_files\[1\]\.path must be a string/.test(x)));
 });
