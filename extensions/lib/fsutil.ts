@@ -12,10 +12,12 @@ import { execFileSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   statSync,
@@ -280,6 +282,36 @@ export function resolveInside(root: string, p: string): string {
     throw new Error(`path resolves outside the repository through a symlink: ${p}`);
   }
   return abs;
+}
+
+/**
+ * Where a write to `p` would really land: the real path of the nearest existing
+ * ancestor with the rest appended. A lexical `resolve()` is fooled by a
+ * symlinked directory (`src/up -> ../../..`), which is exactly how a confined
+ * writer would escape its worktree or reach a protected path.
+ */
+export function landingPath(p: string, depth = 0): string {
+  const abs = resolve(p);
+  let probe = abs;
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return join(realpathSync(probe), ...rest.reverse());
+    } catch {
+      // A dangling symlink: writeFile follows it and creates the target.
+      try {
+        if (depth < 40 && lstatSync(probe).isSymbolicLink()) {
+          return landingPath(join(resolve(dirname(probe), readlinkSync(probe)), ...rest.reverse()), depth + 1);
+        }
+      } catch {
+        /* doesn't exist at all — keep walking up */
+      }
+      const parent = dirname(probe);
+      if (parent === probe) return abs;
+      rest.push(probe.slice(parent.length).replace(/^[\\/]+/, ""));
+      probe = parent;
+    }
+  }
 }
 
 /** Repo-relative POSIX path for an absolute or cwd-relative path. */

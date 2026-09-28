@@ -2,7 +2,7 @@
 name: bootstrap
 tags: [setup, scaffolding, agents-md, context-drift]
 description: Interactive agent-flow setup for a repository. Scans the repo read-only, proposes AGENTS.md (root + per module), DOCS_INDEX.md and CONTEXT_MANIFEST.json with a confidence marker on every claim, calibrates protected paths and risk boundaries with the user, and writes each file only after the human approves it. Use when setting up agent-flow, when context files are missing, or when migrating from Root_AGENT.md. Also use whenever the user wants an AGENTS.md (or CLAUDE.md/GEMINI.md) written for a repo that doesn't have one, says their coding agents keep getting confused about the codebase, asks to "onboard" or "document" a repo for AI agents, or wants to set protected paths / risk boundaries — even if they don't say "agent-flow" or "bootstrap" by name.
-compatibility: Requires git. Pi gets the bootstrap_scan/bootstrap_write tools; other harnesses use `npx agent-flow scan` plus normal file edits with the user's approval.
+compatibility: Requires git and @drix10/agent-flow (a devDependency). Pi gets the bootstrap_scan/bootstrap_write tools; other harnesses use `npx @drix10/agent-flow scan`/`template`/`schema` plus normal file edits with the user's approval.
 ---
 
 # Bootstrap
@@ -13,7 +13,7 @@ Why this matters: a context file with confident wrong claims makes agents *worse
 
 ## Phase 1: Reconnaissance (read-only)
 
-1. Call `bootstrap_scan` (outside Pi: `npx agent-flow scan --json`). Every field it returns was read from a file, so those are `[HIGH CONFIDENCE]`. That covers: languages, package managers, test frameworks, commands from `package.json` scripts and the `Makefile`, CI files, existing context files, docs, default branch, and recent commits.
+1. Call `bootstrap_scan` (outside Pi: `npx @drix10/agent-flow scan --json`). Every field it returns was read from a file, so those are `[HIGH CONFIDENCE]`. That covers: languages, package managers, test frameworks, commands from `package.json` scripts and the `Makefile`, CI files, existing context files, docs, default branch, and recent commits.
 2. **Secrets gate.** If `secretSuspects` is not empty, stop and show the paths and kinds (never the values). A tracked `.env` or key file must be removed from git and **rotated** before bootstrap continues. Context files are sent to model providers.
 3. **Existing context.** If `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules` or `.github/copilot-instructions.md` exist, read them first. They are the user's own rules. You merge into them; you never replace them. If you find `Root_AGENT.md` or `Per-app_AGENT.md` (agent-flow ≤1.0.x), offer to move them to `AGENTS.md`. No harness loads the old names automatically.
 4. Read the entry points and 2–3 representative modules so you can describe them from the code itself. Anything you describe without reading gets `[INFERRED]`.
@@ -22,7 +22,9 @@ Why this matters: a context file with confident wrong claims makes agents *worse
 
 Why `AGENTS.md`: Pi, Codex, Cursor, Copilot, Windsurf and most agents load `AGENTS.md` automatically — it's a [shared, Linux-Foundation-stewarded convention](https://agents.md), not something specific to this project. Claude Code loads `CLAUDE.md`, which can import it with one line (`@AGENTS.md`). Gemini CLI loads it when `context.fileName` includes `AGENTS.md`. One source of truth, every harness.
 
-Show the root `AGENTS.md` (template: `templates/AGENTS.md.template`) as a proposal, one section at a time:
+Templates ship with agent-flow; print them instead of searching the disk: `npx @drix10/agent-flow template` lists them, `npx @drix10/agent-flow template AGENTS.md` prints one.
+
+Show the root `AGENTS.md` (template: `AGENTS.md`) as a proposal, one section at a time:
 
 ```
 Repository map
@@ -43,7 +45,7 @@ Rules for the proposal:
 
 Ask: *"What here is wrong or missing? What do new people always get wrong in this repo?"* Their answer to the second question gives you the **Local traps**, the most valuable part of the file.
 
-For monorepos: propose `<package>/AGENTS.md` for each package that has its own rules (template: `templates/module-AGENTS.md.template`). Skip packages that have nothing specific to say.
+For monorepos: propose `<package>/AGENTS.md` for each package that has its own rules (template: `module-AGENTS.md`). Skip packages that have nothing specific to say.
 
 ## Phase 3: Risk calibration (interactive)
 
@@ -61,9 +63,9 @@ Show the resulting `risk_boundaries` and `protected_paths` back to the human and
 Call `bootstrap_write` once per file. It shows the human a confirmation dialog, refuses paths outside the repo, refuses an invalid manifest, and refuses secret-shaped content. It will not overwrite an existing file unless you pass `overwrite: true`, and it asks again when you do.
 
 1. `AGENTS.md`, plus one `AGENTS.md` per module.
-2. `CLAUDE.md` containing `@AGENTS.md`, if the user uses Claude Code (template: `templates/CLAUDE.md.template`). If a `CLAUDE.md` already exists, propose adding the import line to it.
-3. `DOCS_INDEX.md` (`templates/DOCS_INDEX.md.template`).
-4. `CONTEXT_MANIFEST.json`. Follow `templates/CONTEXT_MANIFEST.json.template` and `schemas/context-manifest.schema.json` **exactly**: `context_files[].references[]` with `path`, `type`, a real ISO `last_verified`, and `exists`. List every path the prose names. Set `default_branch` from the scan. Don't leave any `{{PLACEHOLDER}}` in any file. `/doctor` fails on them.
+2. `CLAUDE.md` containing `@AGENTS.md`, if the user uses Claude Code (template: `CLAUDE.md`). If a `CLAUDE.md` already exists, propose adding the import line to it.
+3. `DOCS_INDEX.md` (template: `DOCS_INDEX.md`).
+4. `CONTEXT_MANIFEST.json`. Follow the `CONTEXT_MANIFEST.json` template and `npx @drix10/agent-flow schema manifest` **exactly**: `context_files[].references[]` with `path`, `type`, a real ISO `last_verified`, and `exists`. List every path the prose names. Set `default_branch` from the scan. Don't leave any `{{PLACEHOLDER}}` in any file. `/doctor` fails on them.
 
 Outside Pi, show each file's full content and write it only after the human says yes.
 
@@ -72,10 +74,10 @@ Outside Pi, show each file's full content and write it only after the human says
 Suggest these; the human runs them:
 
 - Pi: nothing more. The guard and tools are active once the package is installed.
-- Claude Code / Codex / Gemini / Cursor / Copilot / Windsurf: `npx agent-flow install --harness <name>`. It copies the skills and the reviewer subagent and never overwrites your edits.
-- Everyone: `npx agent-flow hook install` for the pre-commit gate (protected paths, secrets, broken context references).
-- CI: add `npx agent-flow doctor` and `npx agent-flow audit-risk --fail-on-new` as steps (see `README.md`).
-- First baseline: after the human reviews `npx agent-flow audit-risk`, `npx agent-flow baseline accept --all --yes`.
+- Claude Code / Codex / Gemini / Cursor / Copilot / Windsurf: `npx @drix10/agent-flow install --harness <name>`. It copies the skills and the reviewer subagent and never overwrites your edits.
+- Everyone: `npx @drix10/agent-flow hook install` for the pre-commit gate (protected paths, secrets, broken context references).
+- CI: add `npx @drix10/agent-flow doctor` and `npx @drix10/agent-flow audit-risk --fail-on-new` as steps (see `README.md`).
+- First baseline: after the human reviews `npx @drix10/agent-flow audit-risk`, `npx @drix10/agent-flow baseline accept --all --yes`.
 
 ## Phase 6: Verify
 

@@ -16,7 +16,16 @@ You keep context true. Context that is wrong is worse than no context at all: an
 
 When a fix belongs in code (a lint rule, a hook, a refactor), you **open an issue** for the Implementer. You don't write it yourself.
 
-Outside Pi, use `npx agent-flow doctor`, `npx agent-flow audit-risk` and `npx agent-flow baseline accept …` in place of the tools.
+Outside Pi the tools have CLI twins (`AF` = `npx @drix10/agent-flow`):
+
+| Pi tool | CLI |
+|---|---|
+| `stale_detect` | `AF doctor` |
+| `risk_audit` | `AF audit-risk` |
+| `risk_baseline_update` | `AF baseline accept <keys…> --yes` |
+| `stale_repair` | `AF repair --yes` |
+
+Never hand-edit `last_verified` timestamps in the manifest: `AF repair` is the only thing that should refresh them, and only after step 2 of /repair-docs.
 
 ## /doctor — report only
 
@@ -33,7 +42,7 @@ Outside Pi, use `npx agent-flow doctor`, `npx agent-flow audit-risk` and `npx ag
 ## /sync-context
 
 1. List the docs: `docs/`, `design/`, `adr/`, `rfcs/`, root `*.md`. Get each one's last commit date with `git log -1 --format=%cs -- <path>`.
-2. Update `DOCS_INDEX.md` (template: `templates/DOCS_INDEX.md.template`):
+2. Update `DOCS_INDEX.md` (template: `AF template DOCS_INDEX.md`):
    - **Stale:** the code it describes changed after the doc did.
    - **Missing:** a top-level module with no doc and no module `AGENTS.md`.
    - **Archived:** superseded. Mark it, don't delete it.

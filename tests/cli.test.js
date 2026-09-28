@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { localInstall } from "./helpers.js";
 
 const BIN = fileURLToPath(new URL("../bin/agent-flow.js", import.meta.url));
 const pkgRoot = () => fileURLToPath(new URL("..", import.meta.url));
@@ -100,6 +101,7 @@ test("state update enforces the round cap from any harness", () => {
 test("install copies skills + reviewer agent and refuses to clobber user edits", () => {
   const { dir } = repo();
   try {
+    const run = localInstall(dir);
     assert.equal(run(dir, "install", "--harness", "claude").status, 0);
     assert.ok(existsSync(join(dir, ".claude", "skills", "reviewer", "SKILL.md")));
     assert.ok(existsSync(join(dir, ".claude", "agents", "reviewer.md")));
@@ -134,6 +136,7 @@ test("install --harness codex writes every skill under .agents/skills and the TO
 test("install --dry-run writes nothing, for every supported harness", () => {
   const { dir } = repo();
   try {
+    const run = localInstall(dir);
     for (const harness of ["claude", "codex", "gemini", "cursor", "copilot", "windsurf", "agents"]) {
       const r = run(dir, "install", "--harness", harness, "--dry-run");
       assert.equal(r.status, 0, `${harness}: ${r.stdout}${r.stderr}`);

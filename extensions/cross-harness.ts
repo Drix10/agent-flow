@@ -43,7 +43,7 @@ export default function (pi: ExtensionAPI) {
         role: process.env.AGENT_FLOW_ROLE ?? null,
         configured,
         crossClientSkillPath: ".agents/skills/",
-        note: "Outside Pi, use the `agent-flow` CLI (npx agent-flow …) for the same checks.",
+        note: "Outside Pi, use the `agent-flow` CLI (npx @drix10/agent-flow …) for the same checks.",
       });
     },
   });

@@ -10,17 +10,17 @@ What is **enforced** (the harness or our code blocks it), **checked** (the pre-c
 | Reviewer can't write | ✅ `--tools read,grep,find,ls` + guard | ✅ subagent `tools: Read, Grep, Glob` | ✅ `codex exec --sandbox read-only` (verified flag) | ⚠️ tool list without write/shell, unverified | ❌ instructed | ❌ instructed | ❌ instructed |
 | Protected paths | ✅ guard (per call) + hook | ✅ hook (commit time) | ✅ hook | ✅ hook | ✅ hook | ✅ hook | ✅ hook |
 | Implementer confined to worktree | ✅ guard | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed |
-| State machine (round cap, transitions) | ✅ `state_update` tool | ✅ `npx agent-flow state update` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
-| Mechanical risk classification | ✅ `risk_classify` | ✅ `npx agent-flow classify` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
+| State machine (round cap, transitions) | ✅ `state_update` tool | ✅ `npx @drix10/agent-flow state update` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
+| Mechanical risk classification | ✅ `risk_classify` | ✅ `npx @drix10/agent-flow classify` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
 | Drift / risk checks | ✅ tools + CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
 | Human confirmation for context writes | ✅ UI dialog | the harness's own permission prompt | same | same | same | same | same |
-| Install | `pi install npm:@drix10/agent-flow` | `npx agent-flow install --harness claude` | `… --harness codex` | `… --harness gemini` | `… --harness cursor` | `… --harness copilot` | `… --harness windsurf` |
+| Install | `pi install npm:@drix10/agent-flow` | `npx @drix10/agent-flow install --harness claude` | `… --harness codex` | `… --harness gemini` | `… --harness cursor` | `… --harness copilot` | `… --harness windsurf` |
 
 A ✅ from the CLI means the rule is enforced when the CLI is called. Whether the agent calls it depends on the skill (instructed), but the rule itself can't be bypassed by calling the CLI with different arguments.
 
 ## Everything else that reads `AGENTS.md`
 
-The CLI rows above (`doctor`, `classify`, `audit-risk`, `state`, the pre-commit hook) don't care which harness is running — they read your repo, your manifest and your git history, not the agent. So they already work, unmodified, with every other tool that has adopted the [AGENTS.md](https://agents.md) convention: Aider, Zed, Warp, Amp, opencode, goose, JetBrains Junie, RooCode, Kilo Code, Devin, Jules, Factory, and Augment Code among them. `npx agent-flow install --harness agents` gives any of these a conventional `.agents/skills/` folder to point their own instructions at; only the harness-specific rows above (skill auto-discovery, a locked-down reviewer subagent) need a name in the table.
+The CLI rows above (`doctor`, `classify`, `audit-risk`, `state`, the pre-commit hook) don't care which harness is running — they read your repo, your manifest and your git history, not the agent. So they already work, unmodified, with every other tool that has adopted the [AGENTS.md](https://agents.md) convention: Aider, Zed, Warp, Amp, opencode, goose, JetBrains Junie, RooCode, Kilo Code, Devin, Jules, Factory, and Augment Code among them. `npx @drix10/agent-flow install --harness agents` gives any of these a conventional `.agents/skills/` folder to point their own instructions at; only the harness-specific rows above (skill auto-discovery, a locked-down reviewer subagent) need a name in the table.
 
 ## Verify it yourself
 

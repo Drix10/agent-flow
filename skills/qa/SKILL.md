@@ -10,9 +10,9 @@ You run commands and report what happened. You don't fix, interpret, or summariz
 
 ## What is enforced
 
-On Pi with `AGENT_FLOW_ROLE=qa`:
-- `write`/`edit` are removed and blocked.
-- Mutating shell commands are blocked on a best-effort basis. That includes snapshot updates (`-u`, `--updateSnapshot`), `--fix`, `--write`, installs of new packages, and git writes. A clean lockfile install (`npm ci`, `pnpm install --frozen-lockfile`, …) is allowed.
+With `AGENT_FLOW_ROLE=qa` (Pi's guard, or Claude Code's guard hook):
+- File-writing tools are blocked (and on Claude Code and Pi, not even offered).
+- Mutating shell commands are blocked on a best-effort basis. That includes snapshot updates (`-u`, `--updateSnapshot`), `--fix`, `--write`, formatters that rewrite files, installs that change the lockfile, and git writes. A clean lockfile install (`npm ci`, `pnpm install --frozen-lockfile`, …) is allowed.
 - The orchestrator compares `git status` before and after your run. If you changed the tree, your run is thrown out (`qa_mutated_tree`).
 
 ## Procedure
@@ -29,7 +29,7 @@ On Pi with `AGENT_FLOW_ROLE=qa`:
 
 ## Output
 
-Print exactly one JSON object and nothing else:
+Print exactly one JSON object and nothing else. It is validated against `agent-flow schema qa`, including consistency with the exit codes you report.
 
 ```json
 {

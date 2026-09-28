@@ -6,8 +6,8 @@ Every harness except Pi installs the same way, and the command is identical on W
 
 ```bash
 npm install -D @drix10/agent-flow
-npx agent-flow install --harness <name>      # --dry-run to preview; never overwrites your edits without --force
-npx agent-flow hook install                   # pre-commit gate (recommended everywhere)
+npx @drix10/agent-flow install --harness <name>      # --dry-run to preview; never overwrites your edits without --force
+npx @drix10/agent-flow hook install                   # pre-commit gate (recommended everywhere)
 ```
 
 v1.0.x told you to use `cp -r` and `ln -s`. Those don't work in PowerShell, and the documented relative symlink resolved to the wrong place. Use `install` instead.
@@ -32,17 +32,17 @@ $env:AGENT_FLOW_ROLE="reviewer"; pi --tools read,grep,find,ls  # PowerShell
 ## Claude Code
 
 ```bash
-npx agent-flow install --harness claude
+npx @drix10/agent-flow install --harness claude
 ```
 
 - Copies the skills to `.claude/skills/<name>/` and the reviewer subagent to `.claude/agents/reviewer.md` (`tools: Read, Grep, Glob`, so it really is read-only).
 - Add `@AGENTS.md` to `CLAUDE.md` so the root context loads.
-- There are no Pi tools here. The skills call `npx agent-flow state|worktree|classify|doctor|audit-risk` instead.
+- There are no Pi tools here. The skills call `npx @drix10/agent-flow state|worktree|classify|doctor|audit-risk` instead.
 
 ## Codex CLI
 
 ```bash
-npx agent-flow install --harness codex
+npx @drix10/agent-flow install --harness codex
 ```
 
 The verified way to run the reviewer read-only is the `--sandbox` flag (checked against `codex exec --help`, Codex CLI v0.157.1 — OpenAI's own OS-level sandbox, same class of mechanism as a container):
@@ -66,7 +66,7 @@ codex exec --profile reviewer "Use the reviewer skill. …"
 ## Gemini CLI
 
 ```bash
-npx agent-flow install --harness gemini
+npx @drix10/agent-flow install --harness gemini
 ```
 
 - Run `/trust` in the workspace, then restart.
@@ -76,7 +76,7 @@ npx agent-flow install --harness gemini
 ## Cursor
 
 ```bash
-npx agent-flow install --harness cursor
+npx @drix10/agent-flow install --harness cursor
 ```
 
 Cursor reads `AGENTS.md` natively. Read-only review is an instruction only here, so rely on the pre-commit hook.
@@ -84,7 +84,7 @@ Cursor reads `AGENTS.md` natively. Read-only review is an instruction only here,
 ## VS Code / GitHub Copilot
 
 ```bash
-npx agent-flow install --harness copilot     # → .github/skills/
+npx @drix10/agent-flow install --harness copilot     # → .github/skills/
 ```
 
 VS Code also reads `.claude/skills/` and `.agents/skills/`.
@@ -94,4 +94,4 @@ VS Code also reads `.claude/skills/` and `.agents/skills/`.
 1. Rename `Root_AGENT.md` to `AGENTS.md`, and each `Per-app_AGENT.md` to `<module>/AGENTS.md`. Update the `path` entries in `CONTEXT_MANIFEST.json` to match. Or run `/bootstrap`, which offers to do this.
 2. A legacy `contexts`/`covers` manifest is migrated automatically by `/repair-docs` (`stale_repair`).
 3. `CONFIRM_*` strings are ignored now. Writes ask you through the Pi UI. For unattended runs, set `AGENT_FLOW_HEADLESS_WRITES=1`.
-4. Re-accept the risk baseline once. The format changed to per-dependency keys, so the first audit will list dependencies as new: `npx agent-flow baseline accept --all --yes`.
+4. Re-accept the risk baseline once. The format changed to per-dependency keys, so the first audit will list dependencies as new: `npx @drix10/agent-flow baseline accept --all --yes`.

@@ -90,7 +90,11 @@ export function changedFiles(cwd: string, base: string, head?: string): string[]
   validateRevision(base);
   if (head) validateRevision(head);
   const out = new Set<string>();
-  const range = head ? [`${base}...${head}`] : [base];
+  // Without a head we diff the working tree, but against the merge-base — not the
+  // base branch's tip. Otherwise every commit landed on main after this branch was
+  // cut shows up as "this branch's change" (false critical / protected hits).
+  const mb = head ? null : git(["merge-base", base, "HEAD"], cwd);
+  const range = head ? [`${base}...${head}`] : [mb?.ok && mb.stdout ? mb.stdout : base];
   for (const f of mustGit(["diff", "--name-only", "--no-renames", ...range], cwd).split("\n")) if (f) out.add(toPosix(f));
   if (!head) {
     for (const f of mustGit(["ls-files", "--others", "--exclude-standard"], cwd).split("\n")) if (f) out.add(toPosix(f));
@@ -99,8 +103,16 @@ export function changedFiles(cwd: string, base: string, head?: string): string[]
 }
 
 export function stagedFiles(cwd: string): string[] {
-  return mustGit(["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACMRD"], cwd)
+  return mustGit(["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACMRDT"], cwd)
     .split("\n")
     .filter(Boolean)
     .map(toPosix);
+}
+
+/** The base a worktree branch was cut from, as recorded by `createWorktree`. */
+export function recordedBase(cwd: string, branch?: string): string | null {
+  const b = branch ?? git(["rev-parse", "--abbrev-ref", "HEAD"], cwd).stdout;
+  if (!b || b === "HEAD") return null;
+  const r = git(["config", "--get", `branch.${b}.agentflowbase`], cwd);
+  return r.ok && r.stdout ? r.stdout : null;
 }

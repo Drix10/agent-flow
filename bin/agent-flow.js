@@ -7,17 +7,17 @@
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, chmodSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -46,7 +46,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "reopen", "force", "delete-branch", "dry-run", "help"]);
+const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "reopen", "force", "delete-branch", "dry-run", "help"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -69,15 +69,24 @@ Checks (CI-safe, read-only):
       --ctxlint             Also run a locally installed ctxlint (never downloads)
   audit-risk                Diff risk surfaces against .risk-baseline.json
       --baseline <path>  --include-tests  --fail-on-new
-  classify                  Mechanical risk level of a diff
+  classify                  Mechanical risk level of a diff (vs the merge-base, so later commits on the base don't count)
       --base <rev> --head <rev> --issue <n>  --fail-on-protected  --fail-on-critical
   check-staged              Pre-commit gate: protected paths, secrets, broken context refs
   scan                      Read-only repo reconnaissance (what /bootstrap sees)
 
-State & worktrees (for harnesses without Pi extensions):
-  state [show]              Print pipeline state
+Pipeline (the CLI twin of the Pi tools — same rules, any harness):
+  state [show] [--issue <n>]  Print pipeline state
   state update --issue <n> --state "Working|Needs Me|Completed" [--phase p] [--round r] [--reason t] [--reopen]
+                            Exit 3 when the round cap escalated the issue to Needs Me
   worktree create <n> [--base <branch>] | remove <n> [--force] [--delete-branch] | list
+  schema <implementer|reviewer|qa|manifest> Print a JSON schema (role report, or CONTEXT_MANIFEST.json)
+  schema --dir <dir>        Write the three role-report schemas into <dir>
+  template [name]           List the context-file templates, or print one (e.g. AGENTS.md)
+  report <implementer|reviewer|qa> <file> [--out <file>]
+                            Extract + validate a role's report (claude/codex/raw output); exit 1 if invalid
+  repair --yes              Refresh manifest timestamps after the prose was re-verified (Gardener)
+  guard                     Claude Code PreToolUse hook: reads the hook JSON on stdin, exit 2 = blocked
+  guard --check             Exit 1 unless the Claude Code hook is installed and its target exists
 
 Setup (writes files; run by a human):
   baseline accept --all --yes | baseline accept <key>... --yes
@@ -109,7 +118,7 @@ function cmdDoctor(args) {
   if (!r.ok) {
     out(args, { healthy: false, error: r.error, path: r.path }, () => {
       bad(`${r.error}: ${r.path}`);
-      if (r.error === "manifest_not_found") console.log(dim("  Run /bootstrap (Pi) or follow skills/bootstrap/SKILL.md to create one."));
+      if (r.error === "manifest_not_found") console.log(dim("  Ask your agent to bootstrap this repo (the `bootstrap` skill; /bootstrap on Pi) to create one."));
     });
     return 2;
   }
@@ -141,7 +150,7 @@ function cmdAudit(args) {
   const baseline = fsutil.resolveInside(rt, args.baseline ?? risk.BASELINE_FILE);
   const r = risk.auditRisk(rt, baseline, { includeTests: !!args["include-tests"] });
   out(args, r, () => {
-    console.log(`${r.totalSurfaces} surfaces across ${r.scannedFiles} files ${dim(JSON.stringify(r.byType))}${r.truncated ? c(33, " (truncated)") : ""}`);
+    console.log(`${r.totalSurfaces} surface${r.totalSurfaces === 1 ? "" : "s"} across ${r.scannedFiles} files ${dim(JSON.stringify(r.byType))}${r.truncated ? c(33, " (truncated)") : ""}`);
     if (!r.baselineExists) warn(`no baseline yet — review, then: agent-flow baseline accept --all --yes`);
     else if (r.newSurfaces === 0) ok("no new risk surfaces since baseline");
     else {
@@ -189,10 +198,28 @@ function cmdCheckStaged(args) {
   const man = manifestLib.tryLoadManifest(rt);
   const problems = [];
 
+  // Protected paths come from the committed AND the staged manifest, not just the
+  // working tree: otherwise emptying protected_paths on disk (without staging it)
+  // or deleting the manifest would quietly switch the check off for this commit.
+  const protectedPaths = new Set(man?.protected_paths ?? []);
+  for (const rev of ["HEAD", ""]) {
+    const r = git.git(["show", `${rev}:CONTEXT_MANIFEST.json`], rt);
+    if (!r.ok) continue;
+    try {
+      for (const p of JSON.parse(r.stdout).protected_paths ?? []) if (typeof p === "string") protectedPaths.add(p);
+    } catch {
+      /* malformed manifest is reported by the context checks below */
+    }
+  }
   if (process.env.AGENT_FLOW_ALLOW_PROTECTED !== "1") {
     for (const f of files) {
-      const hit = manifestLib.matchAny(man?.protected_paths, f);
+      const hit = manifestLib.matchAny([...protectedPaths], f);
       if (hit) problems.push(`protected path staged: ${f} (${hit}) — set AGENT_FLOW_ALLOW_PROTECTED=1 if a human intends this`);
+    }
+  }
+  for (const f of files) {
+    if (risk.isEnvFile(f) && git.git(["cat-file", "-e", `:${f}`], rt).ok) {
+      problems.push(`environment file staged: ${f} — keep secrets out of git (commit a .env.example instead)`);
     }
   }
   for (const f of files) {
@@ -234,6 +261,14 @@ function cmdState(args) {
   const sub = args._[1] ?? "show";
   if (sub === "show") {
     const s = state.readState(rt);
+    if (args.issue !== undefined) {
+      const n = Number(args.issue);
+      const one = s.sessions.find((x) => x.issue === n) ?? null;
+      const limit = manifestLib.maxReviewRounds(manifestLib.tryLoadManifest(rt));
+      const view = { issue: n, state: one?.state ?? null, phase: one?.phase ?? null, round: one?.round ?? 0, max_review_rounds: limit, reason: one?.reason ?? null };
+      out(args, view, () => console.log(one ? `issue #${n}: ${one.state}${one.phase ? ` / ${one.phase}` : ""} (round ${one.round ?? 0} of ${limit})${one.reason ? ` — ${one.reason}` : ""}` : `issue #${n}: no state yet (round limit ${limit})`));
+      return 0;
+    }
     out(args, s, () => process.stdout.write(state.renderMarkdown(s)));
     return 0;
   }
@@ -249,7 +284,8 @@ function cmdState(args) {
     };
     const r = state.updateState(rt, p, manifestLib.maxReviewRounds(manifestLib.tryLoadManifest(rt)));
     out(args, r, () => (r.escalated ? warn : ok)(`issue #${r.updated}: ${r.from ?? "(new)"} → ${r.state} (round ${r.round})${r.reason ? ` — ${r.reason}` : ""}`));
-    return 0;
+    // Distinct exit code so a script can't miss the escalation by only checking for failure.
+    return r.escalated ? 3 : 0;
   }
   return usage("state [show] | state update --issue <n> --state <s> …");
 }
@@ -280,6 +316,145 @@ function cmdScan(args) {
   const r = scan.scanRepo(root());
   out(args, r, () => console.log(JSON.stringify(r, null, 2)));
   return 0;
+}
+
+function cmdTemplate(args) {
+  const dir = join(pkgRoot, "templates");
+  const names = readdirSync(dir).filter((f) => f.endsWith(".template")).map((f) => f.replace(/\.template$/, ""));
+  const want = args._[1];
+  if (!want) {
+    out(args, { templates: names, dir }, () => {
+      console.log("Templates (print one with `agent-flow template <name>`):");
+      for (const n of names) console.log(`  ${n}`);
+    });
+    return 0;
+  }
+  const name = names.find((n) => n.toLowerCase() === String(want).toLowerCase().replace(/\.template$/, ""));
+  if (!name) return usage(`template <${names.join("|")}>`);
+  process.stdout.write(readFileSync(join(dir, `${name}.template`), "utf-8"));
+  return 0;
+}
+
+function cmdSchema(args) {
+  if (typeof args.dir === "string") {
+    mkdirSync(args.dir, { recursive: true });
+    const written = Object.entries(report.REPORT_ROLES).map(([role, file]) => {
+      const p = join(args.dir, `${file === "implementer-report" ? "implementer" : file}.schema.json`);
+      writeFileSync(p, `${JSON.stringify(report.reportSchema(role))}\n`);
+      return p;
+    });
+    out(args, { written }, () => written.forEach((p) => ok(`wrote ${p}`)));
+    return 0;
+  }
+  const role = args._[1];
+  if (role === "manifest") {
+    console.log(readFileSync(join(pkgRoot, "schemas", "context-manifest.schema.json"), "utf-8").trim());
+    return 0;
+  }
+  if (!(role in report.REPORT_ROLES)) return usage(`schema <${Object.keys(report.REPORT_ROLES).join("|")}|manifest>`);
+  // Compact on one line so it can be passed straight to `claude -p --json-schema "$(…)"`.
+  console.log(JSON.stringify(report.reportSchema(role)));
+  return 0;
+}
+
+function cmdReport(args) {
+  const [, role, file] = args._;
+  if (!(role in report.REPORT_ROLES) || !file) return usage(`report <${Object.keys(report.REPORT_ROLES).join("|")}> <file> [--out <file>]`);
+  // Windows PowerShell 5.1's `>` writes UTF-16LE; decode it rather than failing on "no JSON found".
+  const buf = readFileSync(file);
+  const text = buf[0] === 0xff && buf[1] === 0xfe ? buf.subarray(2).toString("utf16le") : buf.toString("utf-8");
+  const r = report.checkReport(role, text);
+  if (r.ok && typeof args.out === "string") writeFileSync(args.out, `${JSON.stringify(r.report, null, 2)}\n`);
+  if (args.json || (r.ok && typeof args.out !== "string")) {
+    console.log(JSON.stringify(args.json ? r : r.report, null, 2));
+  } else if (r.ok) ok(`${role} report valid (${r.source}) → ${args.out}`);
+  else {
+    bad(`${role} report invalid (${r.source}):`);
+    for (const p of r.problems) console.log(`    ${p}`);
+  }
+  return r.ok ? 0 : 1;
+}
+
+function cmdRepair(args) {
+  if (!args.yes) {
+    return usage("repair --yes — refreshes every manifest timestamp. Only run it after re-reading the code each flagged claim describes (skills/gardener: /repair-docs).");
+  }
+  const rt = root();
+  const r = stale.repairStale(rt, { manifestPath: args.manifest });
+  state.appendAudit(rt, { event: "stale_repair", via: "cli", refreshed: r.refreshed });
+  out(args, r, () => {
+    ok(`refreshed ${r.refreshed} reference(s) in ${r.repaired}`);
+    for (const m of r.still_missing) warn(`still missing: ${m.file}: ${m.path}`);
+  });
+  return r.still_missing.length ? 1 : 0;
+}
+
+/**
+ * Claude Code PreToolUse hook. Same policy as Pi's tool_call hook. Contract:
+ * JSON on stdin (tool_name, tool_input, cwd, agent_type for subagents);
+ * exit 2 + reason on stderr blocks the call, exit 0 allows it.
+ */
+/** Is the Claude Code guard hook wired up, and does the file it runs exist? */
+function guardCheck(args) {
+  const rt = root();
+  const path = join(rt, ".claude", "settings.json");
+  let command = null;
+  try {
+    const hooks = JSON.parse(readFileSync(path, "utf-8")).hooks?.PreToolUse ?? [];
+    command = hooks.flatMap((e) => e.hooks ?? []).map((h) => h.command ?? "").find((c) => /agent-flow/.test(c) && /\bguard\b/.test(c)) ?? null;
+  } catch {
+    /* no or unreadable settings */
+  }
+  const script = command?.match(/"\$CLAUDE_PROJECT_DIR\/([^"]+)"/)?.[1];
+  const target = script ? join(rt, script) : null;
+  const okay = !!command && (!target || existsSync(target));
+  out(args, { ok: okay, settings: path, command, target, target_exists: target ? existsSync(target) : null }, () => {
+    if (okay) ok(`Claude Code guard hook active (${command})`);
+    else if (!command) bad("no agent-flow guard hook in .claude/settings.json — run `npx @drix10/agent-flow install --harness claude`");
+    else bad(`guard hook points at ${target}, which doesn't exist — run \`npm install\` (agent-flow must be in this project's devDependencies)`);
+  });
+  return okay ? 0 : 1;
+}
+
+function cmdGuard(args) {
+  if (args.check) return guardCheck(args);
+  const fail = (role, msg) => {
+    console.error(`[agent-flow guard] ${msg}`);
+    return role ? 2 : 0; // a confined role fails closed; an ordinary session is not bricked by a guard bug
+  };
+  const env = guardLib.parseRole(process.env.AGENT_FLOW_ROLE);
+  let ev;
+  try {
+    ev = JSON.parse(readFileSync(0, "utf-8") || "{}");
+  } catch (e) {
+    return fail(env.role, `unreadable hook input: ${e.message}`);
+  }
+  // A subagent launched as one of our roles (e.g. the orchestrator's `reviewer`) runs under that role.
+  const role = guardLib.ROLES.includes(ev.agent_type) ? ev.agent_type : env.role;
+  try {
+    const cwd = typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd();
+    const rt = fsutil.findRepoRoot(cwd);
+    const decision = guardLib.decide({
+      role,
+      toolName: String(ev.tool_name ?? ""),
+      input: ev.tool_input && typeof ev.tool_input === "object" ? ev.tool_input : {},
+      cwd,
+      root: rt,
+      manifest: manifestLib.tryLoadManifest(rt),
+      worktree: process.env.AGENT_FLOW_WORKTREE ? resolve(rt, process.env.AGENT_FLOW_WORKTREE) : undefined,
+      allowProtected: process.env.AGENT_FLOW_ALLOW_PROTECTED === "1",
+    });
+    if (!decision) return 0;
+    try {
+      state.appendAudit(rt, { event: "guard_block", harness: "claude", role, tool: ev.tool_name, rule: decision.rule, reason: decision.reason });
+    } catch {
+      /* the block matters more than the log line */
+    }
+    console.error(decision.reason);
+    return 2;
+  } catch (e) {
+    return fail(role, `guard error: ${e.message}`);
+  }
 }
 
 // --- install --------------------------------------------------------------
@@ -345,9 +520,56 @@ function cmdInstall(args) {
     wrote++;
     ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
   }
+  if (args.harness === "claude" && !installClaudeHook(rt, args)) conflicts.push(".claude/settings.json");
   console.log(`\n${t.note}`);
-  console.log(dim("Outside Pi there are no extension tools: skills call `npx agent-flow …` for state, worktrees, classify, doctor and audit."));
+  console.log(dim("Skills call `npx @drix10/agent-flow …` for state, worktrees, classify, reports, doctor and audit."));
   return conflicts.length ? 1 : 0;
+}
+
+const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|mcp__.*";
+
+/**
+ * Wire the guard into Claude Code as a PreToolUse hook, merged into any
+ * existing .claude/settings.json. The hook must point at a copy of agent-flow
+ * that every checkout has — the project's node_modules — or it silently
+ * doesn't run (a hook that can't start doesn't block).
+ */
+function installClaudeHook(rt, args) {
+  const label = ".claude/settings.json (PreToolUse guard hook)";
+  const binRel = relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
+  if (binRel.startsWith("..") || isAbsolute(binRel)) {
+    bad(`${label}: agent-flow isn't installed in this project, so the hook would point at a temporary copy.`);
+    console.log(dim("    Run `npm install -D @drix10/agent-flow`, then `npx @drix10/agent-flow install --harness claude` again."));
+    return false;
+  }
+  const command = `node "$CLAUDE_PROJECT_DIR/${binRel.split("\\").join("/")}" guard`;
+  const path = join(rt, ".claude", "settings.json");
+  let settings = {};
+  if (existsSync(path)) {
+    try {
+      settings = JSON.parse(readFileSync(path, "utf-8"));
+    } catch (e) {
+      bad(`${label}: existing file isn't valid JSON (${e.message}) — not touched. Fix it and re-run.`);
+      return false;
+    }
+  }
+  const before = JSON.stringify(settings);
+  settings.hooks ??= {};
+  settings.hooks.PreToolUse ??= [];
+  const ours = settings.hooks.PreToolUse.find((e) => (e.hooks ?? []).some((h) => /agent-flow/.test(h.command ?? "") && /\bguard\b/.test(h.command ?? "")));
+  const entry = { matcher: HOOK_MATCHER, hooks: [{ type: "command", command }] };
+  if (ours) Object.assign(ours, entry);
+  else settings.hooks.PreToolUse.push(entry);
+  if (JSON.stringify(settings) === before) {
+    console.log(dim(`= ${label} (up to date)`));
+    return true;
+  }
+  if (!args["dry-run"]) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`);
+  }
+  ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
+  return true;
 }
 
 function cmdHook(args) {
@@ -400,6 +622,11 @@ const table = {
   scan: cmdScan,
   install: cmdInstall,
   hook: cmdHook,
+  schema: cmdSchema,
+  template: cmdTemplate,
+  report: cmdReport,
+  repair: cmdRepair,
+  guard: cmdGuard,
 };
 
 if (args.version || cmd === "version") {

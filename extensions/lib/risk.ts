@@ -73,26 +73,40 @@ export const CODE_PATTERNS: Record<Exclude<SurfaceType, "dependency" | "secret">
 };
 
 /** High-signal secret shapes. We report the KIND and LINE only — never the value. */
-const SECRET_PATTERNS: { kind: string; re: RegExp }[] = [
+const SECRET_PATTERNS: { kind: string; re: RegExp; unless?: RegExp }[] = [
   { kind: "AWS access key id", re: /\b(AKIA|ASIA)[0-9A-Z]{16}\b/ },
-  { kind: "private key block", re: /-----BEGIN (RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY( BLOCK)?-----/ },
+  { kind: "AWS secret access key", re: /\baws_?secret_?access_?key\b["']?\s*[:=]\s*["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/i },
+  { kind: "private key block", re: /-----BEGIN (RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY( BLOCK)?-----|PuTTY-User-Key-File-\d/ },
   { kind: "GitHub token", re: /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{60,}\b/ },
+  { kind: "GitLab token", re: /\bglpat-[A-Za-z0-9_-]{20,}\b/ },
   { kind: "Slack token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
+  { kind: "Slack webhook", re: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]{20,}/ },
   { kind: "Stripe live key", re: /\b(sk|rk)_live_[A-Za-z0-9]{20,}\b/ },
+  { kind: "Stripe webhook secret", re: /\bwhsec_[A-Za-z0-9]{24,}\b/ },
   { kind: "Google API key", re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   { kind: "Anthropic API key", re: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/ },
   { kind: "OpenAI API key", re: /\bsk-(proj-)?[A-Za-z0-9_-]{32,}\b/ },
+  { kind: "Hugging Face token", re: /\bhf_[A-Za-z0-9]{34,}\b/ },
+  { kind: "SendGrid API key", re: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/ },
+  { kind: "Twilio API key", re: /\bSK[0-9a-f]{32}\b/ },
   { kind: "npm token", re: /\bnpm_[A-Za-z0-9]{36}\b/ },
+  { kind: "JSON Web Token", re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}/ },
+  {
+    kind: "database URL with password",
+    re: /\b(postgres(ql)?|mysql|mariadb|mongodb(\+srv)?|rediss?|amqps?|mssql|sqlserver):\/\/[^\s:@/]+:[^\s@/]{3,}@/i,
+    // Placeholders and interpolation aren't secrets; docker-compose dev defaults are too common to block on.
+    unless: /:\/\/[^\s:@/]+:(password|passwd|pass|secret|changeme|postgres|root|example|test|x+|\*+|\$\{?[^@]*\}?|%[^@]*%|<[^>@]*>|\{\{[^@]*\}\})@/i,
+  },
 ];
 
 /** Secret kinds + line numbers in a blob of text. Never returns the matched value. */
 export function findSecrets(content: string): { kind: string; lines: number[] }[] {
   const lines = content.split(/\r?\n/);
   const out: { kind: string; lines: number[] }[] = [];
-  for (const { kind, re } of SECRET_PATTERNS) {
+  for (const { kind, re, unless } of SECRET_PATTERNS) {
     const hit: number[] = [];
     lines.forEach((l, i) => {
-      if (hit.length < 5 && re.test(l)) hit.push(i + 1);
+      if (hit.length < 5 && l.length < 20_000 && re.test(l) && !(unless && unless.test(l))) hit.push(i + 1);
     });
     if (hit.length) out.push({ kind, lines: hit });
   }
@@ -101,6 +115,11 @@ export function findSecrets(content: string): { kind: string; lines: number[] }[
 
 const ENV_FILE = /(^|\/)\.env(\.[\w-]+)?$/;
 const ENV_TEMPLATE = /\.(example|sample|template|dist|defaults)$/i;
+
+/** A real environment file (`.env`, `.env.production`), not a checked-in template. */
+export function isEnvFile(path: string): boolean {
+  return ENV_FILE.test(path) && !ENV_TEMPLATE.test(path);
+}
 
 // ---------------------------------------------------------------------------
 // Dependency parsing (heuristic, documented as such)
@@ -181,7 +200,7 @@ export function scanRiskSurfaces(root: string, opts: AuditOptions = {}): AuditSc
   for (const file of files) {
     const isTest = TEST_FILE.test(file);
 
-    if (ENV_FILE.test(file) && !ENV_TEMPLATE.test(file)) {
+    if (isEnvFile(file)) {
       add({ key: `secret:${file}:env-file`, type: "secret", path: file, detail: "environment file present in working tree (check it is not committed)" });
     }
 

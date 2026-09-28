@@ -46,7 +46,7 @@ Zero runtime dependencies. No network calls. No telemetry. Every check is plain 
 Someone renamed `src/users/service.ts`. Someone else added `stripe`. An agent edited a payments file.
 
 ```console
-$ npx agent-flow doctor
+$ npx @drix10/agent-flow doctor
 ✓ manifest schema
 ✓ context files exist
 ✗ referenced paths exist — 1
@@ -54,12 +54,12 @@ $ npx agent-flow doctor
 ✓ timestamps valid
 ✓ verified within threshold
 
-$ npx agent-flow audit-risk --fail-on-new
+$ npx @drix10/agent-flow audit-risk --fail-on-new
 ✗ 2 new risk surface(s):
     dependency    package.json  Dependency: stripe
     payment       package.json  Dependency: stripe
 
-$ npx agent-flow classify
+$ npx @drix10/agent-flow classify
 risk: critical  reviewer: high-reasoning  human approval: required  3 files vs main
   - critical: src/payments/charge.ts is under protected path src/payments/
   - medium: dependency manifest changed (package.json) — risk review required
@@ -76,9 +76,10 @@ That is real output. Each check exits non-zero, so CI goes red before an agent b
 
 ```bash
 npm install -D @drix10/agent-flow
-# — or via the skills CLI (same repo, skills-layer view):
+npx @drix10/agent-flow install --harness claude     # or codex | gemini | cursor | copilot | windsurf | agents
+
+# — or just the skills, via the skills CLI:
 npx skills add Drix10/agent-flow
-npx agent-flow install --harness claude     # or codex | gemini | cursor | copilot | windsurf | agents
 ```
 
 Any other tool that reads [AGENTS.md](https://agents.md) — Aider, Zed, Warp, JetBrains Junie, RooCode, Amp, opencode, goose, and more — already gets drift detection and risk classification from the CLI with no install step at all; `--harness agents` just adds a conventional `.agents/skills/` folder on top.
@@ -94,7 +95,7 @@ pi install npm:@drix10/agent-flow
 **Everyone** should add the pre-commit gate and the CI checks:
 
 ```bash
-npx agent-flow hook install                  # protected paths, secrets, broken context refs
+npx @drix10/agent-flow hook install                  # protected paths, secrets, broken context refs
 ```
 
 ```yaml
@@ -109,8 +110,8 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm ci
-      - run: npx agent-flow doctor
-      - run: npx agent-flow audit-risk --fail-on-new
+      - run: npx @drix10/agent-flow doctor
+      - run: npx @drix10/agent-flow audit-risk --fail-on-new
 ```
 
 ## Use
@@ -119,11 +120,11 @@ On Claude Code, Codex, Gemini CLI, Cursor and Copilot, these run as skills the a
 
 | Skill / CLI | Pi shortcut | What happens |
 |---|---|---|
-| `bootstrap` skill + `npx agent-flow scan` | `/bootstrap` | Scans read-only and proposes `AGENTS.md` + `CONTEXT_MANIFEST.json`. Every claim carries `[HIGH CONFIDENCE]`, `[INFERRED]` or `[NEEDS VERIFICATION]`. Asks you for protected paths and risk boundaries. Writes each file only after you approve it. |
+| `bootstrap` skill + `npx @drix10/agent-flow scan` | `/bootstrap` | Scans read-only and proposes `AGENTS.md` + `CONTEXT_MANIFEST.json`. Every claim carries `[HIGH CONFIDENCE]`, `[INFERRED]` or `[NEEDS VERIFICATION]`. Asks you for protected paths and risk boundaries. Writes each file only after you approve it. |
 | `invoking-agents` skill | `/implement 42` | Runs Implementer → classify → Reviewer → QA → PR, each as a separate process. See [the pipeline](#the-pipeline). |
-| `npx agent-flow doctor` | `/doctor` | Drift report. Changes nothing. |
+| `npx @drix10/agent-flow doctor` | `/doctor` | Drift report. Changes nothing. |
 | `gardener` skill | `/repair-docs` | Re-reads the code, fixes the prose, *then* refreshes the manifest. |
-| `npx agent-flow audit-risk` | `/audit-risk` | New risk surfaces since the baseline. |
+| `npx @drix10/agent-flow audit-risk` | `/audit-risk` | New risk surfaces since the baseline. |
 | `gardener` skill | `/sync-context` | Updates `DOCS_INDEX.md` with stale, missing and archived docs. |
 | all of the above, in order | `/garden` | Full maintenance pass. |
 
@@ -155,7 +156,7 @@ Being straight about this is the point of the project.
 |---|---|---|---|---|---|
 | Reviewer can't write | ✅ subagent `tools: Read, Grep, Glob` | ✅ `codex exec --sandbox read-only` | ⚠️ tool list (verify) | ❌ instruction only | ✅ `--tools` + guard |
 | Protected paths | ✅ hook | ✅ hook | ✅ hook | ✅ hook | ✅ guard + hook |
-| Round cap / transitions | ✅ `npx agent-flow state` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ `state_update` |
+| Round cap / transitions | ✅ `npx @drix10/agent-flow state` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ `state_update` |
 | Drift + risk checks | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ tools + CLI |
 | Shell writes by read-only roles | n/a (no shell) | sandbox | — | — | ⚠️ best-effort pattern block |
 

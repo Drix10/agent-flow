@@ -57,6 +57,7 @@ export function extractProseRefs(markdown: string): { path: string; line: number
       if (/^\.\.?\/?$/.test(tok) || tok.startsWith("../")) continue;
       if (!/^[\w.\-/]+$/.test(tok)) continue;
       if (/^\d+(\.\d+)*\/\d/.test(tok)) continue; // ratios, versions
+      if (/[-_.][A-Z]$|\/[A-Z]$/.test(tok)) continue; // placeholders: `agent/issue-N`, `packages/X`
       out.push({ path: tok, line: idx + 1 });
     }
   });
