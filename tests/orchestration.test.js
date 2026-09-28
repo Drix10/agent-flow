@@ -280,3 +280,12 @@ test("orchestrator skill: resume path, HEAD check, QA environment routing, idemp
   assert.ok(!/enableAgents/.test(read(".gemini/agents/reviewer.md")), "subagents are on by default in Gemini CLI");
   assert.match(read(".claude/agents/reviewer.md"), /^skills:\n\s+- reviewer$/m);
 });
+
+test("manifest: a round cap below 1 is rejected (0 would escalate before any work), models must be non-empty strings", async () => {
+  const { validateManifest, maxReviewRounds } = await import("../extensions/lib/manifest.js");
+  const base = { version: "2", staleness_threshold_days: 30, context_files: [{ path: "AGENTS.md", references: [] }] };
+  assert.ok(validateManifest({ ...base, pipeline: { max_review_rounds: 0 } }).some((p) => /max_review_rounds must be an integer 1–5/.test(p)));
+  assert.equal(maxReviewRounds({ ...base, pipeline: { max_review_rounds: 0 } }), maxReviewRounds(null), "0 falls back to the default");
+  assert.deepEqual(validateManifest({ ...base, pipeline: { max_review_rounds: 2, models: { fast: "claude-haiku-4-5", high_reasoning: "claude-opus-5-5" } } }), []);
+  assert.ok(validateManifest({ ...base, pipeline: { models: { fast: "" } } }).some((p) => /pipeline\.models\.fast/.test(p)));
+});

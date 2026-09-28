@@ -61,7 +61,7 @@ sandbox_mode = "read-only"
 codex exec --profile reviewer "Use the reviewer skill. …"
 ```
 
-`.codex/agents/reviewer.toml`, installed alongside the skills, is a subagent definition Codex can discover under `.codex/agents/` and spawn on its own. We have **not** verified the exact auto-discovery/declaration syntax against a live Codex session (no Codex account in our test environment) — don't take the `[agents.reviewer]` shape as confirmed. If you rely on it, run the "create TEST.md" probe from [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md#verify-it-yourself) first, and please report the result either way.
+`.codex/agents/reviewer.toml`, installed alongside the skills, is a [Codex custom agent](https://developers.openai.com/codex/subagents) for delegating a review from an interactive Codex session ("spawn the reviewer agent on …"). The pipeline doesn't use it: `codex exec` has no flag to start a session as a given agent, so the Reviewer runs as its own `codex exec --sandbox read-only` process, and that sandbox is the enforcement.
 
 ## Gemini CLI
 
@@ -70,7 +70,7 @@ npx @drix10/agent-flow install --harness gemini
 ```
 
 - Run `/trust` in the workspace, then restart.
-- In `.gemini/settings.json`, set `"experimental": {"enableAgents": true}` for the reviewer subagent, and `"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}` so `AGENTS.md` loads. `.gemini/settings.json.example` has both.
+- In `.gemini/settings.json`, set `"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}` so `AGENTS.md` loads (see `.gemini/settings.json.example`). Subagents, including `.gemini/agents/reviewer.md`, are on by default in current Gemini CLI.
 - The reviewer's tool list has no write or shell tools. Verify it with the probe.
 
 ## Cursor

@@ -16,6 +16,8 @@
 import { basename, join } from "node:path";
 import { atomicWrite, isoNow, readJson, readTextFile, walk } from "./fsutil.js";
 
+export const SELF_PACKAGE = "@drix10/agent-flow";
+
 export type SurfaceType = "dependency" | "auth" | "payment" | "data-mutation" | "external-api" | "exec" | "secret";
 
 export interface RiskSurface {
@@ -257,6 +259,7 @@ export function scanRiskSurfaces(root: string, opts: AuditOptions = {}): AuditSc
       const content = readTextFile(join(root, file));
       if (content !== null) {
         for (const dep of parseDependencies(file, content)) {
+          if (dep === SELF_PACKAGE) continue; // the tool itself, not a surface to review
           add({ key: `dependency:${file}:${dep}`, type: "dependency", path: file, detail: `Dependency: ${dep}` });
           const cat = depCategory(dep);
           if (cat) add({ key: `${cat}:${file}:${dep}`, type: cat, path: file, detail: `Dependency: ${dep}` });

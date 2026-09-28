@@ -316,18 +316,32 @@ test("read-only roles can't mutate pipeline state through the CLI", () => {
       ["implementer", ["install", "--harness", "codex"]],
       ["implementer", ["hook", "install"]],
       ["implementer", ["init", "--yes"]],
+      ["implementer", ["state", "update", "--issue", "1", "--state", "Working"]], // only the orchestrator records state
       ["banana", ["state", "update", "--issue", "1", "--state", "Working"]], // unknown role fails closed
     ];
     for (const [role, args] of denied) {
       const r = run(dir, args, { AGENT_FLOW_ROLE: role });
       assert.equal(r.status, 2, `${role} ${args.join(" ")}: ${r.stdout}${r.stderr}`);
-      assert.match(r.stderr, /is not allowed for the \w+ role/);
+      assert.match(r.stderr, /may not run `agent-flow /);
     }
     assert.ok(!existsSync(join(dir, ".risk-baseline.json")) && !existsSync(join(dir, "CONTEXT_MANIFEST.json")) && !existsSync(join(dir, ".agents")));
-    assert.equal(run(dir, ["state", "update", "--issue", "1", "--state", "Working"], { AGENT_FLOW_ROLE: "implementer" }).status, 0);
+    assert.equal(run(dir, ["state", "update", "--issue", "1", "--state", "Working"], { AGENT_FLOW_ROLE: "orchestrator" }).status, 0);
     assert.equal(run(dir, ["state"], { AGENT_FLOW_ROLE: "reviewer" }).status, 0, "reading is fine");
     assert.equal(run(dir, ["doctor"], { AGENT_FLOW_ROLE: "qa" }).status, 1, "checks still run");
   } finally {
     cleanup(dir);
+  }
+});
+
+test("audit-risk never lists agent-flow itself as a dependency surface, so it can't land in the baseline either", async () => {
+  const { auditRisk } = await import("../extensions/lib/risk.js");
+  const dir = mkdtempSync(join(tmpdir(), "af-self-dep-"));
+  try {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ devDependencies: { "@drix10/agent-flow": "^1.1.0", stripe: "^14.0.0" } }));
+    const keys = auditRisk(dir, join(dir, ".risk-baseline.json")).surfaces.map((s) => s.key);
+    assert.ok(keys.includes("dependency:package.json:stripe"));
+    assert.ok(!keys.some((k) => k.includes("@drix10/agent-flow")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

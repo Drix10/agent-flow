@@ -340,32 +340,46 @@ export function analyzeShell(cmd: string, depth = 0): ShellFinding {
  * protected path". Splitting on glob metacharacters also catches patterns that
  * start with a wildcard: `*.env` -> [".env"].
  */
-function literalChunks(pattern: string): { text: string; whole: boolean }[] {
+function literalChunks(pattern: string): { text: string; whole: boolean; starts: boolean }[] {
   const p = toPosix(pattern).replace(/^\.\//, "");
-  const out: { text: string; whole: boolean }[] = [];
+  const out: { text: string; whole: boolean; starts: boolean }[] = [];
   for (const m of p.matchAll(/[^*?[\]]+/g)) {
     const after = p[m.index + m[0].length];
     const text = m[0].replace(/^\/+|\/+$/g, "");
     // A chunk that ends a path segment in the pattern (`.git/`, `config/`,
     // `*.env`) must end a segment in the command too: `.git` is not `.github`.
-    if (text.length >= 3) out.push({ text, whole: after === undefined || m[0].endsWith("/") });
+    // Likewise one that starts a segment must start one: `config/` is not `myconfig`.
+    const starts = m.index === 0 || p[m.index - 1] === "/" || m[0].startsWith("/");
+    if (text.length >= 3) out.push({ text, whole: after === undefined || m[0].endsWith("/"), starts });
   }
   return out;
 }
 
 const PATH_END = /^($|[\s/'"`;&|)<>])/;
+const PATH_START = /(^|[\s/'"`;&|(<>=:])$/;
 
 function mentions(cmd: string, patterns: readonly string[]): string | null {
   const hay = fold(cmd);
   for (const p of patterns) {
-    for (const { text, whole } of literalChunks(p)) {
+    for (const { text, whole, starts } of literalChunks(p)) {
       const needle = fold(text);
       for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) {
+        if (starts && !PATH_START.test(hay.slice(Math.max(0, i - 1), i))) continue;
         if (!whole || PATH_END.test(hay.slice(i + needle.length, i + needle.length + 1))) return p;
       }
     }
   }
   return null;
+}
+
+/** The command with each git invocation's subcommand word removed: in `git config user.name`, `config` is not a path. */
+function withoutGitVerbs(cmd: string): string {
+  return segments(cmd)
+    .map((seg) => {
+      const g = parseGit(seg);
+      return g ? `git ${g.args}` : seg;
+    })
+    .join(" ; ");
 }
 
 // ---------------------------------------------------------------------------
@@ -723,7 +737,7 @@ const DEVICE = /^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/;
 // The CLI twins of agent-flow's own mutating tools
 // ---------------------------------------------------------------------------
 
-const CLI_COMMANDS = new Set(["doctor", "audit-risk", "baseline", "classify", "check-staged", "state", "worktree", "scan", "install", "hook", "schema", "template", "report", "repair", "guard"]);
+const CLI_COMMANDS = new Set(["doctor", "init", "audit-risk", "baseline", "classify", "check-staged", "state", "worktree", "scan", "install", "hook", "schema", "template", "report", "repair", "guard"]);
 
 /**
  * May `role` run `agent-flow <argv…>`? Returns a block reason, or null if allowed.
@@ -755,10 +769,12 @@ export function roleMayRunCli(role: Role | null, argv: readonly string[]): strin
           ? "risk_baseline_update"
           : sub === "repair"
             ? "stale_repair"
+            : sub === "init"
+              ? "bootstrap_write"
             : sub === "worktree" && (act === "create" || act === "remove")
               ? `worktree_${act}`
               : null;
-    if (tool && !ROLE_TOOL_ALLOW[role].has(tool)) return `role "${role}" may not run \`agent-flow ${sub}${tool === "stale_repair" ? "" : ` ${act}`}\` (the CLI twin of ${tool}).`;
+    if (tool && !ROLE_TOOL_ALLOW[role].has(tool)) return `role "${role}" may not run \`agent-flow ${sub}${tool === "stale_repair" || tool === "bootstrap_write" ? "" : ` ${act}`}\` (the CLI twin of ${tool}).`;
     if (sub === "install" || (sub === "hook" && act === "install")) {
       return `role "${role}" may not run \`agent-flow ${sub === "hook" ? "hook install" : "install"}\` — it rewrites agent/hook configuration; a human runs setup.`;
     }
@@ -1050,7 +1066,7 @@ function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFi
     const cfg = mentions(cmd, AGENT_CONFIG);
     if (cfg) return block("agent-config", `mutating command references agent/CI configuration (${cfg}). Escalate to a human.`);
   }
-  const prot = mentions(cmd, protectedPaths);
+  const prot = mentions(withoutGitVerbs(cmd), protectedPaths);
   if (prot && !g.allowProtected) return block("protected-path", `mutating command references protected path ${prot}. Escalate to Needs Me instead.`);
   if (role === "implementer") {
     const ctx = mentions(cmd, ctxFiles.filter((f) => f.length >= 3));

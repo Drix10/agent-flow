@@ -52,7 +52,7 @@ export interface ContextManifest {
   contexts?: { path: string; covers?: string[] }[];
   risk_boundaries?: RiskBoundary[];
   protected_paths?: string[];
-  pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean };
+  pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -134,8 +134,16 @@ export function validateManifest(m: unknown): string[] {
       });
   }
   const rounds = man.pipeline?.max_review_rounds;
-  if (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 0 || rounds > 5)) {
-    problems.push("pipeline.max_review_rounds must be an integer 0–5");
+  // 0 would escalate round 1 before the Implementer writes anything.
+  if (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 1 || rounds > 5)) {
+    problems.push("pipeline.max_review_rounds must be an integer 1–5");
+  }
+  const models = man.pipeline?.models as Record<string, unknown> | undefined;
+  if (models !== undefined) {
+    if (typeof models !== "object" || models === null || Array.isArray(models)) problems.push("pipeline.models must be an object");
+    else for (const k of ["fast", "high_reasoning"]) {
+      if (models[k] !== undefined && (typeof models[k] !== "string" || !(models[k] as string).trim())) problems.push(`pipeline.models.${k} must be a non-empty string`);
+    }
   }
   return problems;
 }
@@ -250,5 +258,5 @@ export function contextFilePaths(man: ContextManifest | null): string[] {
 
 export function maxReviewRounds(man: ContextManifest | null): number {
   const r = man?.pipeline?.max_review_rounds;
-  return Number.isInteger(r) && (r as number) >= 0 && (r as number) <= 5 ? (r as number) : DEFAULT_MAX_REVIEW_ROUNDS;
+  return Number.isInteger(r) && (r as number) >= 1 && (r as number) <= 5 ? (r as number) : DEFAULT_MAX_REVIEW_ROUNDS;
 }

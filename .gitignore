@@ -25,3 +25,6 @@ coverage/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Agent scratch worktrees
+.claude/worktrees/

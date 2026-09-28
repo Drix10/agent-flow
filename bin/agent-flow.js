@@ -48,7 +48,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "reopen", "force", "delete-branch", "dry-run", "help"]);
+const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "reopen", "force", "delete-branch", "dry-run", "help", "strict"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -60,7 +60,7 @@ function fixBools(args) {
   return args;
 }
 
-const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness"];
+const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file"];
 const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
 
 /** Closest candidate within edit distance 2, or null. */
@@ -249,9 +249,6 @@ function doctorNextStep(rep, schema) {
   return "re-read the stale files against the code, then `agent-flow repair --yes` to refresh their timestamps";
 }
 
-/** agent-flow in the user's own package.json is the tool, not a risk surface to review. */
-const OWN_DEP = /^Dependency: @drix10\/agent-flow$/;
-
 const KIND_ORDER = ["secret", "payment", "auth", "exec", "data-mutation", "external-api", "dependency"];
 
 /** Surfaces as aligned rows: kind, file[:line], detail. Secret rows carry kind + line, never the value. */
@@ -285,14 +282,8 @@ function surfaceRows(list, { group, keys }) {
 function cmdAudit(args) {
   const rt = root();
   const baseline = fsutil.resolveInside(rt, args.baseline ?? risk.BASELINE_FILE);
-  const raw = risk.auditRisk(rt, baseline, { includeTests: !!args["include-tests"] });
-  const mine = (s) => !OWN_DEP.test(s.detail);
-  const surfaces = raw.surfaces.filter(mine);
-  const newList = raw.newSurfacesList.filter(mine);
-  const byType = {};
-  for (const s of surfaces) byType[s.type] = (byType[s.type] ?? 0) + 1;
-  const resolvedList = raw.resolvedList.filter((k) => !k.endsWith(":@drix10/agent-flow"));
-  const r = { ...raw, surfaces, newSurfacesList: newList, totalSurfaces: surfaces.length, newSurfaces: newList.length, byType, resolvedList, resolvedSurfaces: resolvedList.length };
+  const r = risk.auditRisk(rt, baseline, { includeTests: !!args["include-tests"] });
+  const surfaces = r.surfaces;
   const failNoBaseline = !!args["fail-on-new"] && !r.baselineExists;
   out(args, r, () => {
     const files = new Set(surfaces.map((s) => s.path)).size;
@@ -307,7 +298,7 @@ function cmdAudit(args) {
     } else if (r.newSurfaces === 0) ok("no new risk surfaces since baseline");
     else {
       bad(`${r.newSurfaces} new risk surface(s):`);
-      for (const l of surfaceRows(newList, { group: false, keys: true }).slice(0, 50)) console.log(l);
+      for (const l of surfaceRows(r.newSurfacesList, { group: false, keys: true }).slice(0, 50)) console.log(l);
       console.log(dim("  Accept after review: `agent-flow baseline accept <key>... --yes`"));
     }
     if (r.resolvedSurfaces) console.log(dim(`${r.resolvedSurfaces} baseline surface(s) no longer present`));
@@ -376,12 +367,12 @@ function cmdCheckStaged(args) {
   // Protected paths come from the committed AND the staged manifest, not just the
   // working tree: otherwise emptying protected_paths on disk (without staging it)
   // or deleting the manifest would quietly switch the check off for this commit.
-  const protectedPaths = new Set(man?.protected_paths ?? []);
+  const protectedPaths = new Set(manifestLib.protectedPathsOf(man));
   for (const rev of ["HEAD", ""]) {
     const r = git.git(["show", `${rev}:CONTEXT_MANIFEST.json`], rt);
     if (!r.ok) continue;
     try {
-      for (const p of JSON.parse(r.stdout).protected_paths ?? []) if (typeof p === "string") protectedPaths.add(p);
+      for (const p of manifestLib.protectedPathsOf(JSON.parse(r.stdout))) protectedPaths.add(p);
     } catch {
       /* malformed manifest is reported by the context checks below */
     }
@@ -408,7 +399,7 @@ function cmdCheckStaged(args) {
   const warnings = [];
   if (man) {
     const deleted = new Set(
-      git.git(["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=D"], rt).stdout.split("\n").filter(Boolean),
+      git.nameList(["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=D"], rt),
     );
     const staged = new Set(files);
     const introduced = (ctxFile, path) =>
@@ -693,12 +684,12 @@ const TARGETS = {
   codex: {
     skills: ".agents/skills",
     agents: [[".codex/agents/reviewer.toml", ".codex/agents/reviewer.toml"]],
-    note: 'For a verified hard guarantee, launch the reviewer with `codex exec --sandbox read-only` (real flag, checked against `codex exec --help`) rather than relying on .codex/agents/reviewer.toml being auto-discovered — that subagent-definition path is unverified against a live Codex session. See skills/invoking-agents/SKILL.md.',
+    note: "The pipeline launches the Reviewer with `codex exec --sandbox read-only` (Codex's OS-level sandbox); .codex/agents/reviewer.toml is for delegating a review from an interactive Codex session.",
   },
   gemini: {
     skills: ".gemini/skills",
     agents: [[".gemini/agents/reviewer.md", ".gemini/agents/reviewer.md"]],
-    note: 'Run /trust in the workspace. Subagents need `"experimental": {"enableAgents": true}` in .gemini/settings.json; set `"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}` to load AGENTS.md.',
+    note: 'Trust the workspace (/trust) and set `"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}` in .gemini/settings.json so Gemini loads AGENTS.md. The pipeline runs the Reviewer as `gemini --approval-mode plan` (read-only); .gemini/agents/reviewer.md is for `@reviewer` in interactive sessions.',
   },
   cursor: { skills: ".cursor/skills", agents: [], note: "Cursor reads AGENTS.md natively." },
   copilot: { skills: ".github/skills", agents: [], note: "VS Code / Copilot also reads .claude/skills and .agents/skills." },
@@ -923,19 +914,14 @@ function sub(cmdName, word, choices, usageLine) {
 // Commands that change shared pipeline state, per confined role. Mirrors the shell
 // guard's allow-list (guard.ts) so the CLI can't be used to route around it; the two
 // tables should be unified once both land.
-const PIPELINE_WRITES = ["state update", "baseline accept", "repair", "worktree create", "worktree remove", "install", "hook install", "init"];
-const ROLE_DENY = {
-  reviewer: new Set(PIPELINE_WRITES),
-  qa: new Set(PIPELINE_WRITES),
-  implementer: new Set(["baseline accept", "repair", "install", "hook install", "init"]),
-};
-
-function roleRefusal(args) {
+// One allow list for both paths: the shell guard and the CLI itself use guard.roleMayRunCli,
+// so a read-only role can't mutate pipeline state no matter how the command is reached.
+function roleRefusal() {
   const raw = process.env.AGENT_FLOW_ROLE;
   const { role } = guardLib.parseRole(raw);
-  const op = ["state", "baseline", "worktree", "hook"].includes(args._[0]) ? `${args._[0]} ${args._[1] ?? ""}`.trim() : args._[0];
-  if (!role || !ROLE_DENY[role]?.has(op)) return 0;
-  console.error(`agent-flow: \`${op}\` is not allowed for the ${role} role (AGENT_FLOW_ROLE=${raw}) — it changes shared pipeline state. Report back to the orchestrator instead.`);
+  const reason = guardLib.roleMayRunCli(role, process.argv.slice(2));
+  if (!reason) return 0;
+  console.error(`agent-flow: ${reason} (AGENT_FLOW_ROLE=${raw}) Report back to the orchestrator instead.`);
   return 2;
 }
 
@@ -976,7 +962,7 @@ if (!cmd || args.help || cmd === "help") {
 }
 if (!Object.hasOwn(table, cmd)) process.exit(unknown("command", cmd, Object.keys(table), "run `agent-flow --help` for the list"));
 try {
-  process.exit(roleRefusal(args) || (await table[cmd](args)));
+  process.exit(roleRefusal() || (await table[cmd](args)));
 } catch (e) {
   const msg = String(e.message ?? e).split("\n")[0];
   const friendly = /not a git repository/i.test(msg) ? "not a git repository — run this inside a git checkout (or `git init` first)" : msg;

@@ -866,3 +866,16 @@ test("secret detection: env-file variants, more token shapes, long lines and per
     assert.ok(Date.now() - t0 < 1000, `${name}: 1 MB line took ${Date.now() - t0}ms`);
   }
 });
+
+test("protected directory names only match as path segments: `git config` and `myconfig/` are not `config/`", () => {
+  const manifest = { version: "2", context_files: [], protected_paths: ["config/", "src/auth/**", "*.env"] };
+  const at = (command, role = "implementer") =>
+    decide({ role, toolName: "bash", input: { command }, cwd: process.cwd(), root: process.cwd(), manifest, worktree: role === "implementer" ? process.cwd() : undefined })?.rule ?? "allowed";
+  for (const c of ["git config user.name ci", "git -c color.ui=never config --get user.email", "echo x > myconfig/a", "mv a reconfig.txt"]) {
+    assert.equal(at(c), "allowed", c);
+    assert.equal(at(c, null), "allowed", `${c} (no role)`);
+  }
+  for (const c of ["rm config/db.yml", "rm -rf config", "git rm config/a.yml", "git checkout -- config/a.yml", "cat x | tee config/y", "rm production.env", "cd src && rm auth/login.ts"]) {
+    assert.equal(at(c), "protected-path", c);
+  }
+});

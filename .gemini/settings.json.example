@@ -1,11 +1,8 @@
 {
   // Copy to .gemini/settings.json (merge if it exists).
-  "experimental": {
-    // Required for .gemini/agents/reviewer.md to load. Older docs call it enableSubagents.
-    "enableAgents": true
-  },
   "context": {
     // Load the shared AGENTS.md as well as GEMINI.md.
     "fileName": ["AGENTS.md", "GEMINI.md"]
   }
+  // Subagents (.gemini/agents/reviewer.md) are on by default in current Gemini CLI.
 }
