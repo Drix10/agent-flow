@@ -122,3 +122,22 @@ test("skill frontmatter valid for cross-harness discovery", () => {
     assert.ok(desc.length <= 1024, `${dir}: description exceeds 1024 chars`);
   }
 });
+
+test("versions agree in every shipped manifest, and the README advertises no unlisted directory", () => {
+  const v = pkg.version;
+  assert.equal(JSON.parse(readFileSync(join(root, "plugin.json"), "utf-8")).version, v, "plugin.json drifted");
+  assert.equal(JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf-8")).version, v);
+  assert.equal(JSON.parse(readFileSync(join(root, "gemini-extension.json"), "utf-8")).version, v);
+  for (const p of JSON.parse(readFileSync(join(root, ".claude-plugin", "marketplace.json"), "utf-8")).plugins) {
+    assert.equal(p.version, v, `marketplace plugin ${p.name} drifted`);
+  }
+  assert.ok(!readFileSync(join(root, "README.md"), "utf-8").includes("skills.sh"), "README links a skill directory the package isn't listed on");
+});
+
+test("launch.md commands only use harness flags that exist (checked via --help)", () => {
+  const launch = readFileSync(join(root, "skills", "invoking-agents", "references", "launch.md"), "utf-8");
+  // Mentions in prose (fallbacks, newer-flag notes) are fine; the runnable commands must not use them.
+  for (const flag of ["--max-turns", "--max-budget-usd", '--json-schema "$(cat', "-o json", "--approval-mode plan", "--agent reviewer --tools"]) {
+    assert.ok(!launch.includes(flag), `launch.md runs ${flag}, which supported CLIs don't all offer (see --help)`);
+  }
+});

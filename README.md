@@ -7,7 +7,6 @@
 *Context-drift detection, guardrails & an Implement → Review → QA pipeline for AI coding agents — Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf and any tool that reads `AGENTS.md`.*
 
 [![npm version](https://img.shields.io/npm/v/@drix10/agent-flow?style=flat-square&logo=npm)](https://www.npmjs.com/package/@drix10/agent-flow)
-[![skills.sh](https://skills.sh/b/Drix10/agent-flow)](https://skills.sh/Drix10/agent-flow)
 [![npm downloads](https://img.shields.io/npm/dm/@drix10/agent-flow?style=flat-square&logo=npm&label=downloads)](https://www.npmjs.com/package/@drix10/agent-flow)
 [![CI](https://img.shields.io/github/actions/workflow/status/Drix10/agent-flow/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)

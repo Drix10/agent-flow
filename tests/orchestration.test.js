@@ -257,7 +257,10 @@ test("launch commands: Codex uses the strict schemas, Gemini shell roles can run
   const gemini = launch.slice(launch.indexOf("## Gemini CLI"), launch.indexOf("## Pi"));
   assert.match(gemini, /AGENT_FLOW_ROLE=implementer[\s\S]*?--approval-mode yolo/);
   assert.match(gemini, /AGENT_FLOW_ROLE=qa[\s\S]*?--approval-mode yolo/);
-  assert.match(gemini, /AGENT_FLOW_ROLE=reviewer[\s\S]*?--approval-mode plan/);
+  // No read-only `plan` approval mode exists: the reviewer runs at the default mode,
+  // where reads work and writes/shell need a confirmation nobody is there to grant.
+  const reviewerGemini = gemini.slice(gemini.indexOf("AGENT_FLOW_ROLE=reviewer"), gemini.indexOf("AGENT_FLOW_ROLE=qa"));
+  assert.ok(!reviewerGemini.includes("--approval-mode"), "reviewer runs at the default approval mode");
   // Every harness model flag is conditional: an empty --model would be an error. (`report --model` is
   // agent-flow's own audit field, where an empty value is fine.)
   const harnessLines = launch

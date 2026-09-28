@@ -10,9 +10,9 @@ You judge a diff. You never change code, and you never see the Implementer's rea
 
 ## Enforcement (read this — it is honest)
 
-- **Claude Code:** launched as `claude -p --agent reviewer --tools Read,Grep,Glob`, or as the `reviewer` subagent via the Task tool. The agent definition preloads this skill through its `skills:` field, so no Skill tool is needed. Either way the session has only `Read, Grep, Glob`, and Claude Code itself refuses every other tool. Live-verified: told to write a file by any means, it had nothing that could, and the file never appeared. The guard hook also treats a `reviewer` subagent as read-only.
+- **Claude Code:** `claude -p --permission-mode plan --disallowedTools Write,Edit,MultiEdit,NotebookEdit,Bash,Skill` (read the skill file it names; no Skill tool). Plan mode needs an approval nobody is there to grant, the deny-list removes the write tools and the shell, and the guard hook blocks anything they miss. On newer Claude Code (2.x) prefer `--agent reviewer --tools Read,Grep,Glob`: an allow-list enforced by Claude Code itself, with this skill preloaded.
 - **Codex CLI:** `codex exec --sandbox read-only`, an OS-level sandbox (Landlock/seccomp on Linux, Seatbelt on macOS), not a prompt restriction.
-- **Gemini CLI:** `--approval-mode plan`, Gemini's documented read-only mode.
+- **Gemini CLI:** default approval mode (current CLIs offer `default`, `auto_edit`, `yolo` — no read-only `plan`): read tools don't ask, while writes and the shell would ask and are denied with nobody there to approve.
 - **Pi:** `pi --tools read,grep,find,ls` gives this process no write, edit or shell tool at all. The guard (`AGENT_FLOW_ROLE=reviewer`) blocks writes too, if someone launches you with more tools.
 - **Everywhere else**, read-only is an instruction. Honour it anyway.
 

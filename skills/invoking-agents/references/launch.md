@@ -1,6 +1,6 @@
 # Launching each role
 
-Read "Setup" and "Every launch", then only the section for the harness you're running on. The flags were checked against Claude Code 2.1.283, Codex CLI 0.157.1, Gemini CLI 0.61.0 and Pi 0.87.1 (`--help` of each, plus the official docs). If your version differs, run `--help` once before relying on them.
+Read "Setup" and "Every launch", then only the section for the harness you're running on. The commands use widely supported flags (verified with `--help` on Claude Code 1.x and 2.x, Codex CLI 0.158, Gemini CLI and Pi 0.87.x); where a newer flag is strictly better, the section says so. If your version rejects a flag, run `--help` and use the noted fallback.
 
 ## Setup (once per issue, from the repo root)
 
@@ -22,9 +22,7 @@ LIMIT=2                                       # "max_review_rounds" from \`state
 FAST_MODEL="$(model fast)"
 HIGH_MODEL="$(model high_reasoning)"
 COMMANDS="npm test; npm run typecheck"        # from AGENTS.md, or none
-ROLE_TIMEOUT=3600                             # wall-clock seconds per launch
-MAX_TURNS=150                                 # Claude only
-MAX_BUDGET_USD=                               # Claude only; empty = no cap
+ROLE_TIMEOUT=3600                             # wall-clock seconds per launch; the runner enforces it on every harness
 CODEX_NET=                                    # 1 = network for Codex's Implementer/QA (lockfile installs)
 EOF
 ```
@@ -123,38 +121,38 @@ The orchestrator's own shell tool times out long before a role finishes (Claude 
 
 Every role runs with **the repo root as its working directory**, not the worktree. The hook command is `node "$CLAUDE_PROJECT_DIR/node_modules/@drix10/agent-flow/…" guard`: started from a fresh worktree, `CLAUDE_PROJECT_DIR` would point at a checkout with no `node_modules`, the hook would fail to start, and a failing hook is not a blocking one. So the prompt hands each role the absolute worktree path and it `cd`s there; Claude Code keeps a `cd` for later Bash calls as long as it stays inside the project directory, which the worktree is. That's also why no `--add-dir` is needed.
 
-`--max-turns` and `--max-budget-usd` are print-mode caps (see the CLI reference); hitting one ends the run with an error result, which `report` turns into `harness error: error_max_…`.
+Read-only enforcement is `--permission-mode plan` (edits need an approval nobody is there to grant) plus `--disallowedTools` (the deny-list), plus the guard hook above — which is the part that actually blocks. Where the CLI offers it, `--agent reviewer` with `--tools Read,Grep,Glob` is stronger (an allow-list instead of a deny-list); prefer that.
 
-**Implementer.** `acceptEdits` lets it edit files. `--allowedTools` pre-approves the shell (tests, commit) and the `Skill` tool, which otherwise needs a permission nobody is there to grant in `-p` mode. The guard hook still vets every call.
+**Implementer.** `acceptEdits` lets it edit files. `--allowedTools` pre-approves the shell (tests, commit) and the `Skill` tool, which otherwise needs a permission nobody is there to grant in `-p` mode. The guard hook still vets every call. `ROLE_TIMEOUT` (the runner) is the budget; hitting it ends the run with exit 124.
 
 ```bash
 node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=implementer AGENT_FLOW_WORKTREE="$WT" \
-  claude -p ${FAST_MODEL:+--model "$FAST_MODEL"} --max-turns "$MAX_TURNS" ${MAX_BUDGET_USD:+--max-budget-usd "$MAX_BUDGET_USD"} \
+  claude -p ${FAST_MODEL:+--model "$FAST_MODEL"} \
   --permission-mode acceptEdits --allowedTools Bash,Skill \
-  --output-format json --json-schema "$(cat "$A/implementer.schema.json")" \
+  --output-format json \
   "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS"
 ```
 
-**Reviewer.** `--agent reviewer` runs the session as `.claude/agents/reviewer.md`, whose `skills:` field preloads the reviewer skill. `--tools` removes every other tool. Both are enforced by Claude Code itself. (`--agents` is different: it takes a JSON definition, not a name.)
+**Reviewer.** `plan` mode plus a deny-list: no edits, no shell, no skill-loading (the prompt points at the skill file, which it reads). Both are enforced by Claude Code itself, and the guard hook blocks anything they miss.
 
 ```bash
 node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=reviewer \
-  claude -p ${MODEL:+--model "$MODEL"} --max-turns "$MAX_TURNS" ${MAX_BUDGET_USD:+--max-budget-usd "$MAX_BUDGET_USD"} \
-  --agent reviewer --tools Read,Grep,Glob \
-  --output-format json --json-schema "$(cat "$A/review.schema.json")" \
-  "Round $R of $LIMIT. Packet: $A/ (issue.md, diff.patch, classification.json, implementer-r$R.json, and review-r$((R-1)).json if it exists). Worktree for reading context: $WT"
+  claude -p ${MODEL:+--model "$MODEL"} \
+  --permission-mode plan --disallowedTools Write,Edit,MultiEdit,NotebookEdit,Bash,Skill \
+  --output-format json \
+  "Round $R of $LIMIT. Read .claude/skills/reviewer/SKILL.md and follow it. Packet: $A/ (issue.md, diff.patch, classification.json, implementer-r$R.json, and review-r$((R-1)).json if it exists). Worktree for reading context: $WT"
 ```
 
-**QA.** A shell and read tools, no file-writing tools. The guard blocks mutating commands (best effort), and SKILL.md's tree check catches anything that gets through.
+**QA.** A shell and read tools, no file-writing tools. Unlisted tools need an approval nobody is there to grant in `-p` mode, so they are denied; the guard blocks mutating commands (best effort), and SKILL.md's tree check catches anything that gets through.
 
 ```bash
 node "$A/run-role.mjs" "$A/qa-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=qa \
-  claude -p ${FAST_MODEL:+--model "$FAST_MODEL"} --max-turns "$MAX_TURNS" ${MAX_BUDGET_USD:+--max-budget-usd "$MAX_BUDGET_USD"} \
-  --tools Bash,Read,Grep,Glob,Skill --allowedTools Bash,Skill \
-  --output-format json --json-schema "$(cat "$A/qa-report.schema.json")" \
+  claude -p ${FAST_MODEL:+--model "$FAST_MODEL"} \
+  --allowedTools Bash,Skill \
+  --output-format json \
   "Use the qa skill. Issue $N. Worktree: $WT (cd into it first). Commands: $COMMANDS"
 ```
 
@@ -162,7 +160,7 @@ node "$A/run-role.mjs" "$A/qa-r$R" "$ROLE_TIMEOUT" -- \
 
 Codex runs each role with the worktree as its working root (`-C`), so its OS sandbox confines writes to it. The installed `.agents/skills/` must be committed, because a worktree only contains what's committed. `--add-dir "$GIT_COMMON"` makes the repository's git directory writable so the Implementer can commit.
 
-`--output-schema` uses OpenAI's strict structured outputs: every object closed and every key required. That's what the `.strict.schema.json` files are; `report` reads their `null`s as "absent". The canonical schemas would be rejected before the role did any work.
+`--output-schema` uses OpenAI's strict structured outputs: every object closed and every key required. That's what the `.strict.schema.json` files are (verified: Codex accepts them and `report` validates the result, reading their `null`s as "absent"). The canonical schemas would be rejected before the role did any work.
 
 Codex has no turn cap, so `ROLE_TIMEOUT` is the budget. Its `workspace-write` sandbox has no network by default; set `CODEX_NET=1` when the worktree needs a lockfile install, knowing that also gives the role network access.
 
@@ -196,23 +194,23 @@ Codex's `-p` is `--profile`, not "prompt". The prompt is the positional argument
 
 ## Gemini CLI
 
-Gemini has no working-directory flag, so roles start from the repo root and `cd` into the worktree path they're given. In `-p` mode any tool that would ask for confirmation is denied, and the shell always asks. The Implementer and QA need a shell (tests, commit), so they run with `--approval-mode yolo`, which approves every tool call. Be plain with the user about what that means: on Gemini **nothing confines the Implementer or QA while they run**. Only the pre-commit hook (protected paths, secrets, at commit time) and QA's before/after tree check contain them. The Reviewer runs in `plan`, Gemini's read-only mode.
+Gemini has no working-directory flag, so roles start from the repo root and `cd` into the worktree path they're given. In `-p` mode any tool that would ask for confirmation is denied, and the shell always asks. The Implementer and QA need a shell (tests, commit), so they run with `--approval-mode yolo`, which approves every tool call. Be plain with the user about what that means: on Gemini **nothing confines the Implementer or QA while they run**. Only the pre-commit hook (protected paths, secrets, at commit time) and QA's before/after tree check contain them. The Reviewer runs at the default approval mode (this version offers `default`, `auto_edit` and `yolo` only — no read-only `plan`): read tools don't ask, so they work, while writes and the shell would ask and are denied headless.
 
 Headless Gemini exits with a fatal error in an untrusted folder. Have the user trust the repo once (`/trust` in an interactive session), or add `--skip-trust` to these commands. Gemini has no per-launch turn flag (the `model.maxSessionTurns` setting ends a run with exit code 53), so `ROLE_TIMEOUT` is the budget.
 
 ```bash
 node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=implementer AGENT_FLOW_WORKTREE="$WT" \
-  gemini ${FAST_MODEL:+-m "$FAST_MODEL"} --approval-mode yolo -o json \
+  gemini ${FAST_MODEL:+-m "$FAST_MODEL"} --approval-mode yolo \
   -p "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS"
 node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=reviewer \
-  gemini ${MODEL:+-m "$MODEL"} --approval-mode plan -o json \
+  gemini ${MODEL:+-m "$MODEL"} \
   -p "Use the reviewer skill. Round $R of $LIMIT. Packet: $A/. Worktree for reading context: $WT"
 node "$A/run-role.mjs" "$A/qa-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=qa \
-  gemini ${FAST_MODEL:+-m "$FAST_MODEL"} --approval-mode yolo -o json \
+  gemini ${FAST_MODEL:+-m "$FAST_MODEL"} --approval-mode yolo \
   -p "Use the qa skill. Issue $N. Worktree: $WT (cd into it first). Commands: $COMMANDS"
 ```
 
-`-o json` prints `{"response": "<text>", "stats": {…}}`; `report` unwraps it and logs `stats` (tokens per model). `.gemini/agents/reviewer.md` is for delegating a review from an interactive Gemini session (`@reviewer …`); the pipeline launches the Reviewer as its own `plan`-mode process instead, because that mode is the enforcement.
+This version has no `-o` flag, so the role's raw text goes straight to `report`, which extracts the fenced or last JSON object and validates it (stats/tokens aren't reported for Gemini here). `.gemini/agents/reviewer.md` is for delegating a review from an interactive Gemini session (`@reviewer …`); the pipeline launches the Reviewer as its own `plan`-mode process instead, because that mode is the enforcement.
 
 ## Pi
 
