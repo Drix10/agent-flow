@@ -12,16 +12,19 @@ import { execFileSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** Directories no scan should ever descend into — at any depth. */
@@ -170,44 +173,118 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/** Is the holder recorded in a lock file (`pid@host`, or a bare pid from older versions) confirmed dead? */
+function holderDead(content: string): boolean {
+  const m = content.trim().match(/^(\d+)(?:@(.*))?$/);
+  if (!m) return false;
+  // A PID only means something on the machine that wrote it; a foreign lock falls back to age.
+  if (m[2] !== undefined && m[2] !== hostname()) return false;
+  const pid = Number(m[1]);
+  return pid > 0 && pid !== process.pid && !processAlive(pid);
+}
+
+/**
+ * Remove `lockPath` only if it is still the exact lock we judged stale.
+ *
+ * Two waiters can both read a dead holder's PID; if each simply unlinked, the
+ * second would delete the FRESH lock the first just took — two holders, lost
+ * update. So breaking is serialised through a sibling `.break` lock, and the
+ * content is re-checked under it: a fresh lock has a live PID (or is still
+ * empty, being written) and is left alone.
+ */
+function breakStaleLock(lockPath: string, seen: string, staleMs: number): void {
+  const breaker = `${lockPath}.break`;
+  let fd: number;
+  try {
+    fd = openSync(breaker, "wx");
+  } catch (e: any) {
+    if (e.code !== "EEXIST") throw e;
+    // Holding the breaker is a few syscalls; one this old belongs to a process that died mid-break.
+    try {
+      if (Date.now() - statSync(breaker).mtimeMs > Math.min(staleMs, 5_000)) unlinkSync(breaker);
+    } catch {
+      /* gone already */
+    }
+    return;
+  }
+  try {
+    writeFileSync(fd, `${process.pid}@${hostname()}`);
+    let now: string;
+    try {
+      now = readFileSync(lockPath, "utf-8");
+    } catch {
+      return; // released or broken meanwhile
+    }
+    if (now === seen && lockAbandoned(now, statSync(lockPath).mtimeMs, staleMs)) unlinkSync(lockPath);
+  } finally {
+    closeSync(fd);
+    try {
+      unlinkSync(breaker);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** An empty lock is a holder killed between create and PID write; give it a second, not `staleMs`. */
+const EMPTY_LOCK_GRACE_MS = 1_000;
+
+/** Is the holder a live process on this machine? Such a lock is never broken by age, however slow. */
+function holderAliveHere(content: string): boolean {
+  const m = content.trim().match(/^(\d+)(?:@(.*))?$/);
+  if (!m || (m[2] !== undefined && m[2] !== hostname())) return false;
+  const pid = Number(m[1]);
+  return pid === process.pid || processAlive(pid);
+}
+
+function lockAbandoned(content: string, mtimeMs: number, staleMs: number): boolean {
+  const age = Date.now() - mtimeMs;
+  if (!content.trim()) return age > Math.min(EMPTY_LOCK_GRACE_MS, staleMs);
+  if (holderAliveHere(content)) return false;
+  return holderDead(content) || age > staleMs;
+}
+
 /**
  * Cross-process mutex via O_EXCL lockfile. Parallel implementers updating the
  * same state file would otherwise lose writes (read-modify-write race).
  *
- * The lock file holds the holder's PID. A lock is broken immediately once its
- * PID is confirmed dead (works whenever the holder ran on this machine, which
- * is every real use of this tool — worktrees are always local). Age (`staleMs`)
- * is only a fallback for a lock we can't attribute to a live-or-dead PID (a
- * foreign/older-format lock file, or a cross-host holder) — `fn()` itself is
- * always a fast, synchronous, in-process critical section, so a legitimate
- * holder should never actually take anywhere near `staleMs`.
+ * The lock file holds `pid@hostname`. A lock is broken immediately once its
+ * PID is confirmed dead on this host (every real use — worktrees are always
+ * local). Age (`staleMs`) is only a fallback for a lock we can't attribute to
+ * a live-or-dead PID (a foreign-format lock file, or another host's) — `fn()`
+ * itself is always a fast, synchronous, in-process critical section, so a
+ * legitimate holder should never take anywhere near `staleMs`.
  */
-export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, staleMs = 30_000): T {
+export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, staleMs = 5_000): T {
   mkdirSync(dirname(lockPath), { recursive: true });
   const deadline = Date.now() + timeoutMs;
   let fd: number | null = null;
+  let holder = "";
   while (fd === null) {
     try {
       fd = openSync(lockPath, "wx");
     } catch (e: any) {
-      if (e.code !== "EEXIST") throw e;
-      try {
-        const heldPid = Number.parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
-        const dead = Number.isInteger(heldPid) && heldPid > 0 && heldPid !== process.pid && !processAlive(heldPid);
-        const stale = Date.now() - statSync(lockPath).mtimeMs > staleMs;
-        if (dead || stale) {
-          unlinkSync(lockPath);
-          continue;
+      // Windows: a lock another process just unlinked sits in "delete pending" for a moment,
+      // and opening or reading it fails with EPERM/EACCES. That is contention, not an error.
+      const pending = (c: unknown) => process.platform === "win32" && (c === "EPERM" || c === "EACCES");
+      if (e.code !== "EEXIST" && !pending(e.code)) throw e;
+      if (e.code === "EEXIST") {
+        try {
+          holder = readFileSync(lockPath, "utf-8");
+          if (lockAbandoned(holder, statSync(lockPath).mtimeMs, staleMs)) breakStaleLock(lockPath, holder, staleMs);
+        } catch (err: any) {
+          if (err?.code === "ENOENT") continue; // lock vanished between calls — retry immediately
+          if (!pending(err?.code)) throw err;
         }
-      } catch {
-        continue; // lock vanished between calls — retry immediately
       }
-      if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
-      sleep(25);
+      if (Date.now() > deadline) {
+        throw new Error(`timed out waiting for lock ${lockPath}${holder.trim() ? ` (held by ${holder.trim()})` : ""} — if no agent-flow process is running, delete it`);
+      }
+      sleep(5 + Math.floor(Math.random() * 20));
     }
   }
   try {
-    writeFileSync(fd, String(process.pid));
+    writeFileSync(fd, `${process.pid}@${hostname()}`);
   } catch {
     /* best-effort: an unreadable/missing PID just falls back to the age check above */
   }
@@ -280,6 +357,36 @@ export function resolveInside(root: string, p: string): string {
     throw new Error(`path resolves outside the repository through a symlink: ${p}`);
   }
   return abs;
+}
+
+/**
+ * Where a write to `p` would really land: the real path of the nearest existing
+ * ancestor with the rest appended. A lexical `resolve()` is fooled by a
+ * symlinked directory (`src/up -> ../../..`), which is exactly how a confined
+ * writer would escape its worktree or reach a protected path.
+ */
+export function landingPath(p: string, depth = 0): string {
+  const abs = resolve(p);
+  let probe = abs;
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return join(realpathSync(probe), ...rest.reverse());
+    } catch {
+      // A dangling symlink: writeFile follows it and creates the target.
+      try {
+        if (depth < 40 && lstatSync(probe).isSymbolicLink()) {
+          return landingPath(join(resolve(dirname(probe), readlinkSync(probe)), ...rest.reverse()), depth + 1);
+        }
+      } catch {
+        /* doesn't exist at all — keep walking up */
+      }
+      const parent = dirname(probe);
+      if (parent === probe) return abs;
+      rest.push(probe.slice(parent.length).replace(/^[\\/]+/, ""));
+      probe = parent;
+    }
+  }
 }
 
 /** Repo-relative POSIX path for an absolute or cwd-relative path. */

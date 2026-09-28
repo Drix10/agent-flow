@@ -16,6 +16,8 @@
 import { basename, join } from "node:path";
 import { atomicWrite, isoNow, readJson, readTextFile, walk } from "./fsutil.js";
 
+export const SELF_PACKAGE = "@drix10/agent-flow";
+
 export type SurfaceType = "dependency" | "auth" | "payment" | "data-mutation" | "external-api" | "exec" | "secret";
 
 export interface RiskSurface {
@@ -72,35 +74,103 @@ export const CODE_PATTERNS: Record<Exclude<SurfaceType, "dependency" | "secret">
   ],
 };
 
+/** Placeholders and interpolation aren't secrets; docker-compose dev defaults are too common to block on. Tested against one match. */
+const CREDENTIAL_PLACEHOLDER = /^[^:]+:\/\/[^\s:@/]+:(password|passwd|pass|pwd|secret|token|changeme|postgres|root|example|test|x+|\*+|\$\{?[^@]*\}?|%[^@]*%|<[^>@]*>|\{\{[^@]*\}\})@$/i;
+
 /** High-signal secret shapes. We report the KIND and LINE only — never the value. */
-const SECRET_PATTERNS: { kind: string; re: RegExp }[] = [
+const SECRET_PATTERNS: { kind: string; re: RegExp; unless?: RegExp }[] = [
   { kind: "AWS access key id", re: /\b(AKIA|ASIA)[0-9A-Z]{16}\b/ },
-  { kind: "private key block", re: /-----BEGIN (RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY( BLOCK)?-----/ },
+  { kind: "AWS secret access key", re: /\baws_?secret_?access_?key\b["']?\s*[:=]\s*["']?[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])/i },
+  { kind: "private key block", re: /-----BEGIN (RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY( BLOCK)?-----|PuTTY-User-Key-File-\d/ },
   { kind: "GitHub token", re: /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{60,}\b/ },
+  { kind: "GitLab token", re: /\bglpat-[A-Za-z0-9_-]{20,}\b/ },
   { kind: "Slack token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
+  { kind: "Slack webhook", re: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]{20,}/ },
   { kind: "Stripe live key", re: /\b(sk|rk)_live_[A-Za-z0-9]{20,}\b/ },
+  { kind: "Stripe webhook secret", re: /\bwhsec_[A-Za-z0-9]{24,}\b/ },
   { kind: "Google API key", re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   { kind: "Anthropic API key", re: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/ },
   { kind: "OpenAI API key", re: /\bsk-(proj-)?[A-Za-z0-9_-]{32,}\b/ },
+  { kind: "Hugging Face token", re: /\bhf_[A-Za-z0-9]{34,}\b/ },
+  { kind: "SendGrid API key", re: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/ },
+  { kind: "Twilio API key", re: /\bSK[0-9a-f]{32}\b/ },
   { kind: "npm token", re: /\bnpm_[A-Za-z0-9]{36}\b/ },
+  // Not preceded by a base64url char: `-eyJ-eyJ…` would otherwise restart the scan at every `eyJ` (quadratic).
+  { kind: "JSON Web Token", re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}/ },
+  // Storage connection strings: AccountKey is base64 of 64 bytes, always 86 chars + "==".
+  { kind: "Azure storage account key", re: /\bAccountKey=[A-Za-z0-9+/]{86}==/ },
+  { kind: "DigitalOcean token", re: /\bdo[opr]_v1_[a-f0-9]{64}\b/ },
+  { kind: "Shopify token", re: /\bshp(at|ca|pa|ss)_[a-fA-F0-9]{32}\b/ },
+  // .npmrc: `//registry.npmjs.org/:_authToken=<uuid | npm_…>`; `${NPM_TOKEN}` doesn't match.
+  { kind: "npm auth token", re: /_authToken\s*=\s*["']?(npm_[A-Za-z0-9]{36}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i },
+  {
+    kind: "database URL with password",
+    // The password may contain `/`; one that is all digits before a `/` is a port (`host:8080/a@b`).
+    re: /\b(postgres(ql)?|mysql|mariadb|mongodb(\+srv)?|rediss?|amqps?|mssql|sqlserver):\/\/[^\s:@/]{1,256}:(?!\d+[/?#])[^\s@]{3,256}@/gi,
+    unless: CREDENTIAL_PLACEHOLDER,
+  },
+  {
+    kind: "URL with embedded password",
+    re: /\b(https?|s?ftps?):\/\/[^\s:@/]{1,256}:(?!\d+[/?#])[^\s@]{3,256}@/gi,
+    unless: CREDENTIAL_PLACEHOLDER,
+  },
 ];
+
+/**
+ * Long lines (minified bundles, base64 blobs) are scanned in overlapping chunks:
+ * skipping them would let padding hide a key, and a whole-line regex over
+ * megabytes risks pathological backtracking.
+ */
+const CHUNK = 4096;
+const OVERLAP = 512;
+
+function* windows(line: string): Generator<string> {
+  if (line.length <= CHUNK) {
+    yield line;
+    return;
+  }
+  for (let at = 0; at < line.length; at += CHUNK - OVERLAP) {
+    yield line.slice(at, at + CHUNK);
+    if (at + CHUNK >= line.length) return;
+  }
+}
+
+/** Does `text` hold a match that isn't a placeholder? `unless` is judged per match, so one dummy URL can't hide a real one. */
+function realMatch(text: string, re: RegExp, unless?: RegExp): boolean {
+  if (!re.global) return re.test(text) && !(unless && unless.test(text));
+  re.lastIndex = 0;
+  for (const m of text.matchAll(re)) if (!unless || !unless.test(m[0])) return true;
+  return false;
+}
 
 /** Secret kinds + line numbers in a blob of text. Never returns the matched value. */
 export function findSecrets(content: string): { kind: string; lines: number[] }[] {
   const lines = content.split(/\r?\n/);
   const out: { kind: string; lines: number[] }[] = [];
-  for (const { kind, re } of SECRET_PATTERNS) {
+  for (const { kind, re, unless } of SECRET_PATTERNS) {
     const hit: number[] = [];
     lines.forEach((l, i) => {
-      if (hit.length < 5 && re.test(l)) hit.push(i + 1);
+      if (hit.length >= 5) return;
+      for (const w of windows(l)) {
+        if (realMatch(w, re, unless)) {
+          hit.push(i + 1);
+          return;
+        }
+      }
     });
     if (hit.length) out.push({ kind, lines: hit });
   }
   return out;
 }
 
-const ENV_FILE = /(^|\/)\.env(\.[\w-]+)?$/;
+/** `.env`, `.env.production.local`, `.envrc`, `prod.env` — any number of dot-suffixes. */
+const ENV_FILE = /(^|\/)(\.env(\.[\w-]+)*|\.envrc|[\w.-]+\.env)$/;
 const ENV_TEMPLATE = /\.(example|sample|template|dist|defaults)$/i;
+
+/** A real environment file, not a checked-in template (`.env.example`, `prod.env.sample`). */
+export function isEnvFile(path: string): boolean {
+  return ENV_FILE.test(path) && !ENV_TEMPLATE.test(path);
+}
 
 // ---------------------------------------------------------------------------
 // Dependency parsing (heuristic, documented as such)
@@ -181,7 +251,7 @@ export function scanRiskSurfaces(root: string, opts: AuditOptions = {}): AuditSc
   for (const file of files) {
     const isTest = TEST_FILE.test(file);
 
-    if (ENV_FILE.test(file) && !ENV_TEMPLATE.test(file)) {
+    if (isEnvFile(file)) {
       add({ key: `secret:${file}:env-file`, type: "secret", path: file, detail: "environment file present in working tree (check it is not committed)" });
     }
 
@@ -189,6 +259,7 @@ export function scanRiskSurfaces(root: string, opts: AuditOptions = {}): AuditSc
       const content = readTextFile(join(root, file));
       if (content !== null) {
         for (const dep of parseDependencies(file, content)) {
+          if (dep === SELF_PACKAGE) continue; // the tool itself, not a surface to review
           add({ key: `dependency:${file}:${dep}`, type: "dependency", path: file, detail: `Dependency: ${dep}` });
           const cat = depCategory(dep);
           if (cat) add({ key: `${cat}:${file}:${dep}`, type: cat, path: file, detail: `Dependency: ${dep}` });

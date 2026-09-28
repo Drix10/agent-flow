@@ -24,14 +24,14 @@ import { resolve } from "node:path";
 import { Type } from "typebox";
 import { findRepoRoot } from "./lib/fsutil.js";
 import { decide, parseRole, READ_ONLY_ROLES } from "./lib/guard.js";
-import { ContextManifest, manifestPathFor, tryLoadManifest } from "./lib/manifest.js";
+import { ContextManifest, loadManifestForGuard, manifestPathFor } from "./lib/manifest.js";
 import { appendAudit } from "./lib/state.js";
 import { text } from "./result.js";
 
 export default function (pi: ExtensionAPI) {
   const { role, warning } = parseRole(process.env.AGENT_FLOW_ROLE);
   const allowProtected = process.env.AGENT_FLOW_ALLOW_PROTECTED === "1";
-  let cache: { root: string; mtime: number; manifest: ContextManifest | null } | null = null;
+  let cache: { root: string; mtime: number; manifest: ContextManifest | null; error?: string } | null = null;
   const roots = new Map<string, string>(); // cwd → main repo root (avoids a git spawn per tool call)
   const rootOf = (cwd: string) => {
     let r = roots.get(cwd);
@@ -39,15 +39,15 @@ export default function (pi: ExtensionAPI) {
     return r;
   };
 
-  function manifestFor(root: string): ContextManifest | null {
+  function manifestFor(root: string): { manifest: ContextManifest | null; error?: string } {
     let mtime = -1;
     try {
       mtime = statSync(manifestPathFor(root)).mtimeMs;
     } catch {
       /* no manifest */
     }
-    if (!cache || cache.root !== root || cache.mtime !== mtime) cache = { root, mtime, manifest: tryLoadManifest(root) };
-    return cache.manifest;
+    if (!cache || cache.root !== root || cache.mtime !== mtime) cache = { root, mtime, ...loadManifestForGuard(root) };
+    return cache;
   }
 
   pi.on("session_start", (_event, ctx) => {
@@ -62,13 +62,15 @@ export default function (pi: ExtensionAPI) {
     const cwd = ctx?.cwd ?? process.cwd();
     const root = rootOf(cwd);
     const worktree = process.env.AGENT_FLOW_WORKTREE ? resolve(root, process.env.AGENT_FLOW_WORKTREE) : undefined;
+    const m = manifestFor(root);
     const decision = decide({
       role,
       toolName: event.toolName,
       input: (event.input ?? {}) as Record<string, unknown>,
       cwd,
       root,
-      manifest: manifestFor(root),
+      manifest: m.manifest,
+      manifestError: m.error,
       worktree,
       allowProtected,
     });
@@ -90,7 +92,8 @@ export default function (pi: ExtensionAPI) {
         warning: warning ?? null,
         read_only: role ? READ_ONLY_ROLES.includes(role) : false,
         worktree: process.env.AGENT_FLOW_WORKTREE ?? null,
-        protected_paths: m?.protected_paths ?? [],
+        protected_paths: m.manifest?.protected_paths ?? [],
+        manifest_error: m.error ?? null,
         allow_protected_override: allowProtected,
         enforcement: {
           "write/edit": "enforced (tool_call hook)",

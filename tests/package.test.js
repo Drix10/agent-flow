@@ -53,7 +53,7 @@ test("skills never reference nonexistent commands or the old context file names"
   for (const dir of readdirSync(join(root, "skills"))) {
     const c = readFileSync(join(root, "skills", dir, "SKILL.md"), "utf-8");
     assert.ok(!/pi run \//.test(c), `${dir}: \`pi run /x\` is not a Pi command`);
-    assert.ok(!/node extensions\/[\w-]+\.js/.test(c), `${dir}: extensions are not CLIs; use npx agent-flow`);
+    assert.ok(!/node extensions\/[\w-]+\.js/.test(c), `${dir}: extensions are not CLIs; use npx @drix10/agent-flow`);
   }
 });
 

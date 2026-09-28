@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Drix10/agent-flow/schemas/qa-report.schema.json",
+  "title": "agent-flow QA report",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "passed_with_flaky",
+        "failed"
+      ]
+    },
+    "issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "duration_seconds": {
+            "type": "number"
+          },
+          "rerun_exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "raw_output": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "command",
+          "exit_code",
+          "raw_output"
+        ]
+      }
+    },
+    "flaky": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "status",
+    "issue",
+    "commands"
+  ]
+}

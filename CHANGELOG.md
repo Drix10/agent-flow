@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-09-28
+
+A pre-integration review (three independent reviewers plus a QA sweep of ~200 everyday commands) found and fixed audit rows #37–66: guard bypasses and false positives, a fail-open on an unparseable manifest, a lock race, and a Codex/Gemini pipeline that would not have run. Details and a regression test per row: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).
+
+### Added
+- **Zero-setup `doctor`.** With no manifest it finds every context file (AGENTS.md, CLAUDE.md, GEMINI.md, `.cursorrules`, Copilot and Windsurf rules), checks every path they mention, and suggests the likely rename ("did you mean …?").
+- **`agent-flow init`** writes a starter manifest (and an honest AGENTS.md skeleton if there is none) without an LLM.
+- **Runnable pipeline on four harnesses:** strict JSON schemas for Codex (`schema --strict`), Gemini envelope unwrapping, background role runs with timeouts, crash resume, idempotent PRs, per-launch budgets and an audit line per role run (`report --harness`).
+- Unknown commands, flags and harness names get a "did you mean" instead of a help dump.
+
+### Security
+- No agent session, pipeline role or not, may skip hooks (incl. abbreviated `--no-verif`), force-push, delete remote branches or push to the default branch.
+- Read-only roles can't mutate pipeline state through the CLI twins; one allow list serves the shell guard and the CLI.
+- A present-but-unparseable manifest fails closed for writes instead of disabling protection.
+- Non-ASCII filenames no longer skip the pre-commit hook; `.risk-baseline.json` is tamper-proof; implementer shell writes are checked against the worktree (best-effort).
+
+### Fixed
+- Guard false positives: commit messages, echo text and grep patterns naming a protected path; `git config`; read-only git/tee/curl forms for reviewer and QA.
+- `withLock` race and crash-left empty locks; prose drift false positives; typed manifest validation; `max_review_rounds` must be 1–5.
+
 ## [1.1.0] - 2026-09-27
 
 A self-audit found that several documented guarantees were prose rather than code, and that the code had security bugs. This release fixes them. A second, adversarial pass before the first tag found five more (round-cap bypass, a glob-matching gap in the guard, a lock-staleness race, and two minor path/regex bugs) plus a deploy gap where two GitHub-native files had silently reverted to their v1.0.2 content, and a Windows-only CI failure traced to a missing `.gitattributes`. Full list: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).

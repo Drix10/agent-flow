@@ -54,8 +54,17 @@
     "pipeline": {
       "type": "object",
       "properties": {
-        "max_review_rounds": { "type": "integer", "minimum": 0, "maximum": 5 },
-        "auto_merge_low_risk": { "type": "boolean" }
+        "max_review_rounds": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "auto_merge_low_risk": { "type": "boolean" },
+        "models": {
+          "type": "object",
+          "description": "Model IDs the orchestrator passes to each role's --model flag. Omit a key to use the harness default.",
+          "properties": {
+            "fast": { "type": "string", "minLength": 1 },
+            "high_reasoning": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
       }
     }
   }

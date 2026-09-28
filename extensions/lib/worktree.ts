@@ -11,7 +11,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { toPosix } from "./fsutil.js";
-import { defaultBranch, ensureLocalExcludes, git, mustGit, validateBranchName } from "./git.js";
+import { defaultBranch, ensureLocalExcludes, git, mustGit, recordedBase, validateBranchName } from "./git.js";
 
 export const WORKTREE_DIR = ".worktrees";
 export const branchFor = (issue: number) => `agent/issue-${issue}`;
@@ -67,6 +67,8 @@ export function createWorktree(root: string, issue: number, baseBranch?: string)
   } else {
     mustGit(["worktree", "add", "-b", branch, abs, base], root);
   }
+  // Remember the base so classify, the review diff and the PR all use the same one.
+  if (!branchExists || !recordedBase(root, branch)) git(["config", `branch.${branch}.agentflowbase`, base], root);
   return {
     path: rel,
     branch,

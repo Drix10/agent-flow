@@ -52,7 +52,7 @@ export interface ContextManifest {
   contexts?: { path: string; covers?: string[] }[];
   risk_boundaries?: RiskBoundary[];
   protected_paths?: string[];
-  pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean };
+  pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -89,12 +89,21 @@ export function validateManifest(m: unknown): string[] {
   if (man.contexts && !man.context_files) {
     problems.push("legacy `contexts`/`covers` schema (FM-17) — migrate to `context_files` with per-reference `last_verified`");
   }
+  if (man.version !== undefined && typeof man.version !== "string") problems.push(`version must be a string ("2"), got ${JSON.stringify(man.version)}`);
+  if (man.default_branch !== undefined && (typeof man.default_branch !== "string" || !man.default_branch.trim())) {
+    problems.push(`default_branch must be a branch name string, got ${JSON.stringify(man.default_branch)} — ignored`);
+  }
   if (!man.context_files && !man.contexts) problems.push("missing `context_files` array");
   if (man.context_files !== undefined && !Array.isArray(man.context_files)) problems.push("`context_files` must be an array");
 
   if (Array.isArray(man.context_files)) {
     man.context_files.forEach((cf, i) => {
-      if (!cf || typeof cf.path !== "string" || !cf.path) problems.push(`context_files[${i}].path missing`);
+      if (!cf || typeof cf !== "object" || Array.isArray(cf)) {
+        problems.push(`context_files[${i}] must be an object like {"path": "AGENTS.md", "references": []}, got ${JSON.stringify(cf)}`);
+        return;
+      }
+      if (cf.path !== undefined && typeof cf.path !== "string") problems.push(`context_files[${i}].path must be a string, got ${JSON.stringify(cf.path)}`);
+      else if (!cf.path) problems.push(`context_files[${i}].path missing`);
       else if (PLACEHOLDER.test(cf.path)) problems.push(`context_files[${i}].path is an unfilled template placeholder: ${cf.path}`);
       if (!Array.isArray(cf?.references)) {
         problems.push(`context_files[${i}].references must be an array`);
@@ -102,7 +111,12 @@ export function validateManifest(m: unknown): string[] {
       }
       cf.references.forEach((r, j) => {
         const where = `context_files[${i}].references[${j}]`;
-        if (!r || typeof r.path !== "string" || !r.path) problems.push(`${where}.path missing`);
+        if (!r || typeof r !== "object" || Array.isArray(r)) {
+          problems.push(`${where} must be an object with path/type/last_verified, got ${JSON.stringify(r)}`);
+          return;
+        }
+        if (r.path !== undefined && typeof r.path !== "string") problems.push(`${where}.path must be a string, got ${JSON.stringify(r.path)}`);
+        else if (!r.path) problems.push(`${where}.path missing`);
         else if (PLACEHOLDER.test(r.path)) problems.push(`${where}.path is an unfilled template placeholder: ${r.path}`);
         if (!validTimestamp(r?.last_verified)) problems.push(`${where}.last_verified is not a valid ISO timestamp: ${JSON.stringify(r?.last_verified)}`);
         else if (Date.parse(r.last_verified) > Date.now() + 24 * 3600_000) problems.push(`${where}.last_verified is in the future: ${r.last_verified}`);
@@ -115,7 +129,8 @@ export function validateManifest(m: unknown): string[] {
     if (typeof d !== "number" || !Number.isFinite(d) || d <= 0) problems.push("staleness_threshold_days must be a positive number");
   }
   if (man.protected_paths !== undefined) {
-    if (!Array.isArray(man.protected_paths)) problems.push("protected_paths must be an array of strings");
+    if (typeof man.protected_paths === "string") problems.push(`protected_paths must be an array — treating the string as ["${man.protected_paths}"]`);
+    else if (!Array.isArray(man.protected_paths)) problems.push("protected_paths must be an array of strings — ignored");
     else
       man.protected_paths.forEach((p, i) => {
         if (typeof p !== "string" || !p) problems.push(`protected_paths[${i}] must be a non-empty string`);
@@ -133,8 +148,16 @@ export function validateManifest(m: unknown): string[] {
       });
   }
   const rounds = man.pipeline?.max_review_rounds;
-  if (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 0 || rounds > 5)) {
-    problems.push("pipeline.max_review_rounds must be an integer 0–5");
+  // 0 would escalate round 1 before the Implementer writes anything.
+  if (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 1 || rounds > 5)) {
+    problems.push("pipeline.max_review_rounds must be an integer 1–5");
+  }
+  const models = man.pipeline?.models as Record<string, unknown> | undefined;
+  if (models !== undefined) {
+    if (typeof models !== "object" || models === null || Array.isArray(models)) problems.push("pipeline.models must be an object");
+    else for (const k of ["fast", "high_reasoning"]) {
+      if (models[k] !== undefined && (typeof models[k] !== "string" || !(models[k] as string).trim())) problems.push(`pipeline.models.${k} must be a non-empty string`);
+    }
   }
   return problems;
 }
@@ -173,13 +196,34 @@ export function loadManifest(root: string, manifestPath?: string): LoadResult {
     return { ok: false, error: problems[0], path };
   }
   const { files, legacy } = normalizeManifest(parsed.value);
+  // Downstream code iterates protected_paths: a hand-written string would be
+  // walked char by char (or crash `.filter`). Validation above reports it.
+  if (parsed.value.protected_paths !== undefined) parsed.value.protected_paths = protectedPathsOf(parsed.value);
   return { ok: true, value: { path, manifest: parsed.value, files, legacySchema: legacy, problems } };
 }
 
-/** Load the manifest if present; never throws. Used by the guard and classifier. */
+/** protected_paths as a clean string array, whatever shape the manifest has: a string is one pattern, junk entries are dropped. */
+export function protectedPathsOf(man: { protected_paths?: unknown } | null | undefined): string[] {
+  const p = man?.protected_paths;
+  if (typeof p === "string") return p.trim() ? [p] : [];
+  if (!Array.isArray(p)) return [];
+  return p.filter((x): x is string => typeof x === "string" && x.length > 0);
+}
+
+/** Load the manifest if present; never throws. Used by the classifier and state machine. */
 export function tryLoadManifest(root: string): ContextManifest | null {
   const r = loadManifest(root);
   return r.ok ? r.value.manifest : null;
+}
+
+/**
+ * For the guard: the manifest, or why an existing one can't be loaded. "Absent"
+ * and "present but unparseable" must differ — the second fails closed.
+ */
+export function loadManifestForGuard(root: string): { manifest: ContextManifest | null; error?: string } {
+  const r = loadManifest(root);
+  if (r.ok) return { manifest: r.value.manifest };
+  return r.error === "manifest_not_found" ? { manifest: null } : { manifest: null, error: r.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -224,8 +268,8 @@ export function matchesPattern(pattern: string, file: string): boolean {
   return f === p || f.startsWith(`${p}/`);
 }
 
-export function matchAny(patterns: readonly string[] | undefined, file: string): string | null {
-  for (const p of patterns ?? []) if (typeof p === "string" && matchesPattern(p, file)) return p;
+export function matchAny(patterns: readonly string[] | string | undefined, file: string): string | null {
+  for (const p of protectedPathsOf({ protected_paths: patterns })) if (matchesPattern(p, file)) return p;
   return null;
 }
 
@@ -238,5 +282,5 @@ export function contextFilePaths(man: ContextManifest | null): string[] {
 
 export function maxReviewRounds(man: ContextManifest | null): number {
   const r = man?.pipeline?.max_review_rounds;
-  return Number.isInteger(r) && (r as number) >= 0 && (r as number) <= 5 ? (r as number) : DEFAULT_MAX_REVIEW_ROUNDS;
+  return Number.isInteger(r) && (r as number) >= 1 && (r as number) <= 5 ? (r as number) : DEFAULT_MAX_REVIEW_ROUNDS;
 }

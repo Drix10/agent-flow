@@ -1,0 +1,136 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Drix10/agent-flow/schemas/review.schema.json",
+  "title": "agent-flow review",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "request_changes"
+      ]
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "summary": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "blocking",
+              "warning",
+              "nit"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "IMPL_ERROR",
+              "SPEC_ERROR",
+              "ARCH_ERROR"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "suggestion": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "severity",
+          "category",
+          "issue",
+          "evidence"
+        ]
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "criterion": {
+            "type": "string"
+          },
+          "met": {
+            "type": "boolean"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "criterion",
+          "met",
+          "evidence"
+        ]
+      }
+    },
+    "withdrawn": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "context_stale_flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "claim": {
+            "type": "string"
+          },
+          "reality": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "claim",
+          "reality"
+        ]
+      }
+    },
+    "risk_review_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "permission_violations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "status",
+    "round",
+    "summary",
+    "findings",
+    "criteria"
+  ]
+}

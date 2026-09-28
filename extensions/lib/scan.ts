@@ -12,6 +12,7 @@ import { basename, dirname, join } from "node:path";
 import { readJson, readTextFile, walk } from "./fsutil.js";
 import { defaultBranch, git } from "./git.js";
 import { scanRiskSurfaces } from "./risk.js";
+import { isContextFile } from "./stale.js";
 
 export interface ScanResult {
   root: string;
@@ -113,7 +114,7 @@ export function scanRepo(root: string, opts: { maxFiles?: number } = {}): ScanRe
 
   const topLevelDirs = [...new Set(files.filter((f) => f.includes("/")).map((f) => f.split("/")[0]))].sort();
   const entryPoints = files.filter((f) => ENTRY.test(f) && f.split("/").length <= 4).slice(0, 50);
-  const existingContextFiles = files.filter((f) => CONTEXT_FILES.includes(f) || /(^|\/)AGENTS\.md$/.test(f) || f.startsWith(".cursor/rules/")).slice(0, 100);
+  const existingContextFiles = files.filter((f) => CONTEXT_FILES.includes(f) || isContextFile(f) || f.startsWith(".cursor/rules/")).slice(0, 100);
   const ci = files.filter((f) => CI.test(f));
 
   const isRepo = git(["rev-parse", "--is-inside-work-tree"], root).ok;

@@ -11,7 +11,7 @@
  * manifest, and uses path-SEGMENT heuristics only when no boundaries exist.
  */
 
-import { changedFiles, defaultBranch } from "./git.js";
+import { changedFiles, defaultBranch, recordedBase } from "./git.js";
 import { ContextManifest, RiskLevel, contextFilePaths, matchAny, matchesPattern } from "./manifest.js";
 import { isDependencyManifest } from "./risk.js";
 
@@ -93,7 +93,8 @@ export function classifyFiles(allFiles: string[], manifest: ContextManifest | nu
 }
 
 export function classifyDiff(cwd: string, root: string, manifest: ContextManifest | null, base?: string, head?: string): Classification & { base: string; head: string } {
-  const b = base ?? manifest?.default_branch ?? defaultBranch(root);
+  const manifestBase = typeof manifest?.default_branch === "string" && manifest.default_branch.trim() ? manifest.default_branch : null;
+  const b = base ?? recordedBase(cwd) ?? manifestBase ?? defaultBranch(root);
   const files = changedFiles(cwd, b, head);
   return { ...classifyFiles(files, manifest), base: b, head: head ?? "(working tree)" };
 }

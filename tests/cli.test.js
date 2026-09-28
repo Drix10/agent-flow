@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { localInstall } from "./helpers.js";
 
 const BIN = fileURLToPath(new URL("../bin/agent-flow.js", import.meta.url));
 const pkgRoot = () => fileURLToPath(new URL("..", import.meta.url));
@@ -32,7 +33,7 @@ function repo() {
   return { dir, g };
 }
 
-test("doctor: exit 0 healthy, 1 on drift, 2 without a manifest", () => {
+test("doctor: exit 0 healthy, 1 on drift (with or without a manifest), 2 for a named manifest that's missing", () => {
   const { dir } = repo();
   try {
     assert.equal(run(dir, "doctor").status, 0);
@@ -41,7 +42,8 @@ test("doctor: exit 0 healthy, 1 on drift, 2 without a manifest", () => {
     assert.equal(r.status, 1);
     assert.equal(JSON.parse(r.stdout).healthy, false);
     rmSync(join(dir, "CONTEXT_MANIFEST.json"));
-    assert.equal(run(dir, "doctor").status, 2);
+    assert.equal(run(dir, "doctor").status, 1, "no manifest: auto-discovered AGENTS.md still catches the drift");
+    assert.equal(run(dir, "doctor", "--manifest", "nope.json").status, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -69,11 +71,14 @@ test("check-staged blocks protected paths and secrets; human override works", ()
   }
 });
 
-test("audit-risk --fail-on-new fails only after a baseline exists and something new appears", () => {
+test("audit-risk --fail-on-new fails without a baseline (it would check nothing) and when something new appears", () => {
   const { dir } = repo();
   try {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies: { lodash: "1" } }));
-    assert.equal(run(dir, "audit-risk", "--fail-on-new").status, 0);
+    const none = run(dir, "audit-risk", "--fail-on-new");
+    assert.equal(none.status, 1);
+    assert.match(none.stdout, /baseline accept --all --yes/);
+    assert.equal(run(dir, "audit-risk").status, 0);
     assert.equal(run(dir, "baseline", "accept", "--all").status, 2, "requires --yes");
     assert.equal(run(dir, "baseline", "accept", "--all", "--yes").status, 0);
     writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies: { lodash: "1", stripe: "1" } }));
@@ -100,6 +105,7 @@ test("state update enforces the round cap from any harness", () => {
 test("install copies skills + reviewer agent and refuses to clobber user edits", () => {
   const { dir } = repo();
   try {
+    const run = localInstall(dir);
     assert.equal(run(dir, "install", "--harness", "claude").status, 0);
     assert.ok(existsSync(join(dir, ".claude", "skills", "reviewer", "SKILL.md")));
     assert.ok(existsSync(join(dir, ".claude", "agents", "reviewer.md")));
@@ -134,6 +140,7 @@ test("install --harness codex writes every skill under .agents/skills and the TO
 test("install --dry-run writes nothing, for every supported harness", () => {
   const { dir } = repo();
   try {
+    const run = localInstall(dir);
     for (const harness of ["claude", "codex", "gemini", "cursor", "copilot", "windsurf", "agents"]) {
       const r = run(dir, "install", "--harness", harness, "--dry-run");
       assert.equal(r.status, 0, `${harness}: ${r.stdout}${r.stderr}`);
@@ -170,6 +177,9 @@ test("hook install writes a pre-commit hook that never downloads", () => {
     const hook = readFileSync(join(dir, ".git", "hooks", "pre-commit"), "utf-8");
     assert.match(hook, /check-staged/);
     assert.match(hook, /--no-install/);
+    assert.match(hook, /npx --no-install @drix10\/agent-flow check-staged/, "scoped: the unscoped name is someone else's package");
+    assert.doesNotMatch(hook, /npx --no-install agent-flow /);
+    assert.match(hook, /can't find the agent-flow CLI/, "non-Node repos get a fix-it message, not an npm error");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

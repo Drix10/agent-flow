@@ -1,21 +1,16 @@
-# agent-flow Reviewer for Codex CLI.
+# agent-flow Reviewer as a Codex custom agent (https://developers.openai.com/codex/subagents).
 #
-# Two ways to get this enforced, in order of how well we've verified them:
+# Codex loads project agents from .codex/agents/*.toml (name, description and
+# developer_instructions required; sandbox_mode, model, model_reasoning_effort optional)
+# and spawns one only when a session explicitly asks for it, e.g. "spawn the reviewer
+# agent on .agent-flow/artifacts/issue-42/". There is no `codex exec` flag that starts a
+# session as a given agent, so the agent-flow pipeline does not use this file: it launches
+# the Reviewer as its own process with `codex exec --sandbox read-only`, and that OS-level
+# sandbox is the enforcement (skills/invoking-agents/references/launch.md).
 #
-# 1. VERIFIED: launch the reviewer as its own process with a real, checked flag:
-#      codex exec --sandbox read-only "Use the reviewer skill. …"
-#    (`--sandbox read-only` is confirmed against `codex exec --help` on Codex CLI v0.157.1.)
-#    A `--profile reviewer` pointing at `sandbox_mode = "read-only"` in
-#    ~/.codex/reviewer.config.toml does the same thing via Codex's profile system
-#    (https://developers.openai.com/codex/config-advanced#profiles).
-#
-# 2. UNVERIFIED: this file as a subagent definition Codex discovers under .codex/agents/
-#    and spawns on its own. We could not confirm the exact declaration/invocation syntax
-#    against a live session (no Codex auth in our test environment) — treat `sandbox_mode`
-#    below as intent, not a proven guarantee, until you've run the "write TEST.md" probe
-#    from docs/HARNESS-MATRIX.md#verify-it-yourself against your Codex version.
-#
-# Either way: the read-only sandbox is the enforcement, not this file's prose.
+# Use this file for interactive delegation. Its `sandbox_mode` asks for read-only, but the
+# prose below is not what makes it read-only; run the "write TEST.md" probe from
+# docs/HARNESS-MATRIX.md#verify-it-yourself against your Codex version before relying on it.
 name = "reviewer"
 description = "Read-only agent-flow code reviewer. Reviews a diff packet and returns a JSON verdict. Cannot write."
 model_reasoning_effort = "high"
