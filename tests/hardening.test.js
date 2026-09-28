@@ -757,7 +757,7 @@ for (let i = 0; i < Number(iters); i++) {
     writeFileSync(lock, `${deadPid}@some-other-host.invalid`);
     assert.throws(() => withLock(lock, () => {}, 200), /timed out/);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 });
 

@@ -44,8 +44,9 @@ cat > "$A/run-role.mjs" <<'EOF'
 // node run-role.mjs <base> <timeout-s> -- [KEY=VALUE…] <command> [args…]
 // Detaches so the role outlives the tool call that started it. Writes <base>.argv/.pid/.raw/.err,
 // then <base>.secs and, last, <base>.exit (124 = timed out). Same behaviour on Linux, macOS and Windows.
-import { spawn } from "node:child_process";
-import { openSync, renameSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, openSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 const [base, secs, , ...rest] = process.argv.slice(2);
 if (process.env.AF_SUPERVISED !== "1") {
   spawn(process.execPath, process.argv.slice(1), { detached: true, stdio: "ignore", windowsHide: true, env: { ...process.env, AF_SUPERVISED: "1" } }).unref();
@@ -55,12 +56,27 @@ const env = { ...process.env };
 while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0] ?? "")) { const [k, ...v] = rest.shift().split("="); env[k] = v.join("="); }
 delete env.AF_SUPERVISED;
 writeFileSync(`${base}.argv`, JSON.stringify(rest));
+const win = process.platform === "win32";
+// Windows: run .exe directly (args intact); npm's .cmd shims (claude.cmd, codex.cmd) need cmd.exe, with every arg quoted.
+const resolveWin = (cmd) => {
+  if (/[\\/]/.test(cmd) || /\.[a-z]+$/i.test(cmd)) return cmd;
+  for (const d of (process.env.PATH ?? "").split(";")) for (const e of (process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";")) {
+    if (d && existsSync(join(d, cmd + e))) return join(d, cmd + e);
+  }
+  return cmd;
+};
+const exe = win ? resolveWin(rest[0]) : rest[0];
+const q = (a) => `"${String(a).replace(/"/g, '""')}"`;
 const start = Date.now();
 let timedOut = false;
 const out = (f) => openSync(`${base}.${f}`, "w");
-const child = spawn(rest[0], rest.slice(1), { env, stdio: ["ignore", out("raw"), out("err")], shell: process.platform === "win32" });
+const stdio = ["ignore", out("raw"), out("err")];
+const child = win && /\.(cmd|bat)$/i.test(exe)
+  ? spawn(`${q(exe)} ${rest.slice(1).map(q).join(" ")}`, { env, stdio, shell: true, windowsHide: true })
+  : spawn(exe, rest.slice(1), { env, stdio, windowsHide: true });
 writeFileSync(`${base}.pid`, String(child.pid));
-const kill = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); setTimeout(() => child.kill("SIGKILL"), 10000).unref(); }, Number(secs) * 1000);
+const stop = () => (win ? spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"]) : child.kill("SIGTERM"));
+const kill = setTimeout(() => { timedOut = true; stop(); setTimeout(() => child.kill("SIGKILL"), 10000).unref(); }, Number(secs) * 1000);
 const done = (code) => {
   clearTimeout(kill);
   writeFileSync(`${base}.secs`, String(Math.round((Date.now() - start) / 1000)));
