@@ -264,13 +264,18 @@ export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, s
     try {
       fd = openSync(lockPath, "wx");
     } catch (e: any) {
-      if (e.code !== "EEXIST") throw e;
-      try {
-        holder = readFileSync(lockPath, "utf-8");
-        if (lockAbandoned(holder, statSync(lockPath).mtimeMs, staleMs)) breakStaleLock(lockPath, holder, staleMs);
-      } catch (err: any) {
-        if (err?.code !== "ENOENT") throw err;
-        continue; // lock vanished between calls — retry immediately
+      // Windows: a lock another process just unlinked sits in "delete pending" for a moment,
+      // and opening or reading it fails with EPERM/EACCES. That is contention, not an error.
+      const pending = (c: unknown) => process.platform === "win32" && (c === "EPERM" || c === "EACCES");
+      if (e.code !== "EEXIST" && !pending(e.code)) throw e;
+      if (e.code === "EEXIST") {
+        try {
+          holder = readFileSync(lockPath, "utf-8");
+          if (lockAbandoned(holder, statSync(lockPath).mtimeMs, staleMs)) breakStaleLock(lockPath, holder, staleMs);
+        } catch (err: any) {
+          if (err?.code === "ENOENT") continue; // lock vanished between calls — retry immediately
+          if (!pending(err?.code)) throw err;
+        }
       }
       if (Date.now() > deadline) {
         throw new Error(`timed out waiting for lock ${lockPath}${holder.trim() ? ` (held by ${holder.trim()})` : ""} — if no agent-flow process is running, delete it`);
