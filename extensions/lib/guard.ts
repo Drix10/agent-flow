@@ -9,17 +9,24 @@
  * Enforcement strength, stated honestly:
  *  - file-writing tools: ENFORCED — every target path is resolved through
  *    symlinks and checked against role, worktree and protected paths.
- *  - shell: BEST-EFFORT — pattern analysis of the command string. A model
- *    can still write through a script file we can't see into. For hard
- *    isolation, launch read-only roles with no shell tool, or in a sandbox.
+ *  - shell: BEST-EFFORT — the command is lexed and pattern-analysed: redirect
+ *    targets and the paths of common write verbs are resolved (tracking `cd`)
+ *    and checked like file writes. An interpreter or a script file we can't
+ *    see into can still get around it. For hard isolation, launch read-only
+ *    roles with no shell tool, or run the agent in a container/sandbox.
+ *  - hook-skipping, force-push, remote-branch deletion and pushes to the
+ *    default branch are blocked for EVERY agent session, role or not: the
+ *    guard only ever sees agent tool calls, never a human's own terminal.
  *
  * The role comes from AGENT_FLOW_ROLE (or the harness's subagent type), set by
  * whoever launches the process. The model cannot change its own role.
  */
 
-import { isAbsolute, relative, resolve } from "node:path";
+import { readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join, parse as parsePath, relative, resolve } from "node:path";
 import { CASE_INSENSITIVE_FS, landingPath, toPosix } from "./fsutil.js";
-import { ContextManifest, MANIFEST_FILE, contextFilePaths, matchAny } from "./manifest.js";
+import { ContextManifest, MANIFEST_FILE, contextFilePaths, matchAny, protectedPathsOf } from "./manifest.js";
 
 export const ROLES = ["orchestrator", "implementer", "reviewer", "qa", "gardener", "bootstrap"] as const;
 export type Role = (typeof ROLES)[number];
@@ -69,7 +76,7 @@ const ROLE_TOOL_ALLOW: Record<Role, Set<string>> = {
 };
 
 /** Files only agent-flow's own tools may write — trust signals must not be forgeable. */
-const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/state.lock", ".git/"];
+const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/state.lock", ".risk-baseline.json", ".git/"];
 /**
  * What keeps agents in their lane: harness agent definitions (the Claude Code
  * reviewer's tool list IS its read-only guarantee), installed skills, CI and
@@ -145,19 +152,48 @@ const WRITE_VERBS = new Set([
   // PowerShell
   "set-content", "add-content", "out-file", "remove-item", "move-item", "copy-item", "new-item", "rename-item", "clear-content", "sc", "ac", "ri", "del", "erase", "rd", "ni", "move", "copy", "ren",
 ]);
-const GIT_MUTATING_SUB = /^(commit|push|add|rm|mv|reset|checkout|switch|restore|stash|rebase|merge|cherry-pick|revert|am|apply|clean|tag|worktree\s+(add|remove|prune|move)|update-ref|update-index|config|replace|filter-branch|gc|prune|notes)\b|^branch\s+.*(\s|^)-[dDmMcCf]\b/i;
+const GIT_MUTATING_SUB = /^(commit|push|add|rm|mv|reset|checkout|switch|restore|stash|rebase|merge|cherry-pick|revert|am|apply|clean|tag|worktree\s+(add|remove|prune|move)|update-ref|update-index|config(?!.*\s(--get\S*|--list|-l|--show-\S+)(\s|$))|replace|filter-branch|gc|prune|notes|pull|clone|init|submodule\s+(add|update|init|deinit|sync|foreach)|remote\s+(add|remove|rm|rename|set-url|set-head|set-branches|prune))\b|^branch\b(.*\s)?(-[a-zA-Z]*[dDmMcCfu]|--(delete|move|copy|force|set-upstream-to|unset-upstream|edit-description|track|create-reflog))\b/i;
 const PKG_MUTATING = /^(npm|pnpm|yarn|bun)\s+(add|remove|rm|uninstall|un|publish|link|unlink|version|pkg|dedupe|prune|update|up|upgrade)\b|^(npm|pnpm|bun)\s+(install|i)\b|^yarn(\s+install)?\s*$|^yarn\s+add\b|^pip3?\s+(install|uninstall)\b|^(uv|poetry)\s+(add|remove|pip|lock)\b|^go\s+(get|mod\s+tidy)\b|^cargo\s+(add|remove|install|update)\b|^gem\s+install\b|^bundle\s+(add|update|install)\b/i;
 const CLEAN_INSTALL = /^(npm\s+ci|pnpm\s+install\s+--frozen-lockfile|yarn\s+install\s+--(frozen-lockfile|immutable)|bun\s+install\s+--frozen-lockfile|pip3?\s+install\s+-r\s+\S+|uv\s+sync\s+--(locked|frozen)|poetry\s+install\s+--no-root|bundle\s+install\s+--frozen)(\s|$)/i;
-const GH_MUTATING = /^gh\s+(pr\s+(create|merge|edit|close|comment|review|ready|reopen)|issue\s+(create|edit|close|comment|reopen|delete)|release\s+(create|delete|edit|upload)|repo\s+(create|delete|edit)|api\s+.*(-X|--method)\s*(POST|PUT|PATCH|DELETE))/i;
-const INLINE_WRITE = /\b(node|deno|bun)\s+(-e|--eval|-p)\b.*\b(writeFile|appendFile|rmSync|unlink|rename|mkdir|createWriteStream|copyFile)|\bpython3?\s+-c\b.*(open\([^)]*['"][wa+]|\.write\(|os\.remove|os\.unlink|shutil\.|os\.rename|pathlib)|\b(perl|ruby)\s+-[a-zA-Z]*[ei]\b|\bsed\b[^|;&]*\s(-[a-zA-Z]*i[a-zA-Z]*|--in-place)(\s|=|$)|\bawk\s+-i\s+inplace/i;
+const GH_MUTATING = /^gh\s+(pr\s+(create|merge|edit|close|comment|review|ready|reopen)|issue\s+(create|edit|close|comment|reopen|delete)|release\s+(create|delete|edit|upload)|repo\s+(create|delete|edit)|api\s+.*(-X|--method)[\s=]*(POST|PUT|PATCH|DELETE)|api\b(?!.*(-X|--method)[\s=]*GET\b).*\s(-f|-F|--field|--raw-field|--input)(\s|=|$))/i;
+const INLINE_WRITE = /\b(node|deno|bun)\s+(-e|--eval|-p)\b.*\b(writeFile|appendFile|rmSync|unlink|rename|mkdir|createWriteStream|copyFile)|\bpython3?\s+-c\b.*(open\([^)]*['"][wa+]|\.write\(|os\.remove|os\.unlink|shutil\.|os\.rename|pathlib)|\b(perl|ruby)\b[^|;&\n]*\s-(?!-)[a-zA-Z]*[ei]|\bsed\b[^|;&\n]*\s(-(?!-)[a-zA-Z]*i|--in-place)|\bawk\s+-i\s+inplace/i;
 /** A script fed on stdin can do anything; its text isn't in `command` to analyse. */
 const OPAQUE_SCRIPT = /\b(python3?|node|ruby|perl|php|deno|bun|bash|sh|zsh)\s+(-\s*)?<</i;
 /** Formatters that rewrite files unless told only to check. */
-const FORMATTER = /^(gofmt\s+.*-[a-z]*w|go\s+fmt\b|black\b|isort\b|cargo\s+fmt\b|rustfmt\b|ruff\s+format\b|clang-format\s+.*-i\b|terraform\s+fmt\b|dotnet\s+format\b|mix\s+format\b|swiftformat\b|ktlint\s+.*-F\b|rubocop\s+.*-[aA]\b|biome\s+(format|check)\s+.*--(write|apply))/i;
+const FORMATTER = /^(prettier\b.*\s(-w|--write)\b|gofmt\s+.*-[a-z]*w|go\s+fmt\b|black\b|isort\b|cargo\s+fmt\b|rustfmt\b|ruff\s+format\b|clang-format\s+.*-i\b|terraform\s+fmt\b|dotnet\s+format\b|mix\s+format\b|swiftformat\b|ktlint\s+.*-F\b|rubocop\s+.*-[aA]\b|biome\s+(format|check)\s+.*--(write|apply))/i;
 const FORMATTER_CHECK_ONLY = /\s(--check|--diff|-check|-l|--list-different|--dry-run)(\s|$)/i;
 const SNAPSHOT_OR_FIX = /(--update-?snapshots?|--updateSnapshot|--snapshot-update|--fix\b|--write\b|(\b(jest|vitest|playwright)\b.*\s-u\b))/i;
-const DOWNLOAD_TO_FILE = /\b(curl\b.*\s(-o|-O|--output|--remote-name)\b|wget\b(?!.*(-O\s*-|--output-document=-)))/i;
+// curl short options cluster (`-sSo f`); -D/-c write header dumps and cookie jars. `-X` is skipped: `-XPOST` isn't -O.
+const DOWNLOAD_TO_FILE = /\bcurl\b[^|;&\n]*\s(-(?![-X])[a-zA-Z]*[oODc]|--(output|remote-name|output-dir|dump-header|cookie-jar|trace|trace-ascii|stderr)\b)|\bwget\b(?![^|;&\n]*(\s-[a-zA-Z]*O\s*-(\s|$)|--output-document=-))/;
 const AGENT_CLIS = new Set(["pi", "claude", "claude-code", "codex", "gemini", "gemini-cli", "cursor-agent", "aider", "opencode", "goose", "amp", "qwen", "crush", "pi-coding-agent"]);
+
+/**
+ * `"rm" f`, `'rm' f`, `r"m" f` and `\rm f` all run rm, but quote-stripping
+ * would erase the command word. Unquote every quoted bare word first — no
+ * spaces or metacharacters, so nothing that could turn into an operator.
+ */
+export function unquoteBareWords(cmd: string): string {
+  const bare = /^[\w./@+:,=%^-]+$/;
+  let out = "";
+  let i = 0;
+  while (i < cmd.length) {
+    const ch = cmd[i];
+    if (ch === "\\" && i + 1 < cmd.length) {
+      out += /[\w./-]/.test(cmd[i + 1]) ? cmd[i + 1] : ch + cmd[i + 1];
+      i += 2;
+    } else if (ch === "'" || ch === '"') {
+      let j = i + 1;
+      while (j < cmd.length && cmd[j] !== ch) j += ch === '"' && cmd[j] === "\\" ? 2 : 1;
+      const body = cmd.slice(i + 1, j);
+      out += bare.test(body) ? body : cmd.slice(i, j + 1);
+      i = j + 1;
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
 
 function stripQuoted(cmd: string): string {
   return cmd.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""');
@@ -181,11 +217,19 @@ export function segments(cmd: string): string[] {
     .split(/&&|\|\||;|\||\n|\$\(|`|\(|\)|\{|\}/)
     .map((s) => {
       let t = s.trim();
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 8; i++) {
         const before = t;
+        // Wrappers that run their argument as a command: their option values must not become the verb.
         t = t
           .replace(/^((\w+=\S*)\s+)+/, "")
-          .replace(/^(sudo|command|exec|time|nice|env|nohup|xargs|then|do|else)(\s+-\S+)*\s+/i, "")
+          .replace(/^(sudo|doas)(\s+(-[ugCDhpRrTU]\s*\S+|-\S+))*\s+/i, "")
+          .replace(/^nice(\s+(-n\s*\S+|--adjustment(=|\s+)\S+|-\S+))*\s+/i, "")
+          .replace(/^timeout(\s+(-[sk]\s*\S+|-\S+))*\s+\d[\d.]*[smhd]?\s+/i, "")
+          .replace(/^env(\s+(-[uCS]\s*\S+|-\S*|\w+=\S*))*\s+/i, "")
+          .replace(/^xargs(\s+(-[IdEsLnPa]\s*\S+|-\S+))*\s+/i, "")
+          .replace(/^(stdbuf|ionice|chrt|taskset)(\s+(-[cnp]\s+\S+|-\S+|\d\S*))*\s+/i, "")
+          .replace(/^(command|exec|time|nohup|builtin|busybox|then|do|else|!)(\s+-\S+)*\s+/i, "")
+          .replace(/^python[\d.]*\s+-m\s+/i, "")
           .replace(/^(npx|bunx|pnpx|npm\s+exec|pnpm\s+(dlx|exec)|yarn\s+dlx)(\s+(-y|--yes|--no-install|-p\s+\S+|--package(=|\s+)\S+|-q|--quiet))*\s+(--\s+)?/i, "")
           .trim();
         if (t === before) break;
@@ -211,7 +255,8 @@ function hasRedirectWrite(cmd: string): boolean {
     .replace(/\d?>>?\s*\$null/gi, "")
     .replace(/\d?>>?\s*nul\b/gi, "")
     .replace(/[=-]>/g, "");
-  return /(^|[^<\d&])>/.test(s) || /\d>[^&]/.test(s);
+  // `&>file` / `&>>file` write too (fd dups like `2>&1` were removed above).
+  return /(^|[^<\d])>/.test(s) || /\d>[^&]/.test(s);
 }
 
 export interface GitCall {
@@ -245,18 +290,37 @@ function hasFlag(args: string, letter: string, long: string[]): boolean {
   return long.some((l) => new RegExp(`(^|\\s)${l}(\\s|=|$)`).test(args));
 }
 
+/**
+ * git accepts any unambiguous prefix of a long option, so `--no-verif`,
+ * `--forc` and `--mirr` work. Match every prefix of `name` at least `min`
+ * chars long; an ambiguous one makes git error out, so blocking it costs nothing.
+ */
+function hasLong(args: string, name: string, min: number): boolean {
+  return args.split(/\s+/).some((t) => {
+    const n = t.split("=")[0];
+    return n.length >= min && n.startsWith("--") && name.startsWith(n);
+  });
+}
+
 export interface ShellFinding {
   mutating: boolean;
   why: string[];
 }
 
-export function analyzeShell(cmd: string): ShellFinding {
+export function analyzeShell(cmd: string, depth = 0): ShellFinding {
   const why: string[] = [];
-  for (const c of expandCommand(cmd)) {
+  for (const raw of expandCommand(cmd)) {
+    const c = unquoteBareWords(raw);
     if (hasRedirectWrite(c)) why.push("output redirection to a file");
     for (const seg of segments(stripQuoted(c))) {
       const verb = verbOf(seg);
       if (WRITE_VERBS.has(verb)) why.push(`\`${verb}\` modifies the filesystem`);
+      if (verb === "find") {
+        if (/\s-(delete|fprint0?|fprintf|fls)\b/.test(seg)) why.push("`find` deletes or writes files");
+        for (const m of seg.matchAll(/\s-(?:exec|execdir|ok|okdir)\s+(.+?)(?=\s(?:\\|\+)(?:\s|$)|$)/g)) {
+          if (depth < 3) why.push(...analyzeShell(m[1], depth + 1).why);
+        }
+      }
       const g = parseGit(seg);
       if (g && GIT_MUTATING_SUB.test(`${g.sub} ${g.args}`)) why.push(`mutating git command (git ${g.sub})`);
       if (PKG_MUTATING.test(seg) && !CLEAN_INSTALL.test(seg)) why.push("package install changes dependencies or the lockfile");
@@ -276,18 +340,442 @@ export function analyzeShell(cmd: string): ShellFinding {
  * protected path". Splitting on glob metacharacters also catches patterns that
  * start with a wildcard: `*.env` -> [".env"].
  */
-function literalChunks(pattern: string): string[] {
+function literalChunks(pattern: string): { text: string; whole: boolean }[] {
   const p = toPosix(pattern).replace(/^\.\//, "");
-  return p
-    .split(/[*?[\]]+/)
-    .map((s) => s.replace(/^\/+|\/+$/g, ""))
-    .filter((s) => s.length >= 3);
+  const out: { text: string; whole: boolean }[] = [];
+  for (const m of p.matchAll(/[^*?[\]]+/g)) {
+    const after = p[m.index + m[0].length];
+    const text = m[0].replace(/^\/+|\/+$/g, "");
+    // A chunk that ends a path segment in the pattern (`.git/`, `config/`,
+    // `*.env`) must end a segment in the command too: `.git` is not `.github`.
+    if (text.length >= 3) out.push({ text, whole: after === undefined || m[0].endsWith("/") });
+  }
+  return out;
 }
+
+const PATH_END = /^($|[\s/'"`;&|)<>])/;
 
 function mentions(cmd: string, patterns: readonly string[]): string | null {
   const hay = fold(cmd);
   for (const p of patterns) {
-    for (const chunk of literalChunks(p)) if (hay.includes(fold(chunk))) return p;
+    for (const { text, whole } of literalChunks(p)) {
+      const needle = fold(text);
+      for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) {
+        if (!whole || PATH_END.test(hay.slice(i + needle.length, i + needle.length + 1))) return p;
+      }
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Shell lexing: where a command writes (best-effort)
+// ---------------------------------------------------------------------------
+
+export interface ShWord {
+  text: string;
+  /** Contains `$…`, a substitution or brace expansion: the real value is unknowable here. */
+  dynamic: boolean;
+  /** Contains an unquoted `*`, `?` or `[`. */
+  glob: boolean;
+}
+
+export interface ShCmd {
+  words: ShWord[];
+  /** Files its redirections write (`>`, `>>`, `>|`, `&>`, `2>`, `<>`). */
+  writes: ShWord[];
+}
+
+/**
+ * Just enough of a POSIX shell lexer to know what each simple command's words
+ * are (quotes removed) and which files its redirections write. Regexes over
+ * the raw text can't tell `echo "a > b"` from `echo a > b`, or see past quotes.
+ * `$(…)` / backtick bodies are lexed as commands of their own; heredoc bodies
+ * are skipped as data.
+ */
+export function lexShell(src: string, depth = 0): ShCmd[] {
+  const cmds: ShCmd[] = [];
+  let cur: ShCmd = { words: [], writes: [] };
+  let w = null as ShWord | null;
+  let redirect = null as "write" | "read" | "heredoc" | "heredoc-strip" | null;
+  const heredocs: { delim: string; strip: boolean }[] = [];
+  const word = () => (w ??= { text: "", dynamic: false, glob: false });
+  const endWord = () => {
+    if (!w) return;
+    if (/\{[^}]*(,|\.\.)[^}]*\}/.test(w.text)) w.dynamic = true;
+    if (redirect === "heredoc" || redirect === "heredoc-strip") heredocs.push({ delim: w.text, strip: redirect === "heredoc-strip" });
+    else if (redirect === "write") cur.writes.push(w);
+    else if (redirect !== "read") cur.words.push(w);
+    redirect = null;
+    w = null;
+  };
+  const endCmd = () => {
+    endWord();
+    redirect = null;
+    if (cur.words.length || cur.writes.length) cmds.push(cur);
+    cur = { words: [], writes: [] };
+  };
+  const inner = (body: string) => {
+    if (depth < 4) cmds.push(...lexShell(body, depth + 1));
+  };
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === "\n") {
+      endCmd();
+      i++;
+      for (const h of heredocs.splice(0)) {
+        while (i < src.length) {
+          const nl = src.indexOf("\n", i);
+          const line = src.slice(i, nl < 0 ? src.length : nl);
+          i = nl < 0 ? src.length : nl + 1;
+          if ((h.strip ? line.replace(/^\t+/, "") : line) === h.delim) break;
+        }
+      }
+    } else if (c === " " || c === "\t" || c === "\r") {
+      endWord();
+      i++;
+    } else if (c === "#" && !w) {
+      const nl = src.indexOf("\n", i);
+      i = nl < 0 ? src.length : nl;
+    } else if (c === "\\") {
+      if (src[i + 1] !== "\n") word().text += src[i + 1] ?? "";
+      i += 2;
+    } else if (c === "'") {
+      const j = src.indexOf("'", i + 1);
+      const end = j < 0 ? src.length : j;
+      word().text += src.slice(i + 1, end);
+      i = end + 1;
+    } else if (c === '"') {
+      const x = word();
+      i++;
+      while (i < src.length && src[i] !== '"') {
+        if (src[i] === "\\" && i + 1 < src.length && '"\\$`\n'.includes(src[i + 1])) {
+          x.text += src[i + 1];
+          i += 2;
+          continue;
+        }
+        if (src[i] === "$" || src[i] === "`") x.dynamic = true;
+        x.text += src[i++];
+      }
+      i++;
+    } else if (c === "`") {
+      const j = src.indexOf("`", i + 1);
+      const end = j < 0 ? src.length : j;
+      inner(src.slice(i + 1, end));
+      const x = word();
+      x.dynamic = true;
+      x.text += "`";
+      i = end + 1;
+    } else if (c === "$" && (src[i + 1] === "(" || src[i + 1] === "{")) {
+      const open = src[i + 1];
+      const close = open === "(" ? ")" : "}";
+      let d = 0;
+      let j = i + 1;
+      for (; j < src.length; j++) {
+        if (src[j] === open) d++;
+        else if (src[j] === close && --d === 0) break;
+      }
+      if (open === "(") inner(src.slice(i + 2, j));
+      const x = word();
+      x.dynamic = true;
+      x.text += "$";
+      i = j + 1;
+    } else if (c === "$") {
+      const x = word();
+      x.dynamic = true;
+      x.text += c;
+      i++;
+    } else if (c === "&" && src[i + 1] === ">") {
+      endWord();
+      i += src[i + 2] === ">" ? 3 : 2;
+      redirect = "write";
+    } else if (c === ">" || c === "<") {
+      // A bare number right before the operator is its fd (`2>`), not an argument.
+      if (w && /^\d+$/.test(w.text) && !w.dynamic) w = null;
+      else endWord();
+      if (c === "<") {
+        const op = src.slice(i).match(/^(<<<|<<-|<<|<>|<&|<\(|<)/)![0];
+        i += op === "<(" ? 1 : op.length; // `<(cmd)` is a command, not a file
+        redirect = op === "<<-" ? "heredoc-strip" : op === "<<" ? "heredoc" : op === "<>" ? "write" : op === "<(" ? null : "read";
+        continue;
+      }
+      let j = i + 1;
+      if (src[j] === ">" || src[j] === "|") j++;
+      if (src[j] === "&") {
+        // `>&2` / `>&-` duplicate an fd; bash's `>& file` means `&> file`.
+        const dup = src.slice(j + 1).match(/^\s*(\d+|-)(?=[\s;&|)]|$)/);
+        i = dup ? j + 1 + dup[0].length : j + 1;
+        redirect = dup ? null : "write";
+        continue;
+      }
+      if (src[j] === "(") {
+        i = j; // process substitution: `>(cmd)` is a command, not a file
+        redirect = null;
+        continue;
+      }
+      i = j;
+      redirect = "write";
+    } else if (c === ";" || c === "|" || c === "&" || c === "(" || c === ")") {
+      endCmd();
+      i += (c === "|" || c === "&" || c === ";") && src[i + 1] === c ? 2 : 1;
+    } else {
+      const x = word();
+      if (c === "*" || c === "?" || c === "[") x.glob = true;
+      x.text += c;
+      i++;
+    }
+  }
+  endCmd();
+  return cmds;
+}
+
+/** Wrappers that run their argument as a command, with the options that take a separate value. */
+const WRAPPERS: Record<string, RegExp | null> = {
+  sudo: /^-[ugCDhpRrTU]$/,
+  doas: /^-[uC]$/,
+  nice: /^-n$/,
+  ionice: /^-[cnp]$/,
+  timeout: /^-[sk]$/,
+  env: /^-[uCS]$/,
+  xargs: /^-[IdEsLnPa]$/,
+  stdbuf: /^-[ioe]$/,
+  chrt: null,
+  taskset: null,
+  command: null,
+  exec: /^-a$/,
+  time: /^-[fo]$/,
+  nohup: null,
+  builtin: null,
+  busybox: null,
+  then: null,
+  do: null,
+  else: null,
+  "!": null,
+  "{": null,
+  npx: /^(-p|--package|-c|--call)$/,
+  bunx: /^(-p|--package)$/,
+  pnpx: null,
+};
+
+const cmdName = (w: ShWord | undefined) =>
+  basename(toPosix(w?.text ?? ""))
+    .toLowerCase()
+    .replace(/@[^/]*$/, "")
+    .replace(/\.(exe|cmd|ps1)$/, "");
+
+/** The words of the command that actually runs: assignments, wrappers and `npx`/`python -m` peeled off. */
+export function effectiveArgv(words: readonly ShWord[]): ShWord[] {
+  let a = words.slice();
+  for (let n = 0; n < 10 && a.length; n++) {
+    while (a.length && (/^[A-Za-z_]\w*=/.test(a[0].text) || a[0].text === "{" || a[0].text === "}")) a.shift();
+    const v = cmdName(a[0]);
+    const two = `${v} ${a[1]?.text ?? ""}`;
+    if (v in WRAPPERS || /^(npm exec|pnpm (dlx|exec)|yarn dlx)$/.test(two)) {
+      const vals = WRAPPERS[v] ?? /^(-p|--package)$/;
+      a = a.slice(v in WRAPPERS ? 1 : 2);
+      while (a.length && a[0].text.startsWith("-") && a[0].text !== "-") {
+        const opt = a.shift()!.text;
+        if (opt === "--") break;
+        if (vals.test(opt)) a.shift();
+      }
+      if (v === "env") while (a.length && /^[A-Za-z_]\w*=/.test(a[0].text)) a.shift();
+      if (v === "timeout" && a.length) a.shift(); // the duration
+      if ((v === "chrt" || v === "taskset" || v === "ionice") && a.length && /^[\d,x-]+$/.test(a[0].text)) a.shift();
+      continue;
+    }
+    if (/^python[\d.]*$/.test(v) && a[1]?.text === "-m" && a.length > 2) {
+      a = a.slice(2);
+      continue;
+    }
+    break;
+  }
+  return a;
+}
+
+/** Per verb: options that take a separate value, and which positionals it writes. */
+const WRITE_ARGS: Record<string, { vals: RegExp; writes: "all" | "last" | "notFirst" }> = {
+  rm: { vals: /^$/, writes: "all" },
+  rmdir: { vals: /^$/, writes: "all" },
+  unlink: { vals: /^$/, writes: "all" },
+  shred: { vals: /^-[ns]$/, writes: "all" },
+  touch: { vals: /^-[dtr]$/, writes: "all" },
+  mkdir: { vals: /^-m$/, writes: "all" },
+  truncate: { vals: /^-[sr]$/, writes: "all" },
+  tee: { vals: /^$/, writes: "all" },
+  mv: { vals: /^-[tS]$/, writes: "all" },
+  cp: { vals: /^-[tS]$/, writes: "last" },
+  ln: { vals: /^-[tS]$/, writes: "last" },
+  install: { vals: /^-[tSmog]$/, writes: "last" },
+  rsync: { vals: /^-[eT]$/, writes: "last" },
+  chmod: { vals: /^$/, writes: "notFirst" },
+  chown: { vals: /^$/, writes: "notFirst" },
+  chgrp: { vals: /^$/, writes: "notFirst" },
+};
+
+function splitArgs(args: readonly ShWord[], vals: RegExp): { pos: ShWord[]; opts: [string, ShWord | undefined][] } {
+  const pos: ShWord[] = [];
+  const opts: [string, ShWord | undefined][] = [];
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i].text;
+    if (t === "--") {
+      pos.push(...args.slice(i + 1));
+      break;
+    }
+    if (t.startsWith("-") && t !== "-" && !args[i].dynamic) {
+      const eq = t.indexOf("=");
+      if (t.startsWith("--") && eq > 0) opts.push([t.slice(0, eq), { ...args[i], text: t.slice(eq + 1) }]);
+      else if (vals.test(t)) opts.push([t, args[++i]]);
+      else opts.push([t, undefined]);
+    } else pos.push(args[i]);
+  }
+  return { pos, opts };
+}
+
+/** Paths a simple command writes through its arguments (redirections are in `ShCmd.writes`). */
+export function writeTargets(argv: readonly ShWord[]): ShWord[] {
+  const v = cmdName(argv[0]);
+  const args = argv.slice(1);
+  if (v === "dd") return args.filter((a) => a.text.startsWith("of=")).map((a) => ({ ...a, text: a.text.slice(3) }));
+  if (v === "sed" || v === "perl") {
+    const inPlace = args.some((a) => /^-(?!-)[a-zA-Z0-9]*i/.test(a.text) || /^--in-place/.test(a.text));
+    if (!inPlace) return [];
+    const { pos, opts } = splitArgs(args, v === "sed" ? /^-[efl]$/ : /^-[eE]$/);
+    const scriptGiven = opts.some(([o]) => /^(-[a-zA-Z]*[efE]|--(expression|file))$/.test(o));
+    return scriptGiven ? pos : pos.slice(1);
+  }
+  const spec = WRITE_ARGS[v];
+  if (!spec) return [];
+  const { pos, opts } = splitArgs(args, spec.vals);
+  const out = opts.filter(([o]) => o === "-t" || o === "--target-directory").map(([, val]) => val ?? { text: "", dynamic: true, glob: false });
+  if (v === "install" && opts.some(([o]) => /^-[a-zA-Z]*d/.test(o))) return [...out, ...pos];
+  if (spec.writes === "all") out.push(...pos);
+  else if (spec.writes === "notFirst") out.push(...pos.slice(1));
+  else if (!out.length && pos.length) out.push(v === "ln" && pos.length === 1 ? { text: ".", dynamic: false, glob: false } : pos[pos.length - 1]);
+  return out;
+}
+
+const GLOB_SEG = /[*?[]/;
+
+function globRegExp(seg: string): RegExp {
+  let re = "";
+  for (let i = 0; i < seg.length; i++) {
+    const ch = seg[i];
+    if (ch === "*") re += "[^/]*";
+    else if (ch === "?") re += "[^/]";
+    else if (ch === "[") {
+      const j = seg.indexOf("]", i + 2);
+      if (j < 0) re += "\\[";
+      else {
+        re += `[${seg.slice(i + 1, j).replace(/^!/, "^").replace(/\\/g, "\\\\")}]`;
+        i = j;
+      }
+    } else re += ch.replace(/[.+^${}()|\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`, CASE_INSENSITIVE_FS ? "i" : "");
+}
+
+/** What the shell would expand an absolute glob to right now (dotfiles only when the segment starts with a dot). */
+function expandGlob(abs: string, limit = 2000): string[] {
+  const { root } = parsePath(abs);
+  let dirs = [root];
+  for (const seg of abs.slice(root.length).split(/[\\/]+/).filter(Boolean)) {
+    if (!GLOB_SEG.test(seg)) {
+      dirs = dirs.map((d) => join(d, seg));
+      continue;
+    }
+    const re = globRegExp(seg);
+    const next: string[] = [];
+    for (const d of dirs) {
+      let names: string[] = [];
+      try {
+        names = readdirSync(d);
+      } catch {
+        continue;
+      }
+      for (const n of names) if ((seg.startsWith(".") || !n.startsWith(".")) && re.test(n) && next.length < limit) next.push(join(d, n));
+    }
+    dirs = next;
+  }
+  return dirs;
+}
+
+/** Could a glob target match `..` or something we can't see? (`.*` does on older shells.) */
+const globMayEscape = (p: string) => toPosix(p).split("/").some((seg) => GLOB_SEG.test(seg) && /^[.[]/.test(seg));
+
+/** Could a glob target expand into a protected pattern's literal leading directories? (`c*` vs `config/`) */
+function globHitsProtected(relGlob: string, patterns: readonly string[]): string | null {
+  const t = relGlob.split("/").filter(Boolean);
+  for (const p of patterns) {
+    const lit: string[] = [];
+    for (const seg of toPosix(p).replace(/^\.\//, "").split("/").filter(Boolean)) {
+      if (GLOB_SEG.test(seg)) break;
+      lit.push(seg);
+    }
+    if (lit.length && t.length >= lit.length && lit.every((seg, i) => globRegExp(t[i]).test(seg))) return p;
+  }
+  return null;
+}
+
+const DEVICE = /^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/;
+
+// ---------------------------------------------------------------------------
+// The CLI twins of agent-flow's own mutating tools
+// ---------------------------------------------------------------------------
+
+const CLI_COMMANDS = new Set(["doctor", "audit-risk", "baseline", "classify", "check-staged", "state", "worktree", "scan", "install", "hook", "schema", "template", "report", "repair", "guard"]);
+
+/**
+ * May `role` run `agent-flow <argv…>`? Returns a block reason, or null if allowed.
+ * `argv` is what follows the binary (process.argv.slice(2)). Applies the same
+ * per-role allow list as the equivalent Pi tool, so a read-only role can't
+ * mutate pipeline state through the CLI from a shell. No role → allowed.
+ */
+export function roleMayRunCli(role: Role | null, argv: readonly string[]): string | null {
+  if (!role) return null;
+  // Both the CLI's own parse (first two non-flag words, flags swallowing a value) and
+  // a looser scan, so flag placement can't change which subcommand the guard sees.
+  const pairs: [string, string | undefined][] = [];
+  const strict: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith("--")) {
+      if (!a.includes("=") && argv[i + 1] !== undefined && !argv[i + 1].startsWith("--")) i++;
+    } else strict.push(a);
+  }
+  pairs.push([strict[0], strict[1]]);
+  const loose = argv.filter((a) => !a.startsWith("-"));
+  const at = loose.findIndex((a) => CLI_COMMANDS.has(a));
+  if (at >= 0) pairs.push([loose[at], loose[at + 1]]);
+  for (const [sub, act] of pairs) {
+    const tool =
+      sub === "state" && act === "update"
+        ? "state_update"
+        : sub === "baseline" && act === "accept"
+          ? "risk_baseline_update"
+          : sub === "repair"
+            ? "stale_repair"
+            : sub === "worktree" && (act === "create" || act === "remove")
+              ? `worktree_${act}`
+              : null;
+    if (tool && !ROLE_TOOL_ALLOW[role].has(tool)) return `role "${role}" may not run \`agent-flow ${sub}${tool === "stale_repair" ? "" : ` ${act}`}\` (the CLI twin of ${tool}).`;
+    if (sub === "install" || (sub === "hook" && act === "install")) {
+      return `role "${role}" may not run \`agent-flow ${sub === "hook" ? "hook install" : "install"}\` — it rewrites agent/hook configuration; a human runs setup.`;
+    }
+  }
+  return null;
+}
+
+/** `agent-flow …`, `npx @drix10/agent-flow …`, `node …/bin/agent-flow.js …` → the CLI's argv, else null. */
+function agentFlowArgv(argv: readonly ShWord[]): string[] | null {
+  const v = cmdName(argv[0]);
+  const isCli = (w: ShWord | undefined) => /^agent-flow(\.[cm]?js)?$/.test(cmdName(w));
+  if (isCli(argv[0])) return argv.slice(1).map((w) => w.text);
+  if (/^(node|nodejs|bun|deno|tsx|ts-node)$/.test(v)) {
+    let i = 1;
+    while (i < argv.length && argv[i].text.startsWith("-")) i += /^(-r|--require|--import|--loader|-C|--conditions)$/.test(argv[i].text) ? 2 : 1;
+    if (v === "deno" && argv[i]?.text === "run") i++;
+    if (isCli(argv[i])) return argv.slice(i + 1).map((w) => w.text);
   }
   return null;
 }
@@ -364,8 +852,140 @@ function decideWrite(g: GuardInput, p: string, protectedPaths: string[], ctxFile
 // Shell
 // ---------------------------------------------------------------------------
 
-function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFiles: string[]): GuardDecision | null {
+/**
+ * Hook-skipping, force-push, remote deletes and pushes to the default branch.
+ * Never legitimate for an AI agent, and the guard only sees agent tool calls,
+ * so this applies to every session — role or not.
+ */
+function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision | null {
+  if (gc.configs.some((c) => /^core\.hookspath=/i.test(c)) || (gc.sub === "config" && /\bcore\.hookspath\b/i.test(gc.args) && !/(^|\s)(--get\S*|--list|-l|--show-\S+)(\s|$)/.test(gc.args))) {
+    return block("no-verify", "changing core.hooksPath disables the pre-commit hook. Fix the hook failure instead.");
+  }
+  // `-n` is --no-verify only for commit (for push it's --dry-run, which is harmless).
+  const skipsHook = hasLong(gc.args, "--no-verify", 6) || (gc.sub === "commit" && hasFlag(gc.args, "n", []));
+  if (["commit", "merge", "rebase", "am", "cherry-pick", "revert", "push"].includes(gc.sub) && skipsHook) {
+    return block("no-verify", "`--no-verify` skips the pre-commit hook. Fix the hook failure instead.");
+  }
+  if (gc.sub !== "push") return null;
+  const a = gc.args;
+  const forced =
+    hasFlag(a, "f", []) ||
+    /(^|\s)-[a-zA-Z]*d[a-zA-Z]*(\s|$)/.test(a) ||
+    /(^|\s)\+\S/.test(a) ||
+    ["--force", "--force-with-lease", "--force-if-includes"].some((n) => hasLong(a, n, 5)) ||
+    hasLong(a, "--mirror", 4) ||
+    hasLong(a, "--delete", 4) ||
+    hasLong(a, "--prune", 5);
+  if (forced) return block("force-push", "force-push / delete rewrites shared history. Push a new commit instead.");
+  if (hasLong(a, "--all", 4)) return block("push-default-branch", "`push --all` pushes the default branch too — push agent/issue-N only.");
+  const refspecs = a
+    .replace(/(^|\s)(-o|--push-option|--repo|--receive-pack|--exec)(=|\s+)\S+/g, " ")
+    .split(/\s+/)
+    .filter((t) => t && !t.startsWith("-"))
+    .slice(1); // first positional is the remote
+  for (const spec of refspecs) {
+    const s = spec.replace(/^\+/, "");
+    const dest = (s.includes(":") ? s.slice(s.lastIndexOf(":") + 1) : s).replace(/^refs\/heads\//, "");
+    // `:` alone pushes every matching branch, the default one included.
+    if (protectedBranches.has(dest) || s === ":") return block("push-default-branch", "agents never push to the default branch — push agent/issue-N and open a PR.");
+    // An empty source (`:branch`) deletes the remote branch.
+    if (s.startsWith(":")) return block("force-push", `\`git push <remote> ${spec}\` deletes the remote branch. Push a new commit instead.`);
+  }
+  return null;
+}
+
+/** `~`, `~/x`, absolute and cwd-relative paths; null when the shell's answer isn't knowable here. */
+function resolveShellPath(cwd: string | null, p: string): string | null {
+  if (p === "~" || p.startsWith("~/")) return join(homedir(), p.slice(1));
+  if (p.startsWith("~")) return null;
+  if (isAbsolute(p)) return resolve(p);
+  return cwd === null ? null : resolve(cwd, p);
+}
+
+/** Every path a command line writes, with the cwd in effect for it (`cd X && …` is followed; `sh -c '…'` is entered). */
+function shellWrites(src: string, cwd: string | null, depth = 0): { word: ShWord; cwd: string | null }[] {
+  const out: { word: ShWord; cwd: string | null }[] = [];
+  for (const sc of lexShell(src)) {
+    for (const w of sc.writes) out.push({ word: w, cwd });
+    const argv = effectiveArgv(sc.words);
+    const v = cmdName(argv[0]);
+    if (v === "cd" || v === "pushd" || v === "chdir" || v === "set-location" || v === "sl") {
+      const t = argv.slice(1).find((x) => !/^-[LPe@]+$/.test(x.text));
+      cwd = !t ? homedir() : t.dynamic || t.glob || t.text === "-" ? null : resolveShellPath(cwd, t.text);
+      continue;
+    }
+    if (v === "popd") {
+      cwd = null;
+      continue;
+    }
+    if (/^((ba|z|da|k)?sh|eval)$/.test(v) && depth < 3) {
+      const ci = argv.findIndex((x) => /^-[a-zA-Z]*c$/.test(x.text));
+      const script = v === "eval" ? argv.slice(1) : ci > 0 && argv[ci + 1] ? [argv[ci + 1]] : [];
+      if (!script.some((x) => x.dynamic)) out.push(...shellWrites(script.map((x) => x.text).join(" "), cwd, depth + 1));
+    }
+    for (const w of writeTargets(argv)) out.push({ word: w, cwd });
+  }
+  return out;
+}
+
+/** Repo-relative views of an absolute path: lexical, through symlinks, and inside its worktree. */
+function shellRels(g: GuardInput, p: string): string[] {
+  const rels = new Set<string>();
+  const add = (base: string, abs: string) => {
+    const r = relative(base, abs);
+    if (r && !r.startsWith("..") && !isAbsolute(r)) rels.add(toPosix(r));
+  };
+  const landing = landingPath(p);
+  add(g.root, p);
+  add(landingPath(g.root), landing);
+  if (g.worktree) {
+    add(g.worktree, p);
+    add(landingPath(g.worktree), landing);
+  }
+  for (const r of [...rels]) {
+    const m = r.match(/^\.worktrees\/[^/]+\/(.+)$/);
+    if (m) rels.add(m[1]);
+  }
+  return [...rels];
+}
+
+function decideShellTarget(g: GuardInput, t: { word: ShWord; cwd: string | null }, protectedPaths: string[], ctxFiles: string[]): GuardDecision | null {
+  const { role } = g;
+  const w = t.word;
+  const confined = role === "implementer" && !!g.worktree;
+  const wtShown = g.worktree ? toPosix(relative(g.root, g.worktree)) || g.worktree : "";
+  if (DEVICE.test(w.text)) return null;
+  const abs = w.dynamic ? null : resolveShellPath(t.cwd, w.text);
+  if (!abs) {
+    return confined ? block("worktree-confinement", `can't tell where \`${w.text || "(empty)"}\` points (a variable, substitution or unknown cwd), so it can't be confined to ${wtShown}. Write to a literal path inside the worktree.`) : null;
+  }
+  if (confined && w.glob && globMayEscape(w.text)) return block("worktree-confinement", `the glob \`${w.text}\` could match \`..\`; name the files explicitly.`);
+  const hits = w.glob ? expandGlob(abs) : [];
+  for (const p of hits.length ? hits : [abs]) {
+    if (DEVICE.test(toPosix(p))) continue;
+    if (confined) {
+      const landing = landingPath(p);
+      if (!within(g.worktree!, p) || !within(landingPath(g.worktree!), landing)) {
+        return block("worktree-confinement", `implementer is confined to ${wtShown}; the command writes ${toPosix(p)}${landing !== p ? ` (resolves to ${toPosix(landing)})` : ""}.`);
+      }
+    }
+    for (const rel of shellRels(g, p)) {
+      if (role && underAny(rel, TAMPER_PROOF)) return block("tamper-proof", `command writes ${rel}, which only agent-flow tools may change.`);
+      const cfg = role && role !== "orchestrator" ? underAny(rel, AGENT_CONFIG) : null;
+      if (cfg) return block("agent-config", `command writes ${rel}, agent/CI configuration (${cfg}). Escalate to a human.`);
+      if (!g.allowProtected) {
+        const prot = matchAny(protectedPaths, rel) ?? (GLOB_SEG.test(rel) ? globHitsProtected(rel, protectedPaths) : null);
+        if (prot) return block("protected-path", `command writes ${rel}, which is protected (${prot} in ${MANIFEST_FILE}). Escalate to Needs Me instead.`);
+      }
+      if (role === "implementer" && ctxFiles.some((f) => fold(f) === fold(rel))) return block("context-file", `command writes context file ${rel} — only the Gardener edits context.`);
+    }
+  }
+  return null;
+}
+
+function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFiles: string[], top = true): GuardDecision | null {
   const { role, manifest } = g;
+  cmd = unquoteBareWords(cmd);
   const segs = segments(stripQuoted(cmd));
 
   if (role && role !== "orchestrator") {
@@ -380,38 +1000,25 @@ function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFi
     }
   }
 
+  // Every session, role or not. Checked on the raw text too: quoting the value
+  // (`-c "core.hooksPath=…"`) must not hide it.
+  if (/\bgit\b/i.test(cmd) && /\bcore\.hookspath\b/i.test(cmd) && !/\bconfig\s+(--get\S*|--list|-l|--show-\S+)\s/i.test(cmd)) {
+    return block("no-verify", "changing core.hooksPath disables the pre-commit hook. Fix the hook failure instead.");
+  }
+  const defaultBranch = manifest?.default_branch;
+  const protectedBranches = new Set(["main", "master", ...(typeof defaultBranch === "string" && defaultBranch ? [defaultBranch] : [])]);
+  for (const seg of segs) {
+    const gc = parseGit(seg);
+    const d = gc && decideGit(gc, protectedBranches);
+    if (d) return d;
+  }
+
+  // `agent-flow state update …` from a shell is the same act as the state_update tool.
   if (role) {
-    // Checked on the raw text: quoting the value (`-c "core.hooksPath=…"`) must not hide it.
-    if (/\bgit\b/i.test(cmd) && /\bcore\.hookspath\b/i.test(cmd)) {
-      return block("no-verify", "changing core.hooksPath disables the pre-commit hook. Fix the hook failure instead.");
-    }
-    const defaultBranch = manifest?.default_branch;
-    const protectedBranches = new Set(["main", "master", ...(typeof defaultBranch === "string" && defaultBranch ? [defaultBranch] : [])]);
-    for (const seg of segs) {
-      const gc = parseGit(seg);
-      if (!gc) continue;
-      if (gc.configs.some((c) => /^core\.hookspath=/i.test(c)) || (gc.sub === "config" && /\bcore\.hookspath\b/i.test(gc.args))) {
-        return block("no-verify", "changing core.hooksPath disables the pre-commit hook. Fix the hook failure instead.");
-      }
-      // `-n` is --no-verify only for commit (for push it's --dry-run, which is harmless).
-      const skipsHook = /(^|\s)--no-verify(\s|$)/.test(gc.args) || (gc.sub === "commit" && hasFlag(gc.args, "n", []));
-      if (["commit", "merge", "rebase", "am", "cherry-pick", "revert", "push"].includes(gc.sub) && skipsHook) {
-        return block("no-verify", "`--no-verify` skips the pre-commit hook. Fix the hook failure instead.");
-      }
-      if (gc.sub === "push") {
-        if (hasFlag(gc.args, "f", ["--force", "--force-with-lease", "--force-if-includes", "--mirror", "--delete"]) || /(^|\s)\+\S/.test(gc.args) || /(^|\s)-[a-zA-Z]*d[a-zA-Z]*(\s|$)/.test(gc.args)) {
-          return block("force-push", "force-push / delete rewrites shared history. Push a new commit instead.");
-        }
-        if (/(^|\s)--all(\s|$)/.test(gc.args)) return block("push-default-branch", "`push --all` pushes the default branch too — push agent/issue-N only.");
-        const refspecs = gc.args
-          .split(/\s+/)
-          .filter((t) => t && !t.startsWith("-"))
-          .slice(1); // first positional is the remote
-        for (const spec of refspecs) {
-          const dest = (spec.includes(":") ? spec.split(":").pop()! : spec).replace(/^\+/, "").replace(/^refs\/heads\//, "");
-          if (protectedBranches.has(dest)) return block("push-default-branch", "agents never push to the default branch — push agent/issue-N and open a PR.");
-        }
-      }
+    for (const sc of lexShell(cmd)) {
+      const cli = agentFlowArgv(effectiveArgv(sc.words));
+      const why = cli && roleMayRunCli(role, cli);
+      if (why) return block("role-tool", why);
     }
   }
 
@@ -420,15 +1027,23 @@ function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFi
   }
 
   const finding = analyzeShell(cmd);
-  if (!finding.mutating) return null;
+  // Only the outermost command: `sh -c '…'` bodies are entered with the right cwd from here.
+  const writes = top ? shellWrites(cmd, g.cwd).filter((t) => !DEVICE.test(t.word.text)) : [];
+  if (!finding.mutating && !writes.length) return null;
 
   if (role && READ_ONLY_ROLES.includes(role)) {
     // QA may install locked deps to run tests; nothing else that writes.
-    const onlyCleanInstall = role === "qa" && !hasRedirectWrite(cmd) && segs.every((s) => CLEAN_INSTALL.test(s) || !analyzeShell(s).mutating);
+    const onlyCleanInstall = role === "qa" && !writes.length && !hasRedirectWrite(cmd) && segs.every((s) => CLEAN_INSTALL.test(s) || !analyzeShell(s).mutating);
     if (onlyCleanInstall) return null;
-    return block("read-only-role", `role "${role}" is read-only; command looks mutating (${finding.why.join("; ")}). If this is a false positive, rephrase as a read-only command.`);
+    const why = finding.why.length ? finding.why : ["writes a file"];
+    return block("read-only-role", `role "${role}" is read-only; command looks mutating (${why.join("; ")}). If this is a false positive, rephrase as a read-only command.`);
   }
-  const tamper = mentions(cmd, TAMPER_PROOF.concat([".risk-baseline.json"]));
+  for (const t of writes) {
+    const d = decideShellTarget(g, t, protectedPaths, ctxFiles);
+    if (d) return d;
+  }
+  if (!finding.mutating) return null;
+  const tamper = mentions(cmd, TAMPER_PROOF);
   if (tamper && role) return block("tamper-proof", `command writes near ${tamper}, which only agent-flow tools may change.`);
   // Not for the orchestrator: its launch prompts legitimately name `.claude/agents/…`.
   if (role && role !== "orchestrator") {
@@ -450,7 +1065,7 @@ export function decide(g: GuardInput): GuardDecision | null {
   const { role, toolName, input } = g;
   const tool = toolName.toLowerCase();
   const words = toolWords(toolName);
-  const protectedPaths = (g.manifest?.protected_paths ?? []).filter((p): p is string => typeof p === "string" && p.length > 0);
+  const protectedPaths = protectedPathsOf(g.manifest);
   const ctxFiles = contextFilePaths(g.manifest);
 
   // ---- agent-flow's own mutating tools: per-role allow list -------------------
@@ -462,8 +1077,8 @@ export function decide(g: GuardInput): GuardDecision | null {
   if (tool === "bash" || tool === "powershell" || tool === "shell" || words === "run_shell_command" || words === "exec_command") {
     const cmd = [input.command, input.cmd, input.script].find((c): c is string => typeof c === "string" && c.length > 0) ?? (Array.isArray(input.command) ? input.command.join(" ") : "");
     if (!cmd) return null;
-    for (const c of expandCommand(cmd)) {
-      const d = decideShell(g, c, protectedPaths, ctxFiles);
+    for (const [i, c] of expandCommand(cmd).entries()) {
+      const d = decideShell(g, c, protectedPaths, ctxFiles, i === 0);
       if (d) return d;
     }
     return null;

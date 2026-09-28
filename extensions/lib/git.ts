@@ -34,7 +34,7 @@ export function git(args: string[], cwd: string, timeout = 60_000): GitResult {
 
 export function mustGit(args: string[], cwd: string): string {
   const r = git(args, cwd);
-  if (!r.ok) throw new Error(`git ${args[0]} failed: ${r.stderr || r.stdout}`);
+  if (!r.ok) throw new Error(`git ${args.find((a) => !a.startsWith("-") && !a.includes("=")) ?? args[0]} failed: ${r.stderr || r.stdout}`);
   return r.stdout;
 }
 
@@ -95,18 +95,27 @@ export function changedFiles(cwd: string, base: string, head?: string): string[]
   // cut shows up as "this branch's change" (false critical / protected hits).
   const mb = head ? null : git(["merge-base", base, "HEAD"], cwd);
   const range = head ? [`${base}...${head}`] : [mb?.ok && mb.stdout ? mb.stdout : base];
-  for (const f of mustGit(["diff", "--name-only", "--no-renames", ...range], cwd).split("\n")) if (f) out.add(toPosix(f));
+  for (const f of nameList(["diff", "--name-only", "--no-renames", ...range], cwd)) out.add(f);
   if (!head) {
-    for (const f of mustGit(["ls-files", "--others", "--exclude-standard"], cwd).split("\n")) if (f) out.add(toPosix(f));
+    for (const f of nameList(["ls-files", "--others", "--exclude-standard"], cwd)) out.add(f);
   }
   return [...out].sort();
 }
 
-export function stagedFiles(cwd: string): string[] {
-  return mustGit(["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACMRDT"], cwd)
-    .split("\n")
+/**
+ * File names from a git listing command, NUL-separated. Without `-z`, git
+ * C-quotes any non-ASCII name (`"notes \303\251.txt"`), which then matches no
+ * protected path and can't be `git show`n — the file silently skips every check.
+ */
+export function nameList(args: string[], cwd: string): string[] {
+  return mustGit(["-c", "core.quotepath=off", args[0], "-z", ...args.slice(1)], cwd)
+    .split("\0")
     .filter(Boolean)
     .map(toPosix);
+}
+
+export function stagedFiles(cwd: string): string[] {
+  return nameList(["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACMRDT"], cwd);
 }
 
 /** The base a worktree branch was cut from, as recorded by `createWorktree`. */

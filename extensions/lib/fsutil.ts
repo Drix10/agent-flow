@@ -24,6 +24,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** Directories no scan should ever descend into — at any depth. */
@@ -172,17 +173,70 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/** Is the holder recorded in a lock file (`pid@host`, or a bare pid from older versions) confirmed dead? */
+function holderDead(content: string): boolean {
+  const m = content.trim().match(/^(\d+)(?:@(.*))?$/);
+  if (!m) return false;
+  // A PID only means something on the machine that wrote it; a foreign lock falls back to age.
+  if (m[2] !== undefined && m[2] !== hostname()) return false;
+  const pid = Number(m[1]);
+  return pid > 0 && pid !== process.pid && !processAlive(pid);
+}
+
+/**
+ * Remove `lockPath` only if it is still the exact lock we judged stale.
+ *
+ * Two waiters can both read a dead holder's PID; if each simply unlinked, the
+ * second would delete the FRESH lock the first just took — two holders, lost
+ * update. So breaking is serialised through a sibling `.break` lock, and the
+ * content is re-checked under it: a fresh lock has a live PID (or is still
+ * empty, being written) and is left alone.
+ */
+function breakStaleLock(lockPath: string, seen: string, staleMs: number): void {
+  const breaker = `${lockPath}.break`;
+  let fd: number;
+  try {
+    fd = openSync(breaker, "wx");
+  } catch (e: any) {
+    if (e.code !== "EEXIST") throw e;
+    // Holding the breaker is a few syscalls; one this old belongs to a process that died mid-break.
+    try {
+      if (Date.now() - statSync(breaker).mtimeMs > Math.min(staleMs, 5_000)) unlinkSync(breaker);
+    } catch {
+      /* gone already */
+    }
+    return;
+  }
+  try {
+    writeFileSync(fd, `${process.pid}@${hostname()}`);
+    let now: string;
+    try {
+      now = readFileSync(lockPath, "utf-8");
+    } catch {
+      return; // released or broken meanwhile
+    }
+    const aged = Date.now() - statSync(lockPath).mtimeMs > staleMs;
+    if (now === seen && (holderDead(now) || aged)) unlinkSync(lockPath);
+  } finally {
+    closeSync(fd);
+    try {
+      unlinkSync(breaker);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /**
  * Cross-process mutex via O_EXCL lockfile. Parallel implementers updating the
  * same state file would otherwise lose writes (read-modify-write race).
  *
- * The lock file holds the holder's PID. A lock is broken immediately once its
- * PID is confirmed dead (works whenever the holder ran on this machine, which
- * is every real use of this tool — worktrees are always local). Age (`staleMs`)
- * is only a fallback for a lock we can't attribute to a live-or-dead PID (a
- * foreign/older-format lock file, or a cross-host holder) — `fn()` itself is
- * always a fast, synchronous, in-process critical section, so a legitimate
- * holder should never actually take anywhere near `staleMs`.
+ * The lock file holds `pid@hostname`. A lock is broken immediately once its
+ * PID is confirmed dead on this host (every real use — worktrees are always
+ * local). Age (`staleMs`) is only a fallback for a lock we can't attribute to
+ * a live-or-dead PID (a foreign-format lock file, or another host's) — `fn()`
+ * itself is always a fast, synchronous, in-process critical section, so a
+ * legitimate holder should never take anywhere near `staleMs`.
  */
 export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, staleMs = 30_000): T {
   mkdirSync(dirname(lockPath), { recursive: true });
@@ -194,22 +248,19 @@ export function withLock<T>(lockPath: string, fn: () => T, timeoutMs = 10_000, s
     } catch (e: any) {
       if (e.code !== "EEXIST") throw e;
       try {
-        const heldPid = Number.parseInt(readFileSync(lockPath, "utf-8").trim(), 10);
-        const dead = Number.isInteger(heldPid) && heldPid > 0 && heldPid !== process.pid && !processAlive(heldPid);
+        const seen = readFileSync(lockPath, "utf-8");
         const stale = Date.now() - statSync(lockPath).mtimeMs > staleMs;
-        if (dead || stale) {
-          unlinkSync(lockPath);
-          continue;
-        }
-      } catch {
+        if (holderDead(seen) || stale) breakStaleLock(lockPath, seen, staleMs);
+      } catch (err: any) {
+        if (err?.code !== "ENOENT") throw err;
         continue; // lock vanished between calls — retry immediately
       }
       if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
-      sleep(25);
+      sleep(5 + Math.floor(Math.random() * 20));
     }
   }
   try {
-    writeFileSync(fd, String(process.pid));
+    writeFileSync(fd, `${process.pid}@${hostname()}`);
   } catch {
     /* best-effort: an unreadable/missing PID just falls back to the age check above */
   }

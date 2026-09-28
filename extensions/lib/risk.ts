@@ -72,6 +72,9 @@ export const CODE_PATTERNS: Record<Exclude<SurfaceType, "dependency" | "secret">
   ],
 };
 
+/** Placeholders and interpolation aren't secrets; docker-compose dev defaults are too common to block on. Tested against one match. */
+const CREDENTIAL_PLACEHOLDER = /^[^:]+:\/\/[^\s:@/]+:(password|passwd|pass|pwd|secret|token|changeme|postgres|root|example|test|x+|\*+|\$\{?[^@]*\}?|%[^@]*%|<[^>@]*>|\{\{[^@]*\}\})@$/i;
+
 /** High-signal secret shapes. We report the KIND and LINE only — never the value. */
 const SECRET_PATTERNS: { kind: string; re: RegExp; unless?: RegExp }[] = [
   { kind: "AWS access key id", re: /\b(AKIA|ASIA)[0-9A-Z]{16}\b/ },
@@ -90,14 +93,53 @@ const SECRET_PATTERNS: { kind: string; re: RegExp; unless?: RegExp }[] = [
   { kind: "SendGrid API key", re: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/ },
   { kind: "Twilio API key", re: /\bSK[0-9a-f]{32}\b/ },
   { kind: "npm token", re: /\bnpm_[A-Za-z0-9]{36}\b/ },
-  { kind: "JSON Web Token", re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}/ },
+  // Not preceded by a base64url char: `-eyJ-eyJ…` would otherwise restart the scan at every `eyJ` (quadratic).
+  { kind: "JSON Web Token", re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}/ },
+  // Storage connection strings: AccountKey is base64 of 64 bytes, always 86 chars + "==".
+  { kind: "Azure storage account key", re: /\bAccountKey=[A-Za-z0-9+/]{86}==/ },
+  { kind: "DigitalOcean token", re: /\bdo[opr]_v1_[a-f0-9]{64}\b/ },
+  { kind: "Shopify token", re: /\bshp(at|ca|pa|ss)_[a-fA-F0-9]{32}\b/ },
+  // .npmrc: `//registry.npmjs.org/:_authToken=<uuid | npm_…>`; `${NPM_TOKEN}` doesn't match.
+  { kind: "npm auth token", re: /_authToken\s*=\s*["']?(npm_[A-Za-z0-9]{36}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i },
   {
     kind: "database URL with password",
-    re: /\b(postgres(ql)?|mysql|mariadb|mongodb(\+srv)?|rediss?|amqps?|mssql|sqlserver):\/\/[^\s:@/]+:[^\s@/]{3,}@/i,
-    // Placeholders and interpolation aren't secrets; docker-compose dev defaults are too common to block on.
-    unless: /:\/\/[^\s:@/]+:(password|passwd|pass|secret|changeme|postgres|root|example|test|x+|\*+|\$\{?[^@]*\}?|%[^@]*%|<[^>@]*>|\{\{[^@]*\}\})@/i,
+    // The password may contain `/`; one that is all digits before a `/` is a port (`host:8080/a@b`).
+    re: /\b(postgres(ql)?|mysql|mariadb|mongodb(\+srv)?|rediss?|amqps?|mssql|sqlserver):\/\/[^\s:@/]{1,256}:(?!\d+[/?#])[^\s@]{3,256}@/gi,
+    unless: CREDENTIAL_PLACEHOLDER,
+  },
+  {
+    kind: "URL with embedded password",
+    re: /\b(https?|s?ftps?):\/\/[^\s:@/]{1,256}:(?!\d+[/?#])[^\s@]{3,256}@/gi,
+    unless: CREDENTIAL_PLACEHOLDER,
   },
 ];
+
+/**
+ * Long lines (minified bundles, base64 blobs) are scanned in overlapping chunks:
+ * skipping them would let padding hide a key, and a whole-line regex over
+ * megabytes risks pathological backtracking.
+ */
+const CHUNK = 4096;
+const OVERLAP = 512;
+
+function* windows(line: string): Generator<string> {
+  if (line.length <= CHUNK) {
+    yield line;
+    return;
+  }
+  for (let at = 0; at < line.length; at += CHUNK - OVERLAP) {
+    yield line.slice(at, at + CHUNK);
+    if (at + CHUNK >= line.length) return;
+  }
+}
+
+/** Does `text` hold a match that isn't a placeholder? `unless` is judged per match, so one dummy URL can't hide a real one. */
+function realMatch(text: string, re: RegExp, unless?: RegExp): boolean {
+  if (!re.global) return re.test(text) && !(unless && unless.test(text));
+  re.lastIndex = 0;
+  for (const m of text.matchAll(re)) if (!unless || !unless.test(m[0])) return true;
+  return false;
+}
 
 /** Secret kinds + line numbers in a blob of text. Never returns the matched value. */
 export function findSecrets(content: string): { kind: string; lines: number[] }[] {
@@ -106,17 +148,24 @@ export function findSecrets(content: string): { kind: string; lines: number[] }[
   for (const { kind, re, unless } of SECRET_PATTERNS) {
     const hit: number[] = [];
     lines.forEach((l, i) => {
-      if (hit.length < 5 && l.length < 20_000 && re.test(l) && !(unless && unless.test(l))) hit.push(i + 1);
+      if (hit.length >= 5) return;
+      for (const w of windows(l)) {
+        if (realMatch(w, re, unless)) {
+          hit.push(i + 1);
+          return;
+        }
+      }
     });
     if (hit.length) out.push({ kind, lines: hit });
   }
   return out;
 }
 
-const ENV_FILE = /(^|\/)\.env(\.[\w-]+)?$/;
+/** `.env`, `.env.production.local`, `.envrc`, `prod.env` — any number of dot-suffixes. */
+const ENV_FILE = /(^|\/)(\.env(\.[\w-]+)*|\.envrc|[\w.-]+\.env)$/;
 const ENV_TEMPLATE = /\.(example|sample|template|dist|defaults)$/i;
 
-/** A real environment file (`.env`, `.env.production`), not a checked-in template. */
+/** A real environment file, not a checked-in template (`.env.example`, `prod.env.sample`). */
 export function isEnvFile(path: string): boolean {
   return ENV_FILE.test(path) && !ENV_TEMPLATE.test(path);
 }
