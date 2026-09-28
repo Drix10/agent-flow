@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- Bare `git push` (no refspec) is blocked: git would have pushed the checked-out branch, default branch included. Dry runs and tag-only pushes are unaffected.
+- `git fetch` with a `<src>:<dst>` refspec is blocked: it rewrites local branches while looking like a read. Plain fetches only move remote-tracking refs and stay allowed.
+- `git update-ref` and non-list `git replace` are blocked: direct ref and object rewrites outside every branch protection here.
+
+### Fixed
+- `state show` / `state update` with a bare `--issue` no longer silently target issue 1; a missing `--manifest` value no longer leaks a `TypeError`; `--reason` keeps values containing `=`.
+- `repairStale` types extensionless paths by the filesystem instead of the name.
+- Launch commands use only flags the supported CLIs offer; Codex's strict-schema output and read-only sandbox, and Pi's read-only tool list, verified against live sessions.
+- Root `plugin.json` version corrected to 1.1.1; removed a README badge pointing at a directory the package was never listed in.
+
+Full list with a regression test per row: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md) rows #67–76.
+
 ## [1.1.1] - 2026-09-28
 
 A pre-integration review (three independent reviewers plus a QA sweep of ~200 everyday commands) found and fixed audit rows #37–66: guard bypasses and false positives, a fail-open on an unparseable manifest, a lock race, and a Codex/Gemini pipeline that would not have run. Details and a regression test per row: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).

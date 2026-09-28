@@ -7,7 +7,7 @@ What is **enforced** (the harness or our code blocks it), **checked** (the pre-c
 | Skill discovery | `pi.skills` | `.claude/skills/` | `.agents/skills/` | `.gemini/skills/` | `.cursor/skills/` | `.github/skills/` | none documented — `.agents/skills/` is a manual reference |
 | Root context auto-loaded | `AGENTS.md` | `CLAUDE.md` → `@AGENTS.md` | `AGENTS.md` | `GEMINI.md`, or `context.fileName` incl. `AGENTS.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md`, per-directory in monorepos |
 | `allowed-tools` restricts tools | ❌ pre-approval only (FM-16, tested) | ❌ pre-approval | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Reviewer can't write | ✅ `--tools read,grep,find,ls` + guard | ✅ subagent `tools: Read, Grep, Glob` | ✅ `codex exec --sandbox read-only` (verified flag) | ⚠️ tool list without write/shell, unverified | ❌ instructed | ❌ instructed | ❌ instructed |
+| Reviewer can't write | ✅ `--tools read,grep,find,ls` + guard (write-block probed live) | ✅ subagent `tools: Read, Grep, Glob` | ✅ `codex exec --sandbox read-only` (write-block probed live) | ⚠️ tool list without write/shell, unverified | ❌ instructed | ❌ instructed | ❌ instructed |
 | Protected paths | ✅ guard (per call) + hook | ✅ `agent-flow guard` hook (per call) + pre-commit hook | ✅ hook | ✅ hook | ✅ hook | ✅ hook | ✅ hook |
 | Implementer confined to worktree | ✅ file tools (incl. symlinks), guard · ⚠️ shell best-effort | ✅ file tools via `agent-flow guard` hook · ⚠️ shell best-effort | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed |
 | No `--no-verify` / force-push / push to default branch by agents | ⚠️ guard, every session (shell analysis) | ⚠️ `agent-flow guard` hook, every session (shell analysis) | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed |
