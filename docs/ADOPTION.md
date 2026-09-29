@@ -24,7 +24,7 @@ npx @drix10/agent-flow audit-risk        # review once, then `baseline accept --
 npx @drix10/agent-flow init              # preview a manifest; suggests protected_paths but writes none
 ```
 
-Add `doctor` and `audit-risk --fail-on-new` to CI. In a git repo the scans read git's file list, so gitignored trees (data, caches, vendored code) cost nothing.
+Add `doctor` and `audit-risk --fail-on-new` to CI. In a git repo the scans read git's file list, so untracked gitignored trees (data, caches, vendored code) are not walked. Files git tracks are always scanned, even under an ignored pattern, and outside git the scans fall back to a directory walk.
 
 ## Layer 2: protect what must not change
 

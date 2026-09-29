@@ -8,8 +8,8 @@
  */
 
 import { lstatSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { CASE_INSENSITIVE_FS, IGNORED_DIRS, WalkOptions, WalkResult, linksToRepoFile, toPosix, walk } from "./fsutil.js";
+import { dirname, join, relative, resolve } from "node:path";
+import { CASE_INSENSITIVE_FS, IGNORED_DIRS, WalkOptions, WalkResult, escapesBase, linksToRepoFile, toPosix, walk } from "./fsutil.js";
 import { git } from "./git.js";
 
 function isRepoTop(root: string): boolean {
@@ -34,13 +34,30 @@ export function listRepoFiles(root: string, opts: WalkOptions = {}): WalkResult 
   const seen = new Set<string>();
   const files: string[] = [];
   let truncated = false;
+  // A tracked directory swapped for a symlink to somewhere else would let git's list lead outside the repo.
+  const rootReal = realpathSync.native(root);
+  const dirInside = new Map<string, boolean>();
+  const insideRoot = (dir: string): boolean => {
+    let ok = dirInside.get(dir);
+    if (ok === undefined) {
+      try {
+        ok = !escapesBase(relative(rootReal, realpathSync.native(join(root, dir))));
+      } catch {
+        ok = false;
+      }
+      dirInside.set(dir, ok);
+    }
+    return ok;
+  };
   for (const raw of listed.stdout.split("\0")) {
     if (!raw) continue;
-    const rel = toPosix(raw);
+    // git prints names verbatim; only Windows separators need converting (a backslash is a legal POSIX filename character).
+    const rel = process.platform === "win32" ? toPosix(raw) : raw;
     if (seen.has(rel)) continue;
     seen.add(rel);
     const segs = rel.split("/");
     if (segs.slice(0, -1).some((s) => skip.has(s))) continue;
+    if (!insideRoot(dirname(rel) === "." ? "" : dirname(rel))) continue;
     let st;
     try {
       st = lstatSync(join(root, rel));

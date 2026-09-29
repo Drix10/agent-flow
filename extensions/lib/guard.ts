@@ -300,7 +300,11 @@ export function parseGit(seg: string): GitCall | null {
       rest.match(/^(--no-pager|-P|--paginate|-p|--bare|--no-replace-objects|--literal-pathspecs|--no-optional-locks|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)\s*/);
     if (!g) break;
     if ((g[1] === "-c" || g[1] === "--config-env") && g[2]) configs.push(g[2]);
-    if (g[1] === "-C" && g[2]) dir = g[2].replace(/^["']|["']$/g, "");
+    if (g[1] === "-C" && g[2]) {
+      // Each relative -C is taken from the directory the previous one selected; an absolute one starts over.
+      const next = g[2].replace(/^["']|["']$/g, "");
+      dir = dir && !isAbsolute(next) ? join(dir, next) : next;
+    }
     rest = rest.slice(g[0].length);
   }
   const sm = rest.match(/^(\S+)\s*(.*)$/);
@@ -1248,7 +1252,7 @@ function decideGitBulk(g: GuardInput, gc: GitCall, protectedPaths: string[]): Gu
 }
 
 /** Commands that name a file without reading its contents. */
-const NAME_ONLY_VERBS = new Set(["ls", "dir", "stat", "test", "[", "[[", "cd", "pushd", "echo", "printf", "which", "dirname", "basename", "realpath", "readlink", "file", "mkdir", "touch", "rm", "rmdir", "mv", "unlink", "chmod", "chown", "chgrp", "find", "ln", "wslpath", "true", "false"]);
+const NAME_ONLY_VERBS = new Set(["ls", "dir", "stat", "test", "[", "[[", "cd", "pushd", "echo", "printf", "which", "dirname", "basename", "realpath", "readlink", "file", "mkdir", "touch", "rm", "rmdir", "unlink", "chmod", "chown", "chgrp", "find", "wslpath", "true", "false"]);
 const READ_TOOL = /^(read|notebook_?read|view|read_file|read_many_files|grep|search_file_content|glob|cat|open_file)$/;
 
 /** The deny-read pattern (or "env file") that a repo-relative path falls under, or null. */

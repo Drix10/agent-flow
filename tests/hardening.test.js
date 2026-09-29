@@ -1519,3 +1519,50 @@ test("install --harness claude registers the guard on every tool it has rules fo
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("git file list: literal backslashes in POSIX names are kept, and a tracked directory turned into a symlink out of the repo is not followed", async () => {
+  const { listRepoFiles } = await import("../extensions/lib/repofiles.js");
+  const { dir, g } = gitRepo("listedge");
+  const outside = tmp("listout");
+  try {
+    writeFileSync(join(dir, "ok.txt"), "x");
+    if (process.platform !== "win32") {
+      writeFileSync(join(dir, "config\\creds.txt"), "x");
+      mkdirSync(join(dir, "config"));
+      writeFileSync(join(dir, "config", "creds.txt"), "y");
+    }
+    mkdirSync(join(dir, "vendored"));
+    writeFileSync(join(dir, "vendored", "a.txt"), "x");
+    g("add", "-A");
+    g("commit", "-qm", "x");
+    if (process.platform !== "win32") {
+      const files = listRepoFiles(dir).files;
+      assert.ok(files.includes("config\\creds.txt") && files.includes("config/creds.txt"), "two different files stay two files");
+    }
+    writeFileSync(join(outside, "a.txt"), "outside");
+    rmSync(join(dir, "vendored"), { recursive: true });
+    if (!trySymlink(outside, join(dir, "vendored"), "dir")) return;
+    const files = listRepoFiles(dir).files;
+    assert.ok(files.includes("ok.txt"));
+    assert.ok(!files.some((f) => f.startsWith("vendored/")), "a path that leads outside the repo is dropped");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("guard: mv and hard links count as touching a secret, and repeated git -C accumulates", () => {
+  const { dir, manifest } = ledgerRepo();
+  try {
+    mkdirSync(join(dir, "sub"));
+    const m = { ...manifest, protected_paths: [...manifest.protected_paths, "config/**"], deny_read: ["secrets/**"] };
+    const sh = (command) => decide({ role: null, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest: m })?.rule ?? null;
+    for (const c of ["mv .env notes.txt", "mv secrets/db.txt x", "ln .env copy.txt", "cp .env x"]) assert.equal(sh(c), "secret-read", c);
+    assert.equal(sh("mv src/a.ts src/b.ts"), null);
+    assert.match(sh("git -C sub -C .. restore -- config/./db.yml") ?? "", /bulk-git-protected|protected-path/);
+    assert.equal(sh("git -C sub -C .. status"), null);
+    assert.equal(sh(`git -C ${join(dir, "sub").replace(/\\/g, "/")} -C .. restore -- config/db.yml`) === null, false, "an absolute -C then a relative one");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

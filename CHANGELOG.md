@@ -20,7 +20,7 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 - `tests/redteam/corpus.json`: a table of blocked, allowed and documented-gap cases that `npm test` runs. `.pre-commit-hooks.yaml` for pre-commit.com users.
 
 ### Changed
-- `scan`, `doctor`, `audit-risk` and `init` read git's file list, so gitignored trees are never walked (a scan of a repo with a 7 GB ignored `data/` dir no longer takes minutes). Ignored env files are no longer reported as "present in the working tree".
+- `scan`, `doctor`, `audit-risk` and `init` use git's file list when it is available (tracked plus untracked-not-ignored files), so untracked gitignored trees are not walked (a scan of a repo with a 7 GB ignored `data/` dir no longer takes minutes). Outside git, or when the root isn't the repository's top level, they fall back to a directory walk. Tracked files are always scanned, even under an ignored pattern. Ignored env files are no longer reported as "present in the working tree".
 - `scan` recognises C/C++ (CMake, ctest, GoogleTest, Catch2), PHP, Swift, Elixir and Dart. `init` suggests `protected_paths` from directories that exist and writes none.
 - New guide for existing repositories: [docs/ADOPTION.md](./docs/ADOPTION.md).
 
