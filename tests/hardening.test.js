@@ -1268,7 +1268,7 @@ test("guard: removing or moving a protected directory, or a parent of one, is bl
   const { dir, manifest } = ledgerRepo();
   try {
     const sh = (command, role = null) => decide({ role, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest })?.rule ?? null;
-    for (const c of ["rm -rf research/ledger/", "rm -r research/prereg", "mv research/prereg /tmp/p", "rm -rf research", `rm -rf ${join(dir, "research", "ledger")}`, "rm -rf ."]) {
+    for (const c of ["rm -rf research/ledger/", "rm -r research/prereg", "mv research/prereg /tmp/p", "rm -rf research", `rm -rf ${join(dir, "research", "ledger").replace(/\\/g, "/")}`, "rm -rf ."]) {
       assert.equal(sh(c), "protected-path", c);
       assert.equal(sh(c, "implementer"), "protected-path", `implementer: ${c}`);
     }
