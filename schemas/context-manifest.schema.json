@@ -210,6 +210,11 @@
           "minimum": 1,
           "maximum": 5
         },
+        "max_cost_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Per-issue cost cap. Once an issue's role runs have cost this much, a new phase or round escalates to Needs Me (budget_exceeded). Only harnesses that report cost count."
+        },
         "auto_merge_low_risk": {
           "type": "boolean"
         },

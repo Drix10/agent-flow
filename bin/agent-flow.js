@@ -378,7 +378,7 @@ function cmdAuditLog(args) {
       console.log(`${s.entries} entries, ${s.from} → ${s.to}`);
       const list = (m) => Object.entries(m).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
       console.log(`guard blocks: ${s.guard_blocks.total} (by role: ${list(s.guard_blocks.by_role)}; by rule: ${list(s.guard_blocks.by_rule)})`);
-      console.log(`role runs: ${s.role_runs.total} (${s.role_runs.ok} ok, ${s.role_runs.failed} failed, $${s.role_runs.cost_usd})`);
+      console.log(`role runs: ${s.role_runs.total} (${s.role_runs.ok} ok, ${s.role_runs.failed} failed, $${s.role_runs.cost_usd}${s.role_runs.cost_unreported ? `; cost not reported for ${s.role_runs.cost_unreported}` : ""})`);
       for (const i of s.issues) console.log(`  issue #${i.issue}: ${i.state}, round ${i.round}`);
       for (const e of s.escalations.slice(-10)) console.log(`  needs me: issue #${e.issue} — ${e.reason.slice(0, 120)}`);
       if (s.guard_blocks.total) console.log(dim("  A rule that blocks the same thing again and again belongs in protected_paths or a lint rule, not a prompt."));
@@ -606,7 +606,7 @@ function cmdState(args) {
       const b = bindingLib.checkBinding(rt, p.issue, p.round ?? session?.round ?? 0, gatesLib.gatesOf(trustedMan));
       if (b.enforced && !b.ok) {
         const reason = `unreviewed_commits: ${b.problems.join("; ")}. Decide: re-run the missing role(s) on the current tip, or reset the branch to the reviewed commit.`;
-        const e = state.updateState(rt, { ...p, state: "Needs Me", reason }, manifestLib.maxReviewRounds(trustedMan));
+        const e = state.updateState(rt, { ...p, state: "Needs Me", reason }, manifestLib.maxReviewRounds(trustedMan), manifestLib.maxCostUsd(trustedMan));
         out(args, { ...e, binding: b }, () => {
           warn(`issue #${e.updated} can't be Completed: ${b.problems.join("; ")}`);
           warn(`recorded as Needs Me (unreviewed_commits)`);
@@ -614,7 +614,7 @@ function cmdState(args) {
         return 3;
       }
     }
-    const r = state.updateState(rt, p, manifestLib.maxReviewRounds(trustedMan));
+    const r = state.updateState(rt, p, manifestLib.maxReviewRounds(trustedMan), manifestLib.maxCostUsd(trustedMan));
     out(args, r, () => (r.escalated ? warn : ok)(`issue #${r.updated}: ${r.from ?? "(new)"} → ${r.state} (round ${r.round})${r.reason ? ` — ${r.reason}` : ""}`));
     // Distinct exit code so a script can't miss the escalation by only checking for failure.
     return r.escalated ? 3 : 0;

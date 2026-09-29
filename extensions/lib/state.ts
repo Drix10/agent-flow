@@ -12,7 +12,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, fstatSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, readFileSync, fstatSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite, isoNow, readJson, withLock } from "./fsutil.js";
 import { DEFAULT_MAX_REVIEW_ROUNDS } from "./manifest.js";
@@ -174,7 +174,30 @@ export interface UpdateResult {
   reason?: string;
 }
 
-export function updateState(root: string, p: UpdateParams, maxRounds = DEFAULT_MAX_REVIEW_ROUNDS): UpdateResult {
+/** What an issue's role runs have cost so far, from the audit log. Only harnesses that report cost contribute. */
+export function issueCost(root: string, issue: number): { total: number; by_round: Record<number, number>; unreported_runs: number } {
+  const out = { total: 0, by_round: {} as Record<number, number>, unreported_runs: 0 };
+  const path = join(root, AUDIT_LOG);
+  if (!existsSync(path)) return out;
+  for (const raw of readFileSync(path, "utf-8").split("\n")) {
+    if (!raw.includes('"role_run"')) continue;
+    try {
+      const e = JSON.parse(raw);
+      if (e.event !== "role_run" || e.issue !== issue) continue;
+      if (typeof e.cost_usd === "number" && Number.isFinite(e.cost_usd) && e.cost_usd >= 0) {
+        out.total += e.cost_usd;
+        const r = Number.isInteger(e.round) ? e.round : 0;
+        out.by_round[r] = (out.by_round[r] ?? 0) + e.cost_usd;
+      } else out.unreported_runs++;
+    } catch {
+      /* a torn line is `audit verify`'s business */
+    }
+  }
+  out.total = Math.round(out.total * 1e6) / 1e6;
+  return out;
+}
+
+export function updateState(root: string, p: UpdateParams, maxRounds = DEFAULT_MAX_REVIEW_ROUNDS, maxCostUsd?: number): UpdateResult {
   if (!Number.isInteger(p.issue) || p.issue < 1) throw new Error(`issue must be a positive integer, got ${p.issue}`);
   if (!STATES.includes(p.state)) throw new Error(`state must be one of ${STATES.join(" | ")}`);
   if (p.round !== undefined && (!Number.isInteger(p.round) || p.round < 0)) throw new Error(`round must be a non-negative integer`);
@@ -213,6 +236,16 @@ export function updateState(root: string, p: UpdateParams, maxRounds = DEFAULT_M
       to = "Needs Me";
       escalated = true;
       reason = `max_rounds_exceeded: round ${round} exceeds limit ${maxRounds}${p.reason ? ` — ${p.reason}` : ""}`;
+    }
+    // The cost cap, enforced here for the same reason: a new phase or round is where more money gets spent.
+    if (maxCostUsd !== undefined && to === "Working" && existing && (round > prevRound || (p.phase !== undefined && p.phase !== existing.phase))) {
+      const c = issueCost(root, p.issue);
+      if (c.total >= maxCostUsd) {
+        const rounds = Object.entries(c.by_round).map(([r, v]) => `round ${r}: $${Math.round(v * 100) / 100}`).join(", ");
+        to = "Needs Me";
+        escalated = true;
+        reason = `budget_exceeded: $${c.total} spent, cap $${maxCostUsd} (${rounds || "no per-round data"})${p.reason ? ` — ${p.reason}` : ""}`;
+      }
     }
     if (to === "Needs Me" && !reason?.trim()) {
       throw new Error("Needs Me requires a reason (what was tried, what failed, what the human must decide)");

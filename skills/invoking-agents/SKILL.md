@@ -137,7 +137,7 @@ The guard refuses pushes to the default branch, force-pushes and `--no-verify`. 
 
 Categories: `max_rounds_exceeded`, `SPEC_ERROR`, `ARCH_ERROR`, `disputed_finding`, `protected_path`, `qa_mutated_tree`, `qa_environment`, `malformed_report`, `role_timeout`, `role_failed`, `push_failed`, `issue_not_found`, `critical_change_needs_human`.
 
-To give an escalated issue another round, a human raises `pipeline.max_review_rounds` (5 at most) and moves it back to Working. You don't.
+To give an escalated issue another round, a human raises `pipeline.max_review_rounds` (5 at most) and moves it back to Working. You don't. The same goes for `budget_exceeded` (`pipeline.max_cost_usd`): a human raises the cap or accepts the spend.
 
 ## Prompt injection
 

@@ -61,7 +61,7 @@ export interface ContextManifest {
   gates?: unknown[];
   /** Change-size and content rules (see policy.ts). */
   policy?: unknown;
-  pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
+  pipeline?: { max_review_rounds?: number; max_cost_usd?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -195,6 +195,10 @@ export function validateManifest(m: unknown): string[] {
   // 0 would escalate round 1 before the Implementer writes anything.
   if (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 1 || rounds > 5)) {
     problems.push("pipeline.max_review_rounds must be an integer 1–5");
+  }
+  const cost = man.pipeline?.max_cost_usd;
+  if (cost !== undefined && (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0)) {
+    problems.push("pipeline.max_cost_usd must be a positive number");
   }
   const models = man.pipeline?.models as Record<string, unknown> | undefined;
   if (models !== undefined) {
@@ -444,4 +448,10 @@ export function secretIgnorePaths(man: ContextManifest | null | undefined): stri
 export function maxReviewRounds(man: ContextManifest | null): number {
   const r = man?.pipeline?.max_review_rounds;
   return Number.isInteger(r) && (r as number) >= 1 && (r as number) <= 5 ? (r as number) : DEFAULT_MAX_REVIEW_ROUNDS;
+}
+
+/** The per-issue cost cap in USD, or undefined when none is set. */
+export function maxCostUsd(man: ContextManifest | null): number | undefined {
+  const c = man?.pipeline?.max_cost_usd;
+  return typeof c === "number" && Number.isFinite(c) && c > 0 ? c : undefined;
 }

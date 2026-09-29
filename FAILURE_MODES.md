@@ -76,6 +76,7 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
 
 **Fix:**
 - `state_update` rejects rounds that go backwards and auto-escalates any round above `pipeline.max_review_rounds` (default 2) to **Needs Me**.
+- `pipeline.max_cost_usd` (optional) caps what one issue may spend: once its role runs have cost that much, the next new phase or round escalates to **Needs Me** (`budget_exceeded`, per-round breakdown). **Enforced where the harness reports cost** (Claude's JSON envelope does; `audit summary` says "cost not reported" for the rest, and the cap can't fire there). It stops the next step, not the one already running.
 - `SPEC_ERROR` and `ARCH_ERROR` findings escalate immediately.
 - The Implementer can dispute a finding with evidence. The Reviewer must weigh the evidence and can withdraw the finding.
 
