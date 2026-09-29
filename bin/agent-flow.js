@@ -462,6 +462,10 @@ function gatesStop(rt, man) {
 function cmdConfig(args) {
   if (args._[1] !== "get" || typeof args._[2] !== "string") return sub("config", args._[1], ["get"], "config get <dotted.key>   e.g. config get pipeline.harness_by_role.reviewer");
   let v = manifestLib.trustedManifest(root()).manifest;
+  if (!v) {
+    console.error("agent-flow: no readable CONTEXT_MANIFEST.json here");
+    return 1;
+  }
   for (const k of args._[2].split(".")) v = v && typeof v === "object" && Object.hasOwn(v, k) ? v[k] : undefined;
   if (v !== undefined) console.log(typeof v === "string" ? v : JSON.stringify(v));
   return 0;

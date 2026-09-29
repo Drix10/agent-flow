@@ -1126,7 +1126,7 @@ function extractRoots(v: string, argv: readonly ShWord[]): ShWord[] {
   return [];
 }
 
-type ShellWrite = { word: ShWord; cwd: string | null; destructive?: boolean };
+type ShellWrite = { word: ShWord; cwd: string | null; destructive?: boolean; /** The place a `mv` puts things: written to, not removed. */ dest?: boolean };
 
 function shellWrites(src: string, cwd: string | null, depth = 0): ShellWrite[] {
   const out: ShellWrite[] = [];
@@ -1149,7 +1149,8 @@ function shellWrites(src: string, cwd: string | null, depth = 0): ShellWrite[] {
       if (!script.some((x) => x.dynamic)) out.push(...shellWrites(script.map((x) => x.text).join(" "), cwd, depth + 1));
     }
     const destructive = DESTRUCTIVE_VERBS.has(v);
-    for (const w of writeTargets(argv)) for (const x of braceVariants(w)) out.push({ word: x, cwd, destructive });
+    const mvDest = v === "mv" ? [...argv].reverse().find((x) => !x.text.startsWith("-"))?.text : undefined;
+    for (const w of writeTargets(argv)) for (const x of braceVariants(w)) out.push({ word: x, cwd, destructive, dest: mvDest !== undefined && x.text === mvDest });
     if (v === "find") for (const w of findDeleteRoots(argv)) for (const x of braceVariants(w)) out.push({ word: x, cwd, destructive: true });
     for (const w of extractRoots(v, argv)) for (const x of braceVariants(w)) out.push({ word: x, cwd });
   }
@@ -1328,13 +1329,11 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
   const confined = role === "implementer" && !!g.worktree;
   const wtShown = g.worktree ? toPosix(relative(g.root, g.worktree)) || g.worktree : "";
   if (DEVICE.test(w.text)) return null;
-  // Deleting the home directory or the filesystem root is never part of a task, wherever the repo is.
-  if (t.destructive && !g.allowProtected && /^(~|\$HOME|\$\{HOME\})\/?(\*)?$/.test(w.text)) {
-    return block("catastrophic-delete", `command removes or moves ${w.text}, the home directory. A human does that.`);
-  }
+  // Deleting the home directory, the filesystem root or a system directory is never part of a task, wherever the repo is.
   const abs = w.dynamic ? null : resolveShellPath(t.cwd, w.text);
-  if (abs && t.destructive && !g.allowProtected && (toPosix(abs) === "/" || toPosix(abs) === toPosix(homedir()))) {
-    return block("catastrophic-delete", `command removes or moves ${toPosix(abs)}, the ${toPosix(abs) === "/" ? "filesystem root" : "home directory"}. A human does that.`);
+  if (t.destructive && !t.dest && !g.allowProtected) {
+    const hit = catastrophicTarget(w.text, abs, !!w.glob);
+    if (hit) return block("catastrophic-delete", `command removes or moves ${w.text}, ${hit}. A human does that.`);
   }
   if (!abs) {
     return confined ? block("worktree-confinement", `can't tell where \`${w.text || "(empty)"}\` points (a variable, substitution or unknown cwd), so it can't be confined to ${wtShown}. Write to a literal path inside the worktree.`) : null;
@@ -1374,6 +1373,29 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
       }
       if (role === "implementer" && ctxFiles.some((f) => fold(f) === fold(rel))) return block("context-file", `command writes context file ${rel} — only the Gardener edits context.`);
     }
+  }
+  return null;
+}
+
+const SYSTEM_DIRS = new Set(["/", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/opt", "/proc", "/root", "/sbin", "/sys", "/usr", "/var", "/home", "/Users", "/System", "/Library"]);
+
+/** What a `rm`-like target is, when it is the home directory, the filesystem root, a system directory or a drive root. */
+function catastrophicTarget(text: string, abs: string | null, glob: boolean): string | null {
+  const home = toPosix(homedir()).replace(/\/+$/, "");
+  let t = text.replace(/^["']|["']$/g, "").replace(/\$\{HOME(?::[?=+-][^}]*)?\}/g, "$HOME").replace(/%USERPROFILE%|\$env:USERPROFILE/gi, "$HOME").replace(/\\/g, "/");
+  // `/*`, `~/.*`, `$HOME/.[!.]*`, `/.`: the same directory said another way.
+  t = t.replace(/\/(?:\.?\[!?\.\]\*|\.\*|\*|\.)$/, "/").replace(/(.)\/+$/, "$1");
+  if (t === "/" || t === "~" || t === "$HOME" || t === "$HOME/.." || t === "~/..") return t === "/" ? "the filesystem root" : "the home directory or its parent";
+  if (/^[A-Za-z]:\/?$/.test(t)) return "a drive root";
+  const cands = [t];
+  if (abs) {
+    let a = toPosix(abs);
+    if (glob) a = a.replace(/\/[^/]*[*?[][^/]*$/, "") || "/";
+    cands.push(a.replace(/(.)\/+$/, "$1"));
+  }
+  for (const c of cands) {
+    if (c === home) return "the home directory";
+    if (SYSTEM_DIRS.has(c)) return c === "/" ? "the filesystem root" : "a system directory";
   }
   return null;
 }
@@ -1513,8 +1535,12 @@ function decideKnown(g: GuardInput): GuardDecision | null {
   if (tool === "bash" || tool === "powershell" || tool === "shell" || words === "run_shell_command" || words === "exec_command") {
     const cmd = [input.command, input.cmd, input.script].find((c): c is string => typeof c === "string" && c.length > 0) ?? (Array.isArray(input.command) ? input.command.join(" ") : "");
     if (!cmd) return null;
+    // `rm -rf ${HOME}`: the parser reads a braced expansion as "unknown", so the home directory is caught on the text.
+    if (!g.allowProtected && /(?:^|[\s;&|(])(?:sudo\s+)?(?:rm|rmdir|shred|unlink)\b[^;&|\n]*?\s"?\$\{HOME[^}]*\}"?\/?(?:\*|\.\*|\.\.)?"?(?=\s|$|[;&|)])/.test(cmd)) {
+      return block("catastrophic-delete", "command removes ${HOME}, the home directory. A human does that.");
+    }
     // `rm${IFS}-rf${IFS}x` builds a command word out of a variable, which no static rule can read.
-    if (!g.allowProtected && /[\w./-]\$\{IFS\}|[\w./-]\$IFS\$/.test(cmd)) {
+    if (!g.allowProtected && /[\w./-](?:\$\{IFS\}|\$IFS(?!\w))/.test(cmd.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""'))) {
       return block("obfuscated-command", "the command splits words with $IFS, which hides what it runs from every check. Write it plainly.");
     }
     const deny = g.allowProtected ? null : denyCommandsOf(g.manifest);

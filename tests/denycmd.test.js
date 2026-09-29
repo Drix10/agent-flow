@@ -62,3 +62,12 @@ test("every corpus entry marked block exits 2 through the real hook, and never 1
     }
   });
 });
+
+test("no input makes the matcher slow, and an unsafe user regex is rejected and ignored", () => {
+  const spec = { presets: ["database", "infra"], patterns: [{ pattern: "(a+)+$" }] };
+  const t = Date.now();
+  for (const c of ["kubectl ".repeat(20000), "psql a ".repeat(30000), "drop table ".repeat(20000), `${"a".repeat(30)}!`]) matchDenyCommand(spec, c);
+  assert.ok(Date.now() - t < 2000, `took ${Date.now() - t}ms`);
+  assert.equal(validateDenyCommands({ patterns: [{ pattern: "(a+)+$" }] }).length, 1);
+  assert.equal(validateDenyCommands({ preset: ["infra"] }).length, 1, "a typo'd key is an error, not silently no protection");
+});
