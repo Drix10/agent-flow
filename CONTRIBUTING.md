@@ -20,7 +20,9 @@ bin/agent-flow.js CLI
 skills/           Agent Skills (instructions only)
 prompts/          Pi slash-command templates
 templates/        AGENTS.md, module AGENTS.md, CLAUDE.md, DOCS_INDEX.md, manifest
-schemas/          JSON Schema for CONTEXT_MANIFEST.json
+schemas/          JSON Schema for CONTEXT_MANIFEST.json and the Implementer / Reviewer / QA reports
+tests/            node:test suites; real git repos in temp directories
+docs/             harness matrix, quickstart, the v1.1 audit
 ```
 
 ## Rules for changes

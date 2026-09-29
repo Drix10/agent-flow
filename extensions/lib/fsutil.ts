@@ -60,6 +60,14 @@ export function toPosix(p: string): string {
   return p.split(sep).join("/").replace(/\\/g, "/");
 }
 
+/**
+ * Does a `path.relative()` result leave its base? A bare `startsWith("..")` also
+ * rejects legitimate names such as `..data` (Kubernetes ConfigMap mounts use them).
+ */
+export function escapesBase(rel: string): boolean {
+  return rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel);
+}
+
 export interface WalkOptions {
   /** Hard cap on files returned. Huge monorepos get truncated, never hang. */
   maxFiles?: number;
@@ -67,11 +75,26 @@ export interface WalkOptions {
   filter?: (relPath: string) => boolean;
   /** Extra directory names to skip. */
   ignoreDirs?: Iterable<string>;
+  /**
+   * List symlinks that point at a regular file inside the repo (`CLAUDE.md -> AGENTS.md`,
+   * `AGENTS.md -> docs/agents.md`). Directories are still never followed, and links leaving
+   * the repo are ignored, so a scan can't be steered into reading files elsewhere.
+   */
+  linkedFiles?: boolean;
 }
 
 export interface WalkResult {
   files: string[];
   truncated: boolean;
+}
+
+function linksToRepoFile(root: string, rel: string): boolean {
+  try {
+    const real = realpathSync(join(root, rel));
+    return !escapesBase(relative(realpathSync(root), real)) && statSync(real).isFile();
+  } catch {
+    return false; // dangling
+  }
 }
 
 /** Deterministic (sorted) recursive walk. Never follows symlinks. */
@@ -93,12 +116,12 @@ export function walk(root: string, opts: WalkOptions = {}): WalkResult {
     entries.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
     for (const entry of entries) {
       const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
+      if (entry.isSymbolicLink()) {
+        if (!opts.linkedFiles || !linksToRepoFile(root, rel)) continue;
+      } else if (entry.isDirectory()) {
         if (!ignore.has(entry.name)) stack.push(rel);
         continue;
-      }
-      if (!entry.isFile()) continue;
+      } else if (!entry.isFile()) continue;
       if (opts.filter && !opts.filter(rel)) continue;
       if (files.length >= maxFiles) {
         truncated = true;
@@ -312,7 +335,7 @@ export function existsExact(root: string, relPath: string): boolean {
   // as existing — every other path check in this project is repo-confined, and stale/repair
   // certifying an outside-the-repo path as "verified" would be an inconsistent, surprising exception.
   const escapes = relative(root, resolve(root, clean));
-  if (escapes.startsWith("..") || isAbsolute(escapes)) return false;
+  if (escapesBase(escapes)) return false;
   if (!existsSync(join(root, clean))) return false;
   if (!CASE_INSENSITIVE_FS) return true;
   let dir = root;
@@ -345,7 +368,7 @@ export function resolveInside(root: string, p: string): string {
   const rootReal = realpathSync(root);
   const abs = resolve(rootReal, p);
   const rel = relative(rootReal, abs);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+  if (rel === "" || escapesBase(rel)) {
     throw new Error(`path escapes the repository root: ${p}`);
   }
   // Walk up to the nearest existing ancestor and make sure its real path is inside.
@@ -353,7 +376,7 @@ export function resolveInside(root: string, p: string): string {
   while (!existsSync(probe)) probe = dirname(probe);
   const probeReal = realpathSync(probe);
   const relReal = relative(rootReal, probeReal);
-  if (relReal.startsWith("..") || isAbsolute(relReal)) {
+  if (escapesBase(relReal)) {
     throw new Error(`path resolves outside the repository through a symlink: ${p}`);
   }
   return abs;

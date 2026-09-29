@@ -40,7 +40,7 @@ const ENTRY = /(^|\/)(main|index|app|server|cli|__main__|manage|lib|mod)\.(ts|ts
 const CI = /^(\.github\/workflows\/[^/]+\.ya?ml|\.gitlab-ci\.yml|\.circleci\/config\.yml|azure-pipelines\.yml|Jenkinsfile|\.buildkite\/[^/]+\.ya?ml|bitbucket-pipelines\.yml|\.drone\.yml)$/;
 
 export function scanRepo(root: string, opts: { maxFiles?: number } = {}): ScanResult {
-  const { files, truncated } = walk(root, { maxFiles: opts.maxFiles ?? 50_000 });
+  const { files, truncated } = walk(root, { maxFiles: opts.maxFiles ?? 50_000, linkedFiles: true });
   const has = (f: string) => files.includes(f);
   const languages = new Set<string>();
   const pms = new Set<string>();

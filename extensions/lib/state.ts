@@ -49,6 +49,8 @@ export const STATE_FILE = ".agent-state.json";
 export const STATE_MD = "AGENT_STATE.md";
 export const AUDIT_LOG = join(".agent-flow", "audit.jsonl");
 const HISTORY_CAP = 50;
+const MAX_PHASE = 80;
+const MAX_REASON = 2000;
 
 const ALLOWED: Record<string, SessionState[]> = {
   new: ["Working", "Needs Me"],
@@ -129,6 +131,10 @@ export function updateState(root: string, p: UpdateParams, maxRounds = DEFAULT_M
   if (!Number.isInteger(p.issue) || p.issue < 1) throw new Error(`issue must be a positive integer, got ${p.issue}`);
   if (!STATES.includes(p.state)) throw new Error(`state must be one of ${STATES.join(" | ")}`);
   if (p.round !== undefined && (!Number.isInteger(p.round) || p.round < 0)) throw new Error(`round must be a non-negative integer`);
+  // The Pi tool schema enforces these; the CLI and library callers get the same limits.
+  if (p.phase !== undefined && p.phase.length > MAX_PHASE) throw new Error(`phase is limited to ${MAX_PHASE} characters`);
+  if (p.reason !== undefined && p.reason.length > MAX_REASON) throw new Error(`reason is limited to ${MAX_REASON} characters — keep the decision brief short`);
+  if (p.reopen && p.state === "Completed") throw new Error("reopen starts a Completed issue again; the target state must be Working or Needs Me");
 
   return withLock(join(root, ".agent-flow", "state.lock"), () => {
     const state = readState(root);

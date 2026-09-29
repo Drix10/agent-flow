@@ -23,6 +23,8 @@ export interface InitPlan {
   files: InitFile[];
   context_files: string[];
   references: number;
+  /** Root-level context files that already hold the user's rules; a fresh AGENTS.md was not generated beside them. */
+  existing_rules?: string[];
   /** Prose references that don't exist today — left out of the manifest; `doctor` reports them. */
   missing_references: { file: string; path: string }[];
 }
@@ -117,7 +119,10 @@ export function planInit(root: string, opts: { version: string; now?: string }):
   const contextFiles = discoverContextFiles(root);
   const contents = new Map<string, string>();
   for (const f of contextFiles) contents.set(f, readTextFile(join(root, f)) ?? "");
-  if (!existsSync(join(root, "AGENTS.md"))) {
+  // A CLAUDE.md, GEMINI.md or .cursorrules with real content is the user's rules. A second, empty-of-knowledge
+  // AGENTS.md beside it would split the source of truth, so leave the choice (and the migration) to them.
+  const existingRules = contextFiles.filter((f) => !f.includes("/") && !/^AGENTS\.md$/i.test(f) && (contents.get(f) ?? "").replace(/^\s*@AGENTS\.md\s*$/m, "").trim() !== "");
+  if (!existsSync(join(root, "AGENTS.md")) && existingRules.length === 0) {
     const content = agentsSkeleton(root, scan, branch);
     files.push({ path: "AGENTS.md", content, exists: false });
     contextFiles.unshift("AGENTS.md");
@@ -164,5 +169,5 @@ export function planInit(root: string, opts: { version: string; now?: string }):
   const problems = validateManifest(manifest);
   if (problems.length) throw new Error(`init built an invalid manifest (bug): ${problems.join("; ")}`);
   files.push({ path: MANIFEST_FILE, content: `${JSON.stringify(manifest, null, 2)}\n`, exists: existsSync(join(root, MANIFEST_FILE)) });
-  return { files, context_files: contextFiles, references: refCount, missing_references: missing };
+  return { files, context_files: contextFiles, references: refCount, missing_references: missing, ...(existingRules.length && !existsSync(join(root, "AGENTS.md")) ? { existing_rules: existingRules } : {}) };
 }

@@ -53,7 +53,7 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
 **What happens:** The Implementer edits protected code, or the Reviewer writes code.
 
 **Fix:**
-- Pi's `tool_call` guard, driven by `AGENT_FLOW_ROLE`:
+- Pi's `tool_call` guard and Claude Code's `PreToolUse` hook (`agent-flow guard`), both driven by `AGENT_FLOW_ROLE`:
   - reviewer and qa can't write;
   - the implementer is confined to its worktree;
   - protected paths are blocked for every role;
@@ -63,7 +63,7 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
 - The pre-commit hook blocks protected paths for any harness.
 
 **Status:**
-- **Enforced** on Pi for `write`/`edit`. **Best-effort** for shell commands.
+- **Enforced** on Pi and on Claude Code (with the `guard` hook installed) for `write`/`edit`. **Best-effort** for shell commands.
 - **Enforced** on Claude Code for the reviewer subagent.
 - **Checked** at commit time everywhere else.
 
@@ -130,11 +130,11 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
 **What happens:** The same context builds the code and reviews it, and approves its own work.
 
 **Fix:**
-- Separate `pi -p` processes, one per role.
+- Separate processes, one per role (`pi -p`, `claude -p`, `codex exec`, `gemini -p`).
 - The Reviewer gets a packet (issue, diff, classification) and never the Implementer's reasoning.
 - The review tier comes from `risk_classify` on the real diff.
 
-**Status:** **Enforced** on Pi when the pipeline runs as documented (FM-18). **Instructed** elsewhere.
+**Status:** **Enforced** by process boundaries when the pipeline runs as documented (FM-18). The Reviewer's read-only launch is enforced per harness as the [matrix](./docs/HARNESS-MATRIX.md) shows.
 
 **v1.0.x claimed:** "Review tier classification is mechanical". It was a JavaScript snippet inside a SKILL.md. The snippet matched `author.ts` as auth and never matched protected *directories*.
 
@@ -144,7 +144,7 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
 
 **Fix:** Each role starts a fresh process. Only artifacts cross between phases.
 
-**Status:** **Enforced** by process boundaries on Pi.
+**Status:** **Enforced** by process boundaries when the pipeline runs as documented (FM-18).
 
 ## FM-10: Model-capability mismatch
 
@@ -200,7 +200,7 @@ If the provider is down, the pipeline stalls. State is persisted, so a run can r
 - Pi's `--tools` flag removes the tool entirely.
 - Skills no longer declare `allowed-tools` as if it did anything.
 
-**Status:** **Enforced** on Pi for `write`/`edit`. Shell commands are best-effort; use `--tools` without `bash` for a hard guarantee.
+**Status:** **Enforced** on Pi and on Claude Code (with the `guard` hook) for `write`/`edit`. Shell commands are best-effort; use `--tools` without `bash` for a hard guarantee.
 
 ## FM-17: Generator/detector schema divergence
 
@@ -218,7 +218,7 @@ If the provider is down, the pipeline stalls. State is persisted, so a run can r
 
 **Found live:** In `-p` mode, one model process played every role.
 
-**Fix (v1.1):** The orchestrator launches every role as its own `pi -p` process with `AGENT_FLOW_ROLE`, and the guard enforces each role's limits.
+**Fix (v1.1):** The orchestrator launches every role as its own process (`pi -p`, `claude -p`, `codex exec`, `gemini -p`) with `AGENT_FLOW_ROLE`, and the guard enforces each role's limits.
 
 **Status:** **Enforced** when the orchestrator follows the skill. If a session ignores the skill and does the work inline, the guard's role restrictions don't apply to it. It runs as `orchestrator` or with no role.
 

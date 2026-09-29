@@ -6,21 +6,25 @@ Agent Flow runs next to autonomous agents that can edit your repository. This pa
 
 | Claim | Where | Test |
 |---|---|---|
-| Reviewer and QA can't `write`/`edit` on Pi | `extensions/guard.ts` → `lib/guard.ts` (`tool_call` hook) | `tests/guard.test.js` |
+| Reviewer and QA can't `write`/`edit` on Pi | `extensions/guard.ts` → `extensions/lib/guard.ts` (`tool_call` hook) | `tests/guard.test.js` |
 | Reviewer launched by the orchestrator has no write, edit or shell tool | `pi --tools read,grep,find,ls` in `skills/invoking-agents` | Pi's own flag |
 | Claude Code reviewer subagent can't write or run shell | `.claude/agents/reviewer.md` → `tools: Read, Grep, Glob` | `tests/package.test.js` (static) + live-verified: launched the real subagent via the Task tool in a scratch repo and told it to create `TEST.md` by any means; it reported it had no tool that could write and the file did not exist on disk. Reproduce with the probe in [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md#verify-it-yourself). |
 | Protected paths can't be written by any agent's file tools (Pi, and Claude Code with the `agent-flow guard` hook) | guard | `tests/guard.test.js` |
 | Implementer's **file tools** can't write outside `AGENT_FLOW_WORKTREE`, including through symlinks. Its shell is only best-effort confined — see below | guard (`decideWrite`) | `tests/guard.test.js`, `tests/hardening.test.js` |
-| Trust files (`.agent-state.json`, `AGENT_STATE.md`, `.agent-flow/audit.jsonl`, `.risk-baseline.json`, `.git/`) can't be written by file tools; only agent-flow's own tools and CLI change them | guard | `tests/guard.test.js`, `tests/hardening.test.js` |
-| File-writing tools need a **human** (Pi UI dialog). Headless writes need `AGENT_FLOW_HEADLESS_WRITES=1`, set by the launcher | `lib/confirm.ts` | `tests/tools.test.js` |
-| Writes stay inside the repo: no `..`, absolute paths or symlink escapes | `lib/fsutil.ts#resolveInside` | `tests/tools.test.js` |
-| No shell-string execution; git revisions and branches are validated | `lib/git.ts` (`execFile` + `check-ref-format`) | `tests/tools.test.js` |
-| Review round cap and legal state transitions | `lib/state.ts` | `tests/tools.test.js`, `tests/cli.test.js` |
-| Secret values are never printed or written | `lib/risk.ts#findSecrets` (kind + line only) | `tests/tools.test.js`, `tests/cli.test.js` |
+| Trust files (`.agent-state.json`, `AGENT_STATE.md`, `.agent-flow/audit.jsonl`, `.risk-baseline.json`, `.git/`) can't be written by file tools (or by `bootstrap_write`); only agent-flow's own tools and CLI change them | guard | `tests/guard.test.js`, `tests/hardening.test.js` |
+| File-writing tools need a **human** (Pi UI dialog). Headless writes need `AGENT_FLOW_HEADLESS_WRITES=1`, set by the launcher | `extensions/lib/confirm.ts` | `tests/tools.test.js` |
+| Writes stay inside the repo: no `..`, absolute paths or symlink escapes. `bootstrap_write` also refuses trust files and manifest `protected_paths` | `extensions/lib/fsutil.ts#resolveInside` | `tests/tools.test.js` |
+| No shell-string execution; git revisions and branches are validated | `extensions/lib/git.ts` (`execFile` + `check-ref-format`) | `tests/tools.test.js` |
+| Review round cap and legal state transitions | `extensions/lib/state.ts` | `tests/tools.test.js`, `tests/cli.test.js` |
+| Secret values are never printed or written | `extensions/lib/risk.ts#findSecrets` (kind + line only) | `tests/tools.test.js`, `tests/cli.test.js` |
+
+## Your files stay yours
+
+Anything agent-flow rewrites was probably edited by a person first. `bootstrap_write` keeps line endings, BOM and manifest indentation, backs the old file up under `.agent-flow/backups/`, and refuses a manifest that drops `protected_paths`, `risk_boundaries` or any other key the current one has. `install --harness claude` merges into `.claude/settings.json` without touching other hooks (they keep their matcher group), does not import a symlinked `CLAUDE.md` into itself, and `hook install` keeps a pre-commit hook it didn't write unless `--force` (then it is saved as `pre-commit.bak-<time>`). `init` never overwrites and does not generate an `AGENTS.md` beside a `CLAUDE.md` that already holds rules. Tests: `tests/hardening.test.js`.
 
 ## Checked (detected and reported; someone still has to act)
 
-- **Pre-commit hook** (`agent-flow hook install`) blocks commits that touch protected paths, contain secret-shaped strings, or *introduce* broken context references (older drift is a warning). It works in any harness. A human can bypass it with `git commit --no-verify`; the guard stops agent sessions on Pi and Claude Code (with the hook) from doing so, as far as shell analysis can see (below).
+- **Pre-commit hook** (`agent-flow hook install`) blocks commits that touch protected paths, contain secret-shaped strings (a known fake is allowed with an `agent-flow:allow-secret` comment on or above the line, or `secret_scan.ignore_paths` in the manifest), or *introduce* broken context references (older drift is a warning). It works in any harness. A human can bypass it with `git commit --no-verify`; the guard stops agent sessions on Pi and Claude Code (with the hook) from doing so, as far as shell analysis can see (below).
 - **`agent-flow doctor` / `audit-risk --fail-on-new`** in CI.
 
 ## Best-effort (shell pattern analysis — blocks the obvious, not a determined model)
@@ -42,7 +46,7 @@ The guard can only read a shell command's text. It lexes it (quotes, redirection
 ## Audit this package in 10 minutes
 
 1. **Dependencies:** `npm ls --omit=dev --all` shows nothing. There are zero runtime dependencies.
-2. **Network:** `grep -rnE "fetch\(|https?\.request|net\.connect|npx " extensions/lib/*.ts bin` finds no network call. The only hits are the "never npx" comment in `lib/stale.ts` and `npx --no-install` in the pre-commit hook text, and `--no-install` forbids downloading.
+2. **Network:** `grep -rnE "fetch\(|https?\.request|net\.connect|npx " extensions/lib/*.ts bin` finds no network call. The only hits are the "never npx" comment in `extensions/lib/stale.ts` and `npx --no-install` in the pre-commit hook text, and `--no-install` forbids downloading.
 3. **Process execution:** `grep -rn "execFileSync\|execSync\|spawn" extensions/lib/*.ts bin`. The real calls are `execFileSync("git", [...])` and a locally installed ctxlint run through `process.execPath` (opt-in). Every other hit is a comment, a detection regex, or guard text.
 4. **Tests:** `npm test`. They run against real git repositories in temp directories.
 5. **Package contents:** `npm pack --dry-run` lists exactly what ships (`bin/`, `extensions/`, `skills/`, `templates/`, `schemas/`, `prompts/`, `docs/`, the harness reviewer definitions, and the Markdown docs).

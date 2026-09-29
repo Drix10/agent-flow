@@ -25,7 +25,7 @@
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, parse as parsePath, relative, resolve } from "node:path";
-import { CASE_INSENSITIVE_FS, landingPath, toPosix } from "./fsutil.js";
+import { CASE_INSENSITIVE_FS, escapesBase, landingPath, toPosix } from "./fsutil.js";
 import { ContextManifest, MANIFEST_FILE, contextFilePaths, matchAny, protectedPathsOf } from "./manifest.js";
 
 export const ROLES = ["orchestrator", "implementer", "reviewer", "qa", "gardener", "bootstrap"] as const;
@@ -82,6 +82,9 @@ const ROLE_TOOL_ALLOW: Record<Role, Set<string>> = {
 
 /** Files only agent-flow's own tools may write — trust signals must not be forgeable. */
 const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/state.lock", ".risk-baseline.json", ".git/"];
+/** The tamper-proof pattern `rel` falls under, if any. */
+export const tamperProofMatch = (rel: string): string | null => underAny(rel, TAMPER_PROOF);
+
 /**
  * What keeps agents in their lane: harness agent definitions (the Claude Code
  * reviewer's tool list IS its read-only guarantee), installed skills, CI and
@@ -132,7 +135,7 @@ const fold = (s: string) => (CASE_INSENSITIVE_FS ? s.toLowerCase() : s);
 
 function within(dir: string, abs: string): boolean {
   const r = relative(fold(dir), fold(abs));
-  return r === "" || (!r.startsWith("..") && !isAbsolute(r));
+  return r === "" || !escapesBase(r);
 }
 
 function underAny(r: string, prefixes: readonly string[]): string | null {
@@ -668,9 +671,9 @@ export function effectiveArgv(words: readonly ShWord[]): ShWord[] {
     while (a.length && (/^[A-Za-z_]\w*=/.test(a[0].text) || a[0].text === "{" || a[0].text === "}")) a.shift();
     const v = cmdName(a[0]);
     const two = `${v} ${a[1]?.text ?? ""}`;
-    if (v in WRAPPERS || /^(npm exec|pnpm (dlx|exec)|yarn dlx)$/.test(two)) {
+    if (Object.hasOwn(WRAPPERS, v) || /^(npm exec|pnpm (dlx|exec)|yarn dlx)$/.test(two)) {
       const vals = WRAPPERS[v] ?? /^(-p|--package)$/;
-      a = a.slice(v in WRAPPERS ? 1 : 2);
+      a = a.slice(Object.hasOwn(WRAPPERS, v) ? 1 : 2);
       while (a.length && a[0].text.startsWith("-") && a[0].text !== "-") {
         const opt = a.shift()!.text;
         if (opt === "--") break;
@@ -741,7 +744,7 @@ export function writeTargets(argv: readonly ShWord[]): ShWord[] {
     const scriptGiven = opts.some(([o]) => /^(-[a-zA-Z]*[efE]|--(expression|file))$/.test(o));
     return scriptGiven ? pos : pos.slice(1);
   }
-  const spec = WRITE_ARGS[v];
+  const spec = Object.hasOwn(WRITE_ARGS, v) ? WRITE_ARGS[v] : undefined;
   if (!spec) return [];
   const { pos, opts } = splitArgs(args, spec.vals);
   const out = opts.filter(([o]) => o === "-t" || o === "--target-directory").map(([, val]) => val ?? { text: "", dynamic: true, glob: false });
@@ -893,7 +896,7 @@ function decideWrite(g: GuardInput, p: string, protectedPaths: string[], ctxFile
     { abs: landing, base: rootReal },
   ].map(({ abs, base }) => {
     const r = relative(base, abs);
-    return { abs, rel: toPosix(r), outside: r.startsWith("..") || isAbsolute(r) };
+    return { abs, rel: toPosix(r), outside: escapesBase(r) };
   });
   const outside = views.some((v) => v.outside);
   const shown = toPosix(p);
@@ -1063,7 +1066,7 @@ function shellRels(g: GuardInput, p: string): string[] {
   const rels = new Set<string>();
   const add = (base: string, abs: string) => {
     const r = relative(base, abs);
-    if (r && !r.startsWith("..") && !isAbsolute(r)) rels.add(toPosix(r));
+    if (r && !escapesBase(r)) rels.add(toPosix(r));
   };
   const landing = landingPath(p);
   add(g.root, p);

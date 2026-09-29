@@ -15,6 +15,7 @@
 
 import { basename, join } from "node:path";
 import { atomicWrite, isoNow, readJson, readTextFile, walk } from "./fsutil.js";
+import { matchAny, secretIgnorePaths, tryLoadManifest } from "./manifest.js";
 
 export const SELF_PACKAGE = "@drix10/agent-flow";
 
@@ -143,14 +144,30 @@ function realMatch(text: string, re: RegExp, unless?: RegExp): boolean {
   return false;
 }
 
-/** Secret kinds + line numbers in a blob of text. Never returns the matched value. */
-export function findSecrets(content: string): { kind: string; lines: number[] }[] {
+/** A line carrying this (or the line after one that does) is a known fake — a fixture or a docs sample. */
+export const ALLOW_SECRET_MARKER = "agent-flow:allow-secret";
+
+/**
+ * Secret kinds + line numbers in a blob of text. Never returns the matched value.
+ * `honorMarker: false` ignores the allow marker — for content an agent is about to write,
+ * where a marker would be the way around the check.
+ */
+export function findSecrets(content: string, opts: { honorMarker?: boolean } = {}): { kind: string; lines: number[] }[] {
   const lines = content.split(/\r?\n/);
+  const allowed = new Set<number>();
+  if (opts.honorMarker !== false) {
+    lines.forEach((l, i) => {
+      if (l.includes(ALLOW_SECRET_MARKER)) {
+        allowed.add(i);
+        allowed.add(i + 1);
+      }
+    });
+  }
   const out: { kind: string; lines: number[] }[] = [];
   for (const { kind, re, unless } of SECRET_PATTERNS) {
     const hit: number[] = [];
     lines.forEach((l, i) => {
-      if (hit.length >= 5) return;
+      if (hit.length >= 5 || allowed.has(i)) return;
       for (const w of windows(l)) {
         if (realMatch(w, re, unless)) {
           hit.push(i + 1);
@@ -176,6 +193,33 @@ export function isEnvFile(path: string): boolean {
 // Dependency parsing (heuristic, documented as such)
 // ---------------------------------------------------------------------------
 
+/**
+ * Bodies of the TOML arrays that start at each `opener` match. Brackets inside quoted strings
+ * (`"requests[security]>=2"`) don't end the array; a lazy `[\s\S]*?\]` stopped at the first one.
+ */
+function tomlArrays(content: string, opener: RegExp): string[] {
+  const out: string[] = [];
+  for (const m of content.matchAll(opener)) {
+    let depth = 1;
+    let quote = "";
+    const start = m.index + m[0].length;
+    for (let i = start; i < content.length; i++) {
+      const ch = content[i];
+      if (quote) {
+        if (ch === "\\") i++;
+        else if (ch === quote) quote = "";
+      } else if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === "#") i = content.indexOf("\n", i) < 0 ? content.length : content.indexOf("\n", i);
+      else if (ch === "[") depth++;
+      else if (ch === "]" && --depth === 0) {
+        out.push(content.slice(start, i));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export function parseDependencies(file: string, content: string): string[] {
   const name = basename(file);
   const deps = new Set<string>();
@@ -193,8 +237,9 @@ export function parseDependencies(file: string, content: string): string[] {
         if (m) deps.add(m[1].toLowerCase());
       }
     } else if (name === "pyproject.toml") {
-      const arr = content.match(/^\s*dependencies\s*=\s*\[([\s\S]*?)\]/m);
-      for (const m of arr?.[1].matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)/g) ?? []) deps.add(m[1].toLowerCase());
+      const optional = content.match(/\[project\.optional-dependencies\]([\s\S]*?)(\n\[|$)/)?.[1] ?? "";
+      const lists = [...tomlArrays(content, /^\s*dependencies\s*=\s*\[/gm), ...tomlArrays(optional, /^\s*[\w-]+\s*=\s*\[/gm)];
+      for (const list of lists) for (const m of list.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)/g)) deps.add(m[1].toLowerCase());
       const poetry = content.match(/\[tool\.poetry\.(?:dev-)?dependencies\]([\s\S]*?)(\n\[|$)/);
       for (const m of poetry?.[1].matchAll(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*=/gm) ?? []) {
         if (m[1] !== "python") deps.add(m[1].toLowerCase());
@@ -246,6 +291,7 @@ export function scanRiskSurfaces(root: string, opts: AuditOptions = {}): AuditSc
   };
 
   const { files, truncated } = walk(root, { maxFiles: opts.maxFiles ?? 50_000 });
+  const secretIgnore = secretIgnorePaths(tryLoadManifest(root));
   let scanned = 0;
 
   for (const file of files) {
@@ -274,7 +320,7 @@ export function scanRiskSurfaces(root: string, opts: AuditOptions = {}): AuditSc
     const lines = content.split(/\r?\n/);
 
     // Secrets: every text file, tests included (test fixtures leak real keys too).
-    for (const { kind, lines: hit } of findSecrets(content)) {
+    for (const { kind, lines: hit } of matchAny(secretIgnore, file) ? [] : findSecrets(content)) {
       add({ key: `secret:${file}:${kind}`, type: "secret", path: file, detail: `Possible ${kind} (value redacted)`, lines: hit });
     }
 

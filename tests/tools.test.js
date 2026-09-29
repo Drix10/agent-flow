@@ -330,6 +330,22 @@ test("reopen cannot rewind the round counter on a session that isn't actually Co
   }
 });
 
+test("state_update bounds phase and reason for every caller, and reopen cannot target Completed", async () => {
+  const dir = tmp("state-bounds");
+  try {
+    const { state_update } = load(stateMachine);
+    const call = (p) => state_update.execute("t", p, undefined, undefined, ctxAt(dir));
+    await assert.rejects(() => call({ issue: 6, state: "Working", phase: "x".repeat(81) }), /phase is limited/);
+    await assert.rejects(() => call({ issue: 6, state: "Needs Me", reason: "x".repeat(2001) }), /reason is limited/);
+    await call({ issue: 6, state: "Working" });
+    await call({ issue: 6, state: "Completed" });
+    await assert.rejects(() => call({ issue: 6, state: "Completed", reopen: true }), /Working or Needs Me/);
+    assert.equal((await call({ issue: 6, state: "Working", reopen: true })).details.round, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("state machine rejects illegal transitions and reasonless escalations", async () => {
   const dir = tmp("illegal");
   try {
@@ -582,6 +598,24 @@ test("bootstrap_write: invalid manifest, secrets, and silent overwrite are refus
     await w("AGENTS.md", "# other\n", { overwrite: true });
     assert.equal(readFileSync(join(dir, "AGENTS.md"), "utf-8"), "# other\n");
     await withEnv({ AGENT_FLOW_HEADLESS_WRITES: "1" }, () => w("docs/x.md", "# x\n", {}, ctxAt(dir)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap_write refuses trust files and protected paths", async () => {
+  const dir = tmp("bwprot");
+  try {
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ context_files: [], protected_paths: ["docs/legal/"] }));
+    const { bootstrap_write } = load(bootstrap);
+    const w = (p, content = "# x\n") => bootstrap_write.execute("t", { path: p, content, repoPath: dir, overwrite: p === "CONTEXT_MANIFEST.json" }, undefined, undefined, uiYes(dir));
+    await assert.rejects(() => w("AGENT_STATE.md"), /written only by agent-flow/);
+    await assert.rejects(() => w("docs/legal/terms.md"), /protected/);
+    await withEnv({ AGENT_FLOW_ALLOW_PROTECTED: "1" }, () => w("docs/legal/terms.md"));
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), "{ not json");
+    await assert.rejects(() => w("docs/a.md"), /can't be loaded/);
+    const fixed = JSON.stringify({ version: "2", context_files: [] });
+    assert.equal((await w("CONTEXT_MANIFEST.json", fixed)).details.written, "CONTEXT_MANIFEST.json");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

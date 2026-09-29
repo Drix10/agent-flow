@@ -198,3 +198,21 @@ test("guard: fetch that rewrites local refs, update-ref and replace are blocked"
     assert.equal(push(cmd), null, cmd);
   }
 });
+
+test("Pi guard hook: an internal error blocks a confined role and leaves an ordinary session alone", async () => {
+  const boom = { type: "tool_call", toolName: "write", toolCallId: "1", get input() { throw new Error("boom"); } };
+  for (const [role, blocks] of [["implementer", true], [undefined, false]]) {
+    if (role) process.env.AGENT_FLOW_ROLE = role;
+    try {
+      const handlers = {};
+      guard({ on: (ev, fn) => ((handlers[ev] ??= []).push(fn), () => {}), registerTool: () => {}, getActiveTools: () => [], setActiveTools: () => {} });
+      const res = await handlers.tool_call[0](boom, { cwd: root });
+      if (blocks) {
+        assert.equal(res.block, true);
+        assert.match(res.reason, /guard error/);
+      } else assert.equal(res, undefined);
+    } finally {
+      delete process.env.AGENT_FLOW_ROLE;
+    }
+  }
+});

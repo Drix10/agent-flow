@@ -38,6 +38,13 @@
       }
     },
     "protected_paths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "secret_scan": {
+      "type": "object",
+      "description": "Secret-scanner settings. Known fakes (test fixtures, docs samples) belong here or behind an `agent-flow:allow-secret` comment, not behind --no-verify.",
+      "properties": {
+        "ignore_paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Paths or globs whose contents are not scanned for secrets (same syntax as protected_paths)." }
+      }
+    },
     "risk_boundaries": {
       "type": "array",
       "items": {
