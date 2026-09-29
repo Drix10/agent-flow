@@ -88,6 +88,10 @@ Both are optional manifest keys.
 - `agent-flow classify --fail-on-policy` (CI) and the pre-commit hook (staged content) enforce `policy`. `classify --fail-on-heuristic` fails while `risk_boundaries` is empty, for teams that don't want a path-name guess deciding review depth.
 - `agent-flow audit verify` checks the audit log's hash chain; record `audit head` somewhere the agent can't write to anchor it. `audit summary` shows which rules block agents most often, which is a list of candidates for `protected_paths` or a lint rule.
 
+## Running alongside other workflow packs
+
+Most teams already run one of superpowers, GSD, gstack, spec-kit or openspec. Those are prompts and slash commands; agent-flow is the layer that enforces. Tests (`tests/coexist.test.js`) cover: `install` merges its guard and Stop hooks next to yours and keeps every hook and permission you have (running it twice changes nothing); the guard doesn't touch `.planning/`, `docs/superpowers/`, `.gstack/`, `.specify/`, `specs/` or `openspec/changes/`; and `doctor` reads only real context files (`AGENTS.md`, `CLAUDE.md`, …), so a pack's generated docs never raise drift findings unless a context file links to them. Two things to know: both hook sets run on each tool call, and a pack hook that exits 1 doesn't block in Claude Code (only exit 2 does), so a pack's "BLOCKED" message isn't protection. Put anything that must hold in `protected_paths`, `policy` or `gates`.
+
 ## Layer 3: the pipeline (optional)
 
 Implement → Review → QA with separate processes, a round cap and a state file. Adopt it only when you want it to own task state. The QA role runs the commands listed in `AGENTS.md`, so list your real build and test commands there (including any run-as-user requirement), and put your freeze rules in `AGENTS.md` and the reviewer's checklist. Risk classification is heuristic until you set `risk_boundaries` yourself.
