@@ -25,7 +25,10 @@ Anything agent-flow rewrites was probably edited by a person first. `bootstrap_w
 ## Checked (detected and reported; someone still has to act)
 
 - **Pre-commit hook** (`agent-flow hook install`) blocks commits that touch protected paths, contain secret-shaped strings (a known fake is allowed with an `agent-flow:allow-secret` comment on or above the line, or `secret_scan.ignore_paths` in the manifest), or *introduce* broken context references (older drift is a warning). It works in any harness. A human can bypass it with `git commit --no-verify`; the guard stops agent sessions on Pi and Claude Code (with the hook) from doing so, as far as shell analysis can see (below).
-- **`agent-flow doctor` / `audit-risk --fail-on-new`** in CI.
+- **`agent-flow doctor` / `audit-risk --fail-on-new`** in CI (`--sarif` for code scanning; `action.yml` wraps them).
+- **Audit log is tamper-evident:** each line of `.agent-flow/audit.jsonl` carries the hash of the line before it, so `agent-flow audit verify` finds an edited, deleted, inserted or reordered line. An agent that can write the file can also rewrite the whole chain, so anchor `agent-flow audit head` where it can't (a commit made by a human, a CI artifact) and check with `audit verify --anchor <hash>`.
+- **Gates are observed, not claimed:** manifest `gates` are run by the orchestrator (`agent-flow gates run`), from the main checkout's manifest, with the exit code, log and SHA-256 recorded; `reviewer` and `qa` are blocked from running them. A command that runs a gate can still be a weak test: this proves it ran and what it returned, not that it tests the right thing.
+- **Manifest `policy`** (`max_changed_files`, `max_diff_lines`, `forbid_patterns`, `require_tests`) is checked by `classify --fail-on-policy` and the pre-commit hook. A human can `--no-verify` past the hook; CI running `classify --fail-on-policy` is the backstop.
 
 ## Best-effort (shell pattern analysis — blocks the obvious, not a determined model)
 

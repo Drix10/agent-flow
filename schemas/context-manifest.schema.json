@@ -3,95 +3,305 @@
   "$id": "https://github.com/Drix10/agent-flow/schemas/context-manifest.schema.json",
   "title": "agent-flow CONTEXT_MANIFEST.json",
   "type": "object",
-  "required": ["context_files"],
+  "required": [
+    "context_files"
+  ],
   "properties": {
-    "$schema": { "type": "string" },
-    "version": { "type": ["string", "number"] },
-    "repo": { "type": "string" },
-    "generated_by": { "type": "string" },
-    "generated_at": { "type": "string", "format": "date-time" },
-    "last_full_scan": { "type": "string", "format": "date-time" },
-    "default_branch": { "type": "string" },
-    "staleness_threshold_days": { "type": "number", "exclusiveMinimum": 0 },
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "type": [
+        "string",
+        "number"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "generated_by": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_full_scan": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "default_branch": {
+      "type": "string"
+    },
+    "staleness_threshold_days": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
     "context_files": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["path", "references"],
+        "required": [
+          "path",
+          "references"
+        ],
         "properties": {
-          "path": { "type": "string", "minLength": 1 },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
           "references": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["path", "last_verified"],
+              "required": [
+                "path",
+                "last_verified"
+              ],
               "properties": {
-                "path": { "type": "string", "minLength": 1 },
-                "type": { "enum": ["file", "directory"] },
-                "last_verified": { "type": "string", "format": "date-time" },
-                "exists": { "type": "boolean" }
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "type": {
+                  "enum": [
+                    "file",
+                    "directory"
+                  ]
+                },
+                "last_verified": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "exists": {
+                  "type": "boolean"
+                }
               }
             }
           },
-          "confidence_markers": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } }
+          "confidence_markers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
         }
       }
     },
-    "protected_paths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "protected_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "gates": {
       "type": "array",
-      "description": "Commands the pipeline runs itself (`agent-flow gates run`): the exit code is observed, not reported by a model. Read from the main checkout, so a branch can't edit the gate that judges it. Put a user switch in the command if it must run as another user (`sudo -u ci …`).",
+      "description": "Commands the pipeline runs itself (`agent-flow gates run`): the exit code is observed, not reported by a model. Read from the main checkout, so a branch can't edit the gate that judges it. Put a user switch in the command if it must run as another user (`sudo -u ci \u2026`).",
       "items": {
         "type": "object",
-        "required": ["name", "command"],
+        "required": [
+          "name",
+          "command"
+        ],
         "properties": {
-          "name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
-          "command": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }], "description": "A string runs through the shell; an array is an argv with no shell." },
-          "cwd": { "type": "string", "minLength": 1, "description": "Repo-relative directory, inside the checkout being judged." },
-          "timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 86400, "default": 600 },
-          "expect_exit": { "type": "integer", "minimum": 0, "maximum": 255, "default": 0 },
-          "required": { "type": "boolean", "default": true }
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
+          "command": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            ],
+            "description": "A string runs through the shell; an array is an argv with no shell."
+          },
+          "cwd": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repo-relative directory, inside the checkout being judged."
+          },
+          "timeout_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 86400,
+            "default": 600
+          },
+          "expect_exit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "default": 0
+          },
+          "required": {
+            "type": "boolean",
+            "default": true
+          }
         }
       }
     },
     "deny_read": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
-      "description": "Paths or globs agents may not read (same syntax as protected_paths). Real env files (.env, .env.local, …) are always denied; a human overrides with AGENT_FLOW_ALLOW_SECRET_READ=1."
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Paths or globs agents may not read (same syntax as protected_paths). Real env files (.env, .env.local, \u2026) are always denied; a human overrides with AGENT_FLOW_ALLOW_SECRET_READ=1."
     },
     "secret_scan": {
       "type": "object",
       "description": "Secret-scanner settings. Known fakes (test fixtures, docs samples) belong here or behind an `agent-flow:allow-secret` comment, not behind --no-verify.",
       "properties": {
-        "ignore_paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Paths or globs whose contents are not scanned for secrets (same syntax as protected_paths)." }
+        "ignore_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Paths or globs whose contents are not scanned for secrets (same syntax as protected_paths)."
+        }
       }
     },
     "risk_boundaries": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["path", "risk_level"],
+        "required": [
+          "path",
+          "risk_level"
+        ],
         "properties": {
-          "path": { "type": "string", "minLength": 1 },
-          "risk_level": { "enum": ["low", "medium", "critical"] },
-          "reviewer_model": { "type": "string" },
-          "rationale": { "type": "string" }
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "risk_level": {
+            "enum": [
+              "low",
+              "medium",
+              "critical"
+            ]
+          },
+          "reviewer_model": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          }
         }
       }
     },
     "pipeline": {
       "type": "object",
       "properties": {
-        "max_review_rounds": { "type": "integer", "minimum": 1, "maximum": 5 },
-        "auto_merge_low_risk": { "type": "boolean" },
+        "max_review_rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "auto_merge_low_risk": {
+          "type": "boolean"
+        },
         "models": {
           "type": "object",
           "description": "Model IDs the orchestrator passes to each role's --model flag. Omit a key to use the harness default.",
           "properties": {
-            "fast": { "type": "string", "minLength": 1 },
-            "high_reasoning": { "type": "string", "minLength": 1 }
+            "fast": {
+              "type": "string",
+              "minLength": 1
+            },
+            "high_reasoning": {
+              "type": "string",
+              "minLength": 1
+            }
           },
           "additionalProperties": false
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "description": "Change-size and content rules checked by `classify --fail-on-policy` and the pre-commit hook.",
+      "additionalProperties": false,
+      "properties": {
+        "max_changed_files": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_diff_lines": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "forbid_patterns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "pattern"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "description": "JavaScript regular expression tested against each added line."
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "require_tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "paths",
+              "tests"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "paths": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "tests": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
         }
       }
     }

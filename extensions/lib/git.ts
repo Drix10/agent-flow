@@ -102,20 +102,59 @@ export function validateRevision(rev: string): string {
   return rev;
 }
 
-export function changedFiles(cwd: string, base: string, head?: string): string[] {
+/** The `git diff` range for a change: `base...head`, or the working tree against the merge-base with `base`. */
+function diffRange(cwd: string, base: string, head?: string): string[] {
   validateRevision(base);
   if (head) validateRevision(head);
+  if (head) return [`${base}...${head}`];
+  // Diffing against the base branch's tip instead would count every commit landed on main after this branch was cut.
+  const mb = git(["merge-base", base, "HEAD"], cwd);
+  return [mb.ok && mb.stdout ? mb.stdout : base];
+}
+
+export function changedFiles(cwd: string, base: string, head?: string): string[] {
   const out = new Set<string>();
-  // Without a head we diff the working tree, but against the merge-base — not the
-  // base branch's tip. Otherwise every commit landed on main after this branch was
-  // cut shows up as "this branch's change" (false critical / protected hits).
-  const mb = head ? null : git(["merge-base", base, "HEAD"], cwd);
-  const range = head ? [`${base}...${head}`] : [mb?.ok && mb.stdout ? mb.stdout : base];
-  for (const f of nameList(["diff", "--name-only", "--no-renames", ...range], cwd)) out.add(f);
+  for (const f of nameList(["diff", "--name-only", "--no-renames", ...diffRange(cwd, base, head)], cwd)) out.add(f);
   if (!head) {
     for (const f of nameList(["ls-files", "--others", "--exclude-standard"], cwd)) out.add(f);
   }
   return [...out].sort();
+}
+
+/** Lines added and removed per file (binary files: null), including untracked files when diffing the working tree. */
+export function diffStats(cwd: string, base: string, head?: string): Map<string, { added: number; removed: number } | null> {
+  const out = new Map<string, { added: number; removed: number } | null>();
+  const raw = mustGit(["-c", "core.quotepath=off", "diff", "--numstat", "-z", "--no-renames", ...diffRange(cwd, base, head)], cwd);
+  for (const rec of raw.split("\0").filter(Boolean)) {
+    const m = /^(\d+|-)\t(\d+|-)\t(.*)$/s.exec(rec);
+    if (m) out.set(toPosix(m[3]), m[1] === "-" ? null : { added: Number(m[1]), removed: Number(m[2]) });
+  }
+  if (!head) {
+    for (const f of nameList(["ls-files", "--others", "--exclude-standard"], cwd)) {
+      try {
+        const buf = readFileSync(join(cwd, f));
+        out.set(f, buf.includes(0) ? null : { added: buf.toString("utf-8").split("\n").length - (buf.length && buf[buf.length - 1] === 10 ? 1 : 0), removed: 0 });
+      } catch {
+        out.set(f, null);
+      }
+    }
+  }
+  return out;
+}
+
+/** Text of the lines a change adds to one file (untracked files: the whole file). */
+export function addedLines(cwd: string, file: string, base: string, head?: string): string[] {
+  const tracked = git(["ls-files", "--error-unmatch", "--", file], cwd).ok;
+  if (!tracked && !head) {
+    try {
+      const buf = readFileSync(join(cwd, file));
+      return buf.includes(0) ? [] : buf.toString("utf-8").split("\n");
+    } catch {
+      return [];
+    }
+  }
+  const r = git(["-c", "core.quotepath=off", "diff", "-U0", "--no-color", "--no-renames", ...diffRange(cwd, base, head), "--", file], cwd);
+  return r.ok ? r.stdout.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1)) : [];
 }
 
 /**

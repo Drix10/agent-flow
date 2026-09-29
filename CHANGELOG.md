@@ -6,6 +6,14 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 Two reviews of the guard (one on a repo with an append-only ledger, frozen specs and secrets; one on the fixes to that) closed 16 of 43 attack cases that used to pass, and made agent-flow safe to adopt in a repository that already has rules, a task file and paths that must not change. Every row has a regression test: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md) #77–95.
 
+### Added
+- **Tamper-evident audit log.** Every `.agent-flow/audit.jsonl` line carries `prev` and `hash` (SHA-256 over the previous hash and the line), written under a lock. `agent-flow audit verify [--anchor <hash>]` reports the first edited, deleted, inserted or reordered line and exits 1; `audit head` prints the hash to record in a commit or CI; `audit summary` counts guard blocks per role and rule, escalations, rounds per issue and role-run cost. Logs written before 1.1.3 verify as "from before chaining". Tamper-evident is not tamper-proof: anchor the head somewhere the agent can't write.
+- **Gates.** A manifest `gates` list (`name`, `command` as a string or an argv array, `cwd`, `timeout_seconds`, `expect_exit`, `required`) that the orchestrator runs with `agent-flow gates run [--name a,b] [--issue n]`. Each run leaves a log, its SHA-256, a JSON report and an audit line; exit 1 = a required gate failed, 2 = a gate couldn't run at all (fix the environment, don't spend a review round). The manifest is read from the main checkout, so a branch can't edit the gate that judges it, and `reviewer`/`qa` can't run `gates run`. The orchestrator skill runs gates before QA.
+- **Manifest `policy` rules.** `max_changed_files`, `max_diff_lines`, `forbid_patterns` (a regex over added lines, optionally scoped to paths) and `require_tests` (changes under these paths need a change under those). `classify --fail-on-policy` checks the branch diff, including untracked files; the pre-commit hook checks the staged content. `classify --fail-on-heuristic` fails when no `risk_boundaries` exist, so CI can refuse to trust a path-name guess.
+- **SARIF 2.1.0.** `doctor --sarif` and `audit-risk --sarif` for GitHub code scanning (file and line locations, no secret values).
+- **`action.yml`.** A composite GitHub Action (`uses: Drix10/agent-flow@v1.1.3`) that runs `doctor`, `audit-risk --fail-on-new` and `classify --fail-on-protected --fail-on-policy`, and can upload SARIF. It has not run on GitHub yet: the commands it calls are covered by tests, the YAML wrapper is not.
+- **Docs can't drift from the CLI.** `npm test` fails when a doc or skill names an `agent-flow` command or flag that doesn't exist, or a backticked repo path that isn't there.
+
 ### Security
 - **Protected directories.** `dir/**` matches `dir` itself, and `rm`/`mv`/`find -delete` of a protected directory or any parent of one (up to `rm -rf .` and `rm -rf .git`) is blocked for every session. Brace expansion, `git -C dir`, and `tar -C`/`unzip -d` destinations are resolved like any other write. A directory too large to inspect is assumed to hold a protected path.
 - **Whole-tree git rewrites** (`reset --hard`, `clean -f`, `stash`, `checkout .`/`-f`, `restore .`, and targeted `checkout`/`restore`/`rm`/`mv` that reach a protected path) are blocked while `protected_paths` is set.
@@ -42,6 +50,7 @@ Two reviews of the guard (one on a repo with an append-only ledger, frozen specs
 - While `protected_paths` is set, `git reset --hard`, `git stash`, `git clean -f` and friends are refused for agents; name the files, or use the human override.
 - Committing a weaker `CONTEXT_MANIFEST.json` no longer lowers protection; lowering it takes `AGENT_FLOW_ALLOW_PROTECTED=1` and a merge to the default branch.
 - `init` and `scan` skip untracked gitignored trees; tracked files are still scanned.
+- New manifest keys (`gates`, `policy`) are optional; a manifest without them behaves as before. `doctor` now reports a malformed `gates` or `policy` as a schema problem.
 
 ## [1.1.2] - 2026-09-28
 

@@ -35,6 +35,8 @@ Agent Flow is a small, auditable layer that catches these:
 | ⚖️ **Mechanical risk** | Classifies the *actual diff* against your protected paths and risk boundaries → reviewer tier, draft PR, human gate. | `risk_classify` / `agent-flow classify` |
 | 🔁 **Bounded review loop** | Implement → Review → QA as separate processes. Round 3 auto-escalates to **Needs Me** with a decision brief. | State machine rejects illegal transitions and rounds that go backwards |
 | 🔎 **Risk audit** | Flags new dependencies, auth/payment code, destructive data ops, outbound calls, and secrets (values never printed) against a baseline. | `agent-flow audit-risk --fail-on-new` |
+| 🚦 **Gates and policy** | Tests and lint the *orchestrator* runs (exit code, log and hash recorded, not a model's summary), plus repo rules: size caps, forbidden added lines, source-needs-tests. | `agent-flow gates run`, `classify --fail-on-policy`, pre-commit |
+| 🧾 **Audit trail** | Every guard block, transition and gate run is a line in a hash chain; editing or deleting one is detectable. | `agent-flow audit verify` / `summary` |
 
 Zero runtime dependencies. No network calls. No telemetry. Every check is plain TypeScript you can read in an afternoon.
 
@@ -115,6 +117,14 @@ jobs:
       # needs a committed .risk-baseline.json: review `audit-risk` once, then
       # `npx @drix10/agent-flow baseline accept --all --yes` and commit it
       - run: npx @drix10/agent-flow audit-risk --fail-on-new
+```
+
+Or use the composite action, which also runs `classify --fail-on-protected --fail-on-policy` on pull requests and can upload SARIF to code scanning:
+
+```yaml
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: Drix10/agent-flow@v1.1.3
 ```
 
 ## Use

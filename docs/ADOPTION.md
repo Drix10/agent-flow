@@ -24,7 +24,7 @@ npx @drix10/agent-flow audit-risk        # review once, then `baseline accept --
 npx @drix10/agent-flow init              # preview a manifest; suggests protected_paths but writes none
 ```
 
-Add `doctor` and `audit-risk --fail-on-new` to CI. In a git repo the scans read git's file list, so untracked gitignored trees (data, caches, vendored code) are not walked. Files git tracks are always scanned, even under an ignored pattern, and outside git the scans fall back to a directory walk.
+Add `doctor` and `audit-risk --fail-on-new` to CI, or use the composite action (`uses: Drix10/agent-flow@v1.1.3`), which also runs `classify --fail-on-protected --fail-on-policy` and can upload SARIF to code scanning (`--sarif` on `doctor` and `audit-risk`). In a git repo the scans read git's file list, so untracked gitignored trees (data, caches, vendored code) are not walked. Files git tracks are always scanned, even under an ignored pattern, and outside git the scans fall back to a directory walk.
 
 ## Layer 2: protect what must not change
 
@@ -63,6 +63,28 @@ The guard reads command text. It cannot see through `x=.en; y=v; cat $x$y`, `$(e
 - a secret scanner in CI (agent-flow's own is a pre-commit check, tuned for few false alarms);
 - file permissions on append-only data (read-only mode or a separate user for the ledger);
 - a container or sandbox for anything that must be a hard guarantee, and read-only roles launched without a shell tool.
+
+## Layer 2b: rules the repo enforces on itself
+
+Both are optional manifest keys.
+
+```json
+{
+  "gates": [
+    { "name": "test", "command": ["npm", "test"], "timeout_seconds": 900 },
+    { "name": "lint", "command": ["npm", "run", "lint"], "required": false }
+  ],
+  "policy": {
+    "max_changed_files": 40,
+    "forbid_patterns": [{ "paths": ["src/**"], "pattern": "console\\.log", "message": "no console.log in src" }],
+    "require_tests": [{ "paths": ["src/**"], "tests": ["tests/**"], "message": "source changes need a test change" }]
+  }
+}
+```
+
+- `agent-flow gates run` executes the gates and records exit codes, logs and hashes under `.agent-flow/gates/`. An array command runs without a shell; a string runs through one. Exit 2 means a gate couldn't start (a missing tool), which is an environment problem rather than a failing change.
+- `agent-flow classify --fail-on-policy` (CI) and the pre-commit hook (staged content) enforce `policy`. `classify --fail-on-heuristic` fails while `risk_boundaries` is empty, for teams that don't want a path-name guess deciding review depth.
+- `agent-flow audit verify` checks the audit log's hash chain; record `audit head` somewhere the agent can't write to anchor it. `audit summary` shows which rules block agents most often, which is a list of candidates for `protected_paths` or a lint rule.
 
 ## Layer 3: the pipeline (optional)
 

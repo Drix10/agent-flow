@@ -11,6 +11,7 @@ import { isAbsolute, join } from "node:path";
 import { existsSync } from "node:fs";
 import { defaultBase, git } from "./git.js";
 import { CASE_INSENSITIVE_FS, readJson, toPosix } from "./fsutil.js";
+import { validatePolicy } from "./policy.js";
 
 export const MANIFEST_FILE = "CONTEXT_MANIFEST.json";
 export const DEFAULT_STALENESS_DAYS = 30;
@@ -58,6 +59,8 @@ export interface ContextManifest {
   deny_read?: string[];
   /** Commands the pipeline runs itself (see gates.ts). */
   gates?: unknown[];
+  /** Change-size and content rules (see policy.ts). */
+  policy?: unknown;
   pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
@@ -181,6 +184,7 @@ export function validateManifest(m: unknown): string[] {
       });
     }
   }
+  problems.push(...validatePolicy(man.policy));
   const ignore = man.secret_scan?.ignore_paths;
   if (man.secret_scan !== undefined && (typeof man.secret_scan !== "object" || man.secret_scan === null || Array.isArray(man.secret_scan))) {
     problems.push("secret_scan must be an object like {\"ignore_paths\": []}");

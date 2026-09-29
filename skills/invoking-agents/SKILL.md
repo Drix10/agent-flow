@@ -75,7 +75,7 @@ AF classify --issue N --json > "$A/classification.json"
 git -C "$WT" diff "$BASE...HEAD" > "$A/diff.patch"
 ```
 
-A non-empty `protected_violations` means Needs Me ("protected path modified: …"). Don't review it and don't open a PR.
+A non-empty `protected_violations` means Needs Me ("protected path modified: …"). Don't review it and don't open a PR. A non-empty `policy_violations` (the manifest's `policy` rules) is a round R+1 with those messages as the findings: the Implementer can fix them, a reviewer shouldn't have to notice them.
 
 **1d. Reviewer.** Record `AF state update --issue N --state Working --phase review --round R --json`, then launch it with the model its `reviewer_tier` asks for (`fast` → `FAST_MODEL`, `high-reasoning` → `HIGH_MODEL`). Validate it as `reviewer`. Route on the first row that matches:
 
@@ -90,7 +90,7 @@ A non-empty `protected_violations` means Needs Me ("protected path modified: …
 
 `context_stale_flags` never block on their own; carry them into the PR body.
 
-**1e. QA.** Record `--phase qa`, then snapshot the tree, launch QA, and compare:
+**1e. Gates, then QA.** If `AF gates list` shows gates, run `AF gates run --issue N --json > "$A/gates-rR.json"` first. Exit 0 → continue. Exit 1 → a required gate failed: round R+1 with the failing gates' `log` files as the findings, and QA doesn't run. Exit 2 (`environment_error`, a gate that couldn't start) → Needs Me (`qa_environment`), not another round. Only you run gates: the guard blocks `gates run` for `reviewer` and `qa`, so a pass is an exit code you observed. Then record `--phase qa`, snapshot the tree, launch QA, and compare:
 
 ```bash
 git -C "$WT" status --porcelain > "$A/pre-qa-status.txt"; git -C "$WT" rev-parse HEAD > "$A/pre-qa-head.txt"
