@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 ## [Unreleased]
 
 ### Added
+- **`doctor` checks commands, links and commits, not just paths.** `npm|pnpm run <script>` and `npm test` against the nearest `package.json`, `make <target>` against the Makefile, `just <recipe>` against the justfile (each with a did-you-mean), relative markdown links (case-exact) and commits cited as `commit <sha>`. Skips what it can't resolve: workspace/`-C` flags, `cd`, variables, yarn/bun binaries, shallow clones, fixture directories. New SARIF rules `broken-link` and `unknown-commit`.
 - **Verdicts are bound to the commit they judged.** `role_run` and `gate_run` audit lines record the tip of `agent/issue-N`. `state update --state Completed` exits 3 and records Needs Me `unreviewed_commits` unless the round's approved review, passed QA and every required gate name the current tip. No skip flag. Runs recorded before this version carry no `head` and aren't compared.
 
 ### Changed

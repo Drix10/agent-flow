@@ -237,7 +237,9 @@ function cmdDoctor(args) {
     }
     section("no unfilled placeholders", rep.unfilled_placeholders, (m) => [`${m.file}:${m.line}`, m.text]);
     if (rep.ctxlint !== "not_requested") (rep.ctxlint === "ran" ? ok : warn)(`ctxlint: ${rep.ctxlint}`);
-    if (rep.ctxlint === "ran") section("no dead commands", rep.dead_commands, (m) => `${m.file}: ${m.command}`);
+    section("commands exist", rep.dead_commands, (m) => [`${m.file}${m.line ? `:${m.line}` : ""}`, `${m.command}${m.reason ? ` — ${m.reason}` : ""}${m.suggestion ? `  → did you mean ${c(1, m.suggestion)}?` : ""}`]);
+    section("relative links resolve", rep.broken_links, (m) => [`${m.file}:${m.line}`, m.target]);
+    section("cited commits exist", rep.unknown_commits, (m) => [`${m.file}:${m.line}`, m.sha]);
     if (discovered) console.log(dim(`note: ${r.manifest ? "the manifest lists no context files" : "no CONTEXT_MANIFEST.json"}, so only paths were checked — \`agent-flow init\` adds staleness tracking`));
     console.log(r.healthy ? c(32, "\nhealthy") : `\n${c(31, "unhealthy")} — ${doctorNextStep(rep, schema)}`);
   }, () => doctorSarif(rt, rep, r.manifest));
@@ -254,7 +256,9 @@ function doctorSarif(rt, rep, manifestPath) {
   for (const m of rep.invalid_timestamps) f.push({ ruleId: "agent-flow/invalid-timestamp", level: "error", message: `${m.path}: ${JSON.stringify(m.value)} is not a valid ISO timestamp`, path: m.file });
   for (const p of rep.stale_files) f.push({ ruleId: "agent-flow/stale-context", level: "warning", message: `${p} has not been verified within the staleness threshold`, path: p });
   for (const m of rep.unfilled_placeholders) f.push({ ruleId: "agent-flow/unfilled-placeholder", level: "warning", message: m.text, path: m.file, line: m.line });
-  for (const m of rep.dead_commands ?? []) f.push({ ruleId: "agent-flow/dead-command", level: "warning", message: m.command, path: m.file });
+  for (const m of rep.dead_commands ?? []) f.push({ ruleId: "agent-flow/dead-command", level: "warning", message: `${m.command}${m.reason ? ` — ${m.reason}` : ""}${m.suggestion ? ` (did you mean ${m.suggestion}?)` : ""}`, path: m.file, line: m.line });
+  for (const m of rep.broken_links ?? []) f.push({ ruleId: "agent-flow/broken-link", level: "error", message: `link target does not exist: ${m.target}`, path: m.file, line: m.line });
+  for (const m of rep.unknown_commits ?? []) f.push({ ruleId: "agent-flow/unknown-commit", level: "warning", message: `no such commit: ${m.sha}`, path: m.file, line: m.line });
   return sarifLib.toSarif(VERSION, sarifLib.DOCTOR_RULES, f);
 }
 

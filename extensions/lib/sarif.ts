@@ -52,6 +52,8 @@ export const DOCTOR_RULES: SarifRule[] = [
   { id: "agent-flow/unfilled-placeholder", description: "A context file still contains a template placeholder." },
   { id: "agent-flow/manifest-schema", description: "The manifest does not match its schema." },
   { id: "agent-flow/dead-command", description: "A command in a context file no longer exists." },
+  { id: "agent-flow/broken-link", description: "A relative link in a context file points at a file that does not exist." },
+  { id: "agent-flow/unknown-commit", description: "A context file cites a commit that does not exist in this repository." },
 ];
 
 export const RISK_RULES: SarifRule[] = [
