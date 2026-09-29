@@ -11,7 +11,8 @@
  * manifest, and uses path-SEGMENT heuristics only when no boundaries exist.
  */
 
-import { changedFiles, defaultBase, git, recordedBase } from "./git.js";
+import { addedLines, changedFiles, defaultBase, diffStats, git, recordedBase } from "./git.js";
+import { PolicyViolation, evaluatePolicy, policyOf } from "./policy.js";
 import { ContextManifest, RiskLevel, contextFilePaths, matchAny, matchesPattern } from "./manifest.js";
 import { isDependencyManifest } from "./risk.js";
 
@@ -92,12 +93,17 @@ export function classifyFiles(allFiles: string[], manifest: ContextManifest | nu
   };
 }
 
-export function classifyDiff(cwd: string, root: string, manifest: ContextManifest | null, base?: string, head?: string): Classification & { base: string; head: string } {
+export function classifyDiff(cwd: string, root: string, manifest: ContextManifest | null, base?: string, head?: string): Classification & { policy_violations: PolicyViolation[]; base: string; head: string } {
   const manifestBase = typeof manifest?.default_branch === "string" && manifest.default_branch.trim() ? manifest.default_branch : null;
   const wanted = base ?? recordedBase(cwd) ?? manifestBase ?? defaultBase(root);
   // A CI checkout often has `origin/main` but no local `main`.
   const known = (rev: string) => git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], cwd).ok;
   const b = known(wanted) || base !== undefined || !known(`origin/${wanted}`) ? wanted : `origin/${wanted}`;
   const files = changedFiles(cwd, b, head);
-  return { ...classifyFiles(files, manifest), base: b, head: head ?? "(working tree)" };
+  const c = classifyFiles(files, manifest);
+  const policy = policyOf(manifest);
+  const violations = policy
+    ? evaluatePolicy(policy, c.files, policy.max_diff_lines ? diffStats(cwd, b, head) : null, (f) => addedLines(cwd, f, b, head))
+    : [];
+  return { ...c, policy_violations: violations, base: b, head: head ?? "(working tree)" };
 }

@@ -88,7 +88,7 @@ export interface WalkResult {
   truncated: boolean;
 }
 
-function linksToRepoFile(root: string, rel: string): boolean {
+export function linksToRepoFile(root: string, rel: string): boolean {
   try {
     const real = realpathSync(join(root, rel));
     return !escapesBase(relative(realpathSync(root), real)) && statSync(real).isFile();

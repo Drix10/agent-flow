@@ -1,0 +1,92 @@
+name: agent-flow
+description: Fail a pull request when agent context has drifted, a new risk surface appeared, a protected path changed, or a manifest policy rule is broken.
+author: Drix10
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  version:
+    description: "@drix10/agent-flow version to run. Default: the version of this action's own ref, so a pinned action runs the CLI it was released with."
+    default: ""
+  checks:
+    description: "Space-separated checks to run, from doctor, audit-risk, classify."
+    default: doctor audit-risk classify
+  base:
+    description: "Branch or commit `classify` diffs against. Default: the pull request base, else the repository's default branch."
+    default: ""
+  fail-on-protected:
+    description: "Fail `classify` when a protected path changed."
+    default: "true"
+  fail-on-policy:
+    description: "Fail `classify` when a manifest `policy` rule is broken."
+    default: "true"
+  sarif:
+    description: "Upload doctor and audit-risk findings to GitHub code scanning (needs `security-events: write`)."
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the CLI
+      id: cli
+      shell: bash
+      env:
+        WANTED: ${{ inputs.version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        ver="$WANTED"
+        if [ -z "$ver" ]; then ver="$(node -p "require(process.env.ACTION_PATH + '/package.json').version")"; fi
+        echo "spec=@drix10/agent-flow@$ver" >> "$GITHUB_OUTPUT"
+
+    - name: doctor
+      if: contains(format(' {0} ', inputs.checks), ' doctor ')
+      shell: bash
+      env:
+        SPEC: ${{ steps.cli.outputs.spec }}
+        WANT_SARIF: ${{ inputs.sarif }}
+      run: |
+        set -uo pipefail
+        npx --yes "$SPEC" doctor
+        code=$?
+        if [ "$WANT_SARIF" = "true" ]; then npx --yes "$SPEC" doctor --sarif > "$RUNNER_TEMP/agent-flow-doctor.sarif" || true; fi
+        exit $code
+
+    - name: audit-risk
+      if: contains(format(' {0} ', inputs.checks), ' audit-risk ')
+      shell: bash
+      env:
+        SPEC: ${{ steps.cli.outputs.spec }}
+        WANT_SARIF: ${{ inputs.sarif }}
+      run: |
+        set -uo pipefail
+        npx --yes "$SPEC" audit-risk --fail-on-new
+        code=$?
+        if [ "$WANT_SARIF" = "true" ]; then npx --yes "$SPEC" audit-risk --sarif > "$RUNNER_TEMP/agent-flow-risk.sarif" || true; fi
+        exit $code
+
+    - name: classify
+      if: contains(format(' {0} ', inputs.checks), ' classify ')
+      shell: bash
+      env:
+        SPEC: ${{ steps.cli.outputs.spec }}
+        BASE: ${{ inputs.base != '' && inputs.base || github.base_ref }}
+        FAIL_PROTECTED: ${{ inputs.fail-on-protected }}
+        FAIL_POLICY: ${{ inputs.fail-on-policy }}
+      run: |
+        set -euo pipefail
+        args=(classify)
+        if [ -n "$BASE" ]; then
+          git fetch --no-tags --depth=1 origin "$BASE" 2>/dev/null || true
+          if git rev-parse --verify --quiet "origin/$BASE^{commit}" >/dev/null; then args+=(--base "origin/$BASE"); else args+=(--base "$BASE"); fi
+        fi
+        [ "$FAIL_PROTECTED" = "true" ] && args+=(--fail-on-protected)
+        [ "$FAIL_POLICY" = "true" ] && args+=(--fail-on-policy)
+        npx --yes "$SPEC" "${args[@]}"
+
+    - name: Upload SARIF
+      if: always() && inputs.sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ runner.temp }}

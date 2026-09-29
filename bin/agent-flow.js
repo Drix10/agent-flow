@@ -14,10 +14,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -54,7 +54,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "reopen", "force", "delete-branch", "dry-run", "help", "strict"]);
+const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -66,7 +66,7 @@ function fixBools(args) {
   return args;
 }
 
-const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file"];
+const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name"];
 const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
 
 /** Closest candidate within edit distance 2, or null. */
@@ -95,15 +95,23 @@ Start here (no setup needed):
   doctor                    Check every path your AGENTS.md / CLAUDE.md / .cursorrules / … mention
   init [--yes] [--dry-run]  Write a starter CONTEXT_MANIFEST.json (+ AGENTS.md if missing) from a scan
 
+Audit log (a hash chain: edits, removals and reordering are detectable):
+  audit verify [--anchor <hash>]  Check .agent-flow/audit.jsonl; exit 1 if the chain is broken or the anchor is missing
+  audit head                Print the current head hash — record it in a commit or CI to anchor the log
+  audit summary             Guard blocks per role and rule, escalations, rounds per issue, role runs and cost
+
 Checks (CI-safe, read-only):
   doctor                    Context files vs the filesystem; with a manifest, also staleness
       --manifest <path>     Manifest path (default CONTEXT_MANIFEST.json)
       --no-prose            Skip checking \`backticked/paths\` inside context files
       --ctxlint             Also run a locally installed ctxlint (never downloads)
+  gates [list|run]          Run the manifest's gates (tests, lint, build); records exit codes, logs and hashes
+                            run [--name a,b] [--issue <n>] [--json]; exit 1 if a required gate fails, 2 if one couldn't run
   audit-risk                Diff risk surfaces against .risk-baseline.json
       --baseline <path>  --include-tests  --fail-on-new
   classify                  Mechanical risk level of a diff (vs the merge-base, so later commits on the base don't count)
       --base <rev> --head <rev> --issue <n>  --fail-on-protected  --fail-on-critical
+                            --fail-on-policy (manifest policy rules)  --fail-on-heuristic (no risk_boundaries set)
   check-staged              Pre-commit gate: protected paths, secrets, broken context refs
   scan                      Read-only repo reconnaissance (what /bootstrap sees)
 
@@ -130,11 +138,13 @@ Setup (writes files; run by a human):
   install --harness <claude|codex|gemini|cursor|copilot|windsurf|agents> [--dry-run] [--force]
   hook install [--force]    Install the pre-commit hook (runs check-staged)
 
-Global: --json for machine output, --help, --version
+Global: --json for machine output; --sarif (doctor, audit-risk) for GitHub code scanning; --help, --version
 `;
 
-function out(args, value, human) {
-  if (args.json) console.log(JSON.stringify(value, null, 2));
+/** `sarif` (optional) builds the SARIF log for `--sarif`; commands without one reject the flag. */
+function out(args, value, human, sarif) {
+  if (args.sarif && sarif) console.log(JSON.stringify(sarif(value), null, 2));
+  else if (args.json) console.log(JSON.stringify(value, null, 2));
   else human(value);
 }
 
@@ -230,8 +240,22 @@ function cmdDoctor(args) {
     if (rep.ctxlint === "ran") section("no dead commands", rep.dead_commands, (m) => `${m.file}: ${m.command}`);
     if (discovered) console.log(dim(`note: ${r.manifest ? "the manifest lists no context files" : "no CONTEXT_MANIFEST.json"}, so only paths were checked — \`agent-flow init\` adds staleness tracking`));
     console.log(r.healthy ? c(32, "\nhealthy") : `\n${c(31, "unhealthy")} — ${doctorNextStep(rep, schema)}`);
-  });
+  }, () => doctorSarif(rt, rep, r.manifest));
   return none || r.healthy ? 0 : 1;
+}
+
+function doctorSarif(rt, rep, manifestPath) {
+  const lineOf = proseLines(rt);
+  const f = [];
+  const manifestFile = typeof manifestPath === "string" ? manifestPath : "CONTEXT_MANIFEST.json";
+  for (const p of rep.schema_problems) f.push({ ruleId: "agent-flow/manifest-schema", level: "error", message: p, path: manifestFile });
+  for (const p of rep.missing_context_files) f.push({ ruleId: "agent-flow/missing-context-file", level: "error", message: `context file missing: ${p}`, path: manifestFile });
+  for (const m of rep.missing_paths) f.push({ ruleId: "agent-flow/broken-reference", level: "error", message: `references ${m.path}, which does not exist${m.suggestion ? ` (did you mean ${m.suggestion}?)` : ""}`, path: m.file, line: m.source === "prose" ? lineOf(m.file, m.path) : undefined });
+  for (const m of rep.invalid_timestamps) f.push({ ruleId: "agent-flow/invalid-timestamp", level: "error", message: `${m.path}: ${JSON.stringify(m.value)} is not a valid ISO timestamp`, path: m.file });
+  for (const p of rep.stale_files) f.push({ ruleId: "agent-flow/stale-context", level: "warning", message: `${p} has not been verified within the staleness threshold`, path: p });
+  for (const m of rep.unfilled_placeholders) f.push({ ruleId: "agent-flow/unfilled-placeholder", level: "warning", message: m.text, path: m.file, line: m.line });
+  for (const m of rep.dead_commands ?? []) f.push({ ruleId: "agent-flow/dead-command", level: "warning", message: m.command, path: m.file });
+  return sarifLib.toSarif(VERSION, sarifLib.DOCTOR_RULES, f);
 }
 
 /** Line of a prose reference, so the user can jump to it. Each context file is parsed once. */
@@ -308,10 +332,95 @@ function cmdAudit(args) {
       console.log(dim("  Accept after review: `agent-flow baseline accept <key>... --yes`"));
     }
     if (r.resolvedSurfaces) console.log(dim(`${r.resolvedSurfaces} baseline surface(s) no longer present`));
+  }, (v) => {
+    const list = v.baselineExists ? v.newSurfacesList : v.surfaces;
+    return sarifLib.toSarif(VERSION, sarifLib.RISK_RULES, list.map((x) => ({
+      ruleId: v.baselineExists ? "agent-flow/new-risk-surface" : "agent-flow/risk-surface",
+      level: x.type === "secret" ? "error" : "warning",
+      message: `${x.type}: ${x.detail}`,
+      path: x.path,
+      line: x.lines?.[0],
+    })));
   });
   if (failNoBaseline) return 1;
   if (args["fail-on-new"] && r.newSurfaces > 0) return 1;
   return 0;
+}
+
+function cmdAuditLog(args) {
+  const rt = root();
+  const sub_ = args._[1];
+  if (sub_ === "verify" || sub_ === "head") {
+    const v = auditLib.verifyAudit(rt, { anchor: typeof args.anchor === "string" ? args.anchor : undefined });
+    if (sub_ === "head") {
+      out(args, { head: v.head, lines: v.lines }, () => console.log(v.head ?? "(no chained entries yet)"));
+      return v.head ? 0 : 1;
+    }
+    out(args, v, () => {
+      if (v.lines === 0) return warn("no audit log yet (.agent-flow/audit.jsonl)");
+      const parts = [`${v.chained} chained`, ...(v.legacy ? [`${v.legacy} from before chaining`] : []), ...(v.unchained ? [`${v.unchained} unchained`] : [])];
+      if (v.broken) bad(`audit log broken at line ${v.broken.line}: ${v.broken.reason}`);
+      else ok(`audit log intact (${parts.join(", ")})`);
+      if (v.unchained) warn(`${v.unchained} line(s) were written without a chain link (the lock was unavailable); they can't be verified`);
+      if (v.anchor) (v.anchor.found ? ok : bad)(v.anchor.found ? `anchor ${v.anchor.hash.slice(0, 12)}… found at line ${v.anchor.line}` : `anchor ${v.anchor.hash.slice(0, 12)}… not in an intact chain: history was rewritten, truncated, or the hash is wrong`);
+      if (v.head) console.log(dim(`head ${v.head}`));
+    });
+    return v.ok ? 0 : 1;
+  }
+  if (sub_ === "summary") {
+    const s = auditLib.summarizeAudit(rt);
+    out(args, s, () => {
+      if (!s.entries) return warn("no audit log yet (.agent-flow/audit.jsonl)");
+      console.log(`${s.entries} entries, ${s.from} → ${s.to}`);
+      const list = (m) => Object.entries(m).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
+      console.log(`guard blocks: ${s.guard_blocks.total} (by role: ${list(s.guard_blocks.by_role)}; by rule: ${list(s.guard_blocks.by_rule)})`);
+      console.log(`role runs: ${s.role_runs.total} (${s.role_runs.ok} ok, ${s.role_runs.failed} failed, $${s.role_runs.cost_usd})`);
+      for (const i of s.issues) console.log(`  issue #${i.issue}: ${i.state}, round ${i.round}`);
+      for (const e of s.escalations.slice(-10)) console.log(`  needs me: issue #${e.issue} — ${e.reason.slice(0, 120)}`);
+      if (s.guard_blocks.total) console.log(dim("  A rule that blocks the same thing again and again belongs in protected_paths or a lint rule, not a prompt."));
+    });
+    return 0;
+  }
+  return sub("audit", sub_, ["verify", "head", "summary"], "audit verify [--anchor <hash>] | audit head | audit summary");
+}
+
+function cmdGates(args) {
+  const rt = root();
+  const gates = gatesLib.gatesOf(manifestLib.tryLoadManifest(rt));
+  const act = args._[1] ?? "list";
+  if (act === "list") {
+    out(args, { gates }, () => {
+      if (!gates.length) return warn("no gates in CONTEXT_MANIFEST.json (add a `gates` array; see docs/ADOPTION.md)");
+      for (const g of gates) console.log(`  ${g.name}${g.required === false ? dim(" (advisory)") : ""}  ${gatesLib.describeCommand(g.command)}`);
+    });
+    return 0;
+  }
+  if (act !== "run") return sub("gates", act, ["list", "run"], "gates list | gates run [--name a,b] [--issue <n>] [--json]");
+  if (!gates.length) throw new UserError("no gates defined in CONTEXT_MANIFEST.json, so there is nothing to run");
+  let cwd = rt;
+  if (args.issue !== undefined) {
+    const n = issueNumber(args.issue, "gates run --issue <n>");
+    cwd = fsutil.resolveInside(rt, worktree.worktreeRel(n));
+    if (!existsSync(cwd)) throw new UserError(`no worktree for issue #${n} (${worktree.worktreeRel(n)}) — create it with \`agent-flow worktree create ${n}\``);
+  }
+  if (args.name !== undefined && typeof args.name !== "string") throw new UserError("--name needs a comma-separated list of gate names");
+  const only = typeof args.name === "string" ? args.name.split(",").map((x) => x.trim()).filter(Boolean) : undefined;
+  let r;
+  try {
+    r = gatesLib.runGates(rt, gates, { only, cwd, issue: args.issue !== undefined ? Number(args.issue) : undefined });
+  } catch (e) {
+    if (/^no such gate/.test(e.message)) throw new UserError(e.message);
+    throw e;
+  }
+  out(args, r, () => {
+    for (const g of r.results) {
+      const line = `${g.name}: ${g.timed_out ? "timed out" : g.error ? g.error : `exit ${g.exit_code}${g.ok ? "" : ` (expected ${g.expected_exit})`}`} ${dim(`${g.duration_ms}ms ${g.log}`)}`;
+      if (g.ok) ok(line);
+      else (g.required ? bad : warn)(g.required ? line : `${line} (advisory)`);
+    }
+    if (r.environment_error) console.log(dim("  A gate could not run at all: fix the environment (missing tool, bad cwd) before spending a review round."));
+  });
+  return r.ok ? 0 : r.environment_error ? 2 : 1;
 }
 
 function cmdBaseline(args) {
@@ -355,9 +464,13 @@ function cmdClassify(args) {
     console.log(`risk: ${c(col, r.risk_level)}  reviewer: ${r.reviewer_tier}  human approval: ${r.human_approval_required ? "required" : "no"}  ${dim(`${r.files.length} files vs ${r.base}`)}`);
     for (const reason of r.reasons) console.log(`  - ${reason}`);
     if (r.protected_violations.length) bad(`protected paths touched: ${r.protected_violations.join(", ")}`);
+    for (const v of r.policy_violations) bad(`policy (${v.rule}): ${v.message}`);
+    if (r.used_heuristics) warn("no risk_boundaries in the manifest: the level above is a path-name guess");
   });
   if (args["fail-on-protected"] && r.protected_violations.length) return 1;
   if (args["fail-on-critical"] && r.risk_level === "critical") return 1;
+  if (args["fail-on-policy"] && r.policy_violations.length) return 1;
+  if (args["fail-on-heuristic"] && r.used_heuristics) return 1;
   return 0;
 }
 
@@ -399,6 +512,20 @@ function cmdCheckStaged(args) {
   for (const [f, blob] of blobs) {
     if (!blob || blob.subarray(0, 8000).includes(0)) continue; // deleted, huge or binary
     for (const s of risk.findSecrets(blob.toString("utf-8"))) problems.push(`possible ${s.kind} in ${f} line(s) ${s.lines.join(", ")} (value not shown; if it is a fake, put \`${risk.ALLOW_SECRET_MARKER}\` on or above the line, or list the file in secret_scan.ignore_paths)`);
+  }
+  const policy = policyLib.policyOf(man);
+  if (policy) {
+    const stats = new Map();
+    const num = git.git(["-c", "core.quotepath=off", "diff", "--cached", "--numstat", "-z", "--no-renames"], rt);
+    for (const rec of (num.ok ? num.stdout : "").split("\0").filter(Boolean)) {
+      const m = /^(\d+|-)\t(\d+|-)\t(.*)$/s.exec(rec);
+      if (m) stats.set(m[3], m[1] === "-" ? null : { added: Number(m[1]), removed: Number(m[2]) });
+    }
+    const added = (f) => {
+      const d = git.git(["-c", "core.quotepath=off", "diff", "--cached", "-U0", "--no-color", "--no-renames", "--", f], rt);
+      return d.ok ? d.stdout.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1)) : [];
+    };
+    for (const v of policyLib.evaluatePolicy(policy, files, stats, added)) problems.push(`policy (${v.rule}): ${v.message}`);
   }
   // Context drift: fail only on drift THIS commit introduces (it deletes/renames a
   // referenced path, or edits a context file that is broken). Pre-existing drift is
@@ -653,9 +780,11 @@ function guardCheck(args) {
 
 function cmdGuard(args) {
   if (args.check) return guardCheck(args);
-  const fail = (role, msg) => {
+  // A guard that broke must not become a way past it: refuse whenever a role, a manifest (on disk or
+  // committed) or AGENT_FLOW_GUARD_STRICT=1 says protection is wanted. Only an unconfigured session is left alone.
+  const fail = (role, msg, cwd = process.cwd()) => {
     console.error(`[agent-flow guard] ${msg}`);
-    return role ? 2 : 0; // a confined role fails closed; an ordinary session is not bricked by a guard bug
+    return role || manifestLib.guardFailsClosed(fsutil.findRepoRoot(cwd)) ? 2 : 0;
   };
   const env = guardLib.parseRole(process.env.AGENT_FLOW_ROLE);
   let ev;
@@ -680,6 +809,7 @@ function cmdGuard(args) {
       manifestError: loaded.error,
       worktree: process.env.AGENT_FLOW_WORKTREE ? resolve(rt, process.env.AGENT_FLOW_WORKTREE) : undefined,
       allowProtected: process.env.AGENT_FLOW_ALLOW_PROTECTED === "1",
+      allowSecretRead: process.env.AGENT_FLOW_ALLOW_SECRET_READ === "1",
     });
     if (!decision) return 0;
     try {
@@ -690,7 +820,7 @@ function cmdGuard(args) {
     console.error(decision.reason);
     return 2;
   } catch (e) {
-    return fail(role, `guard error: ${e.message}`);
+    return fail(role, `guard error: ${e.message}`, typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd());
   }
 }
 
@@ -783,7 +913,8 @@ function importAgentsMd(rt, args) {
   ok(`${args["dry-run"] ? "would write" : "wrote"} CLAUDE.md (${cur === null ? "new, imports" : "appended"} @AGENTS.md)`);
 }
 
-const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|mcp__.*";
+// Every tool the guard has a rule for: writes, the shell, read tools (env files, deny_read) and MCP tools (remote pushes).
+const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|NotebookRead|Grep|Glob|mcp__.*";
 
 /**
  * Wire the guard into Claude Code as a PreToolUse hook, merged into any
@@ -905,7 +1036,7 @@ async function cmdInit(args) {
   const dry = !!args["dry-run"];
   const interactive = !args.json && !!process.stdin.isTTY && !!process.stdout.isTTY;
   if (args.json && !args.yes) {
-    console.log(JSON.stringify({ written: [], plan: plan.files.map((f) => ({ path: f.path, action: f.exists ? "skip_exists" : "write", content: f.content })), references: plan.references, missing_references: plan.missing_references }, null, 2));
+    console.log(JSON.stringify({ written: [], plan: plan.files.map((f) => ({ path: f.path, action: f.exists ? "skip_exists" : "write", content: f.content })), references: plan.references, missing_references: plan.missing_references, suggested_protected_paths: plan.suggested_protected_paths }, null, 2));
     return 0;
   }
   if (!args.json) {
@@ -953,6 +1084,7 @@ async function cmdInit(args) {
     for (const p of written) {
       ok(`wrote ${p}${p === manifestLib.MANIFEST_FILE ? ` — ${plan.references} reference(s) from ${plan.context_files.length} context file(s)` : ""}`);
     }
+    if (plan.suggested_protected_paths.length) console.log(dim(`  protected_paths is empty. Worth protecting here: ${plan.suggested_protected_paths.join(", ")} — add what applies to CONTEXT_MANIFEST.json (nothing is protected until you do).`));
     if (plan.missing_references.length) warn(`${plan.missing_references.length} referenced path(s) don't exist, so they weren't recorded — \`agent-flow doctor\` lists them`);
     if (written.includes("AGENTS.md") && manifestSkipped) warn("add AGENTS.md to context_files in your existing CONTEXT_MANIFEST.json");
     console.log(dim(`\nnext: ${written.includes("AGENTS.md") ? "replace the [NEEDS VERIFICATION] lines in AGENTS.md, then " : ""}\`agent-flow doctor\` (and add it to CI)`));
@@ -995,6 +1127,8 @@ const table = {
   doctor: cmdDoctor,
   init: cmdInit,
   "audit-risk": cmdAudit,
+  audit: cmdAuditLog,
+  gates: cmdGates,
   baseline: cmdBaseline,
   classify: cmdClassify,
   "check-staged": cmdCheckStaged,

@@ -4,28 +4,53 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [1.1.3] - 2026-09-29
 
+Two reviews of the guard (one on a repo with an append-only ledger, frozen specs and secrets; one on the fixes to that) closed 16 of 43 attack cases that used to pass, and made agent-flow safe to adopt in a repository that already has rules, a task file and paths that must not change. Every row has a regression test: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md) #77–95.
+
+### Added
+- **Tamper-evident audit log.** Every `.agent-flow/audit.jsonl` line carries `prev` and `hash` (SHA-256 over the previous hash and the line), written under a lock. `agent-flow audit verify [--anchor <hash>]` reports the first edited, deleted, inserted or reordered line and exits 1; `audit head` prints the hash to record in a commit or CI; `audit summary` counts guard blocks per role and rule, escalations, rounds per issue and role-run cost. Logs written before 1.1.3 verify as "from before chaining". Tamper-evident is not tamper-proof: anchor the head somewhere the agent can't write.
+- **Gates.** A manifest `gates` list (`name`, `command` as a string or an argv array, `cwd`, `timeout_seconds`, `expect_exit`, `required`) that the orchestrator runs with `agent-flow gates run [--name a,b] [--issue n]`. Each run leaves a log, its SHA-256, a JSON report and an audit line; exit 1 = a required gate failed, 2 = a gate couldn't run at all (fix the environment, don't spend a review round). The manifest is read from the main checkout, so a branch can't edit the gate that judges it, and `reviewer`/`qa` can't run `gates run`. The orchestrator skill runs gates before QA.
+- **Manifest `policy` rules.** `max_changed_files`, `max_diff_lines`, `forbid_patterns` (a regex over added lines, optionally scoped to paths) and `require_tests` (changes under these paths need a change under those). `classify --fail-on-policy` checks the branch diff, including untracked files; the pre-commit hook checks the staged content. `classify --fail-on-heuristic` fails when no `risk_boundaries` exist, so CI can refuse to trust a path-name guess.
+- **SARIF 2.1.0.** `doctor --sarif` and `audit-risk --sarif` for GitHub code scanning (file and line locations, no secret values).
+- **`action.yml`.** A composite GitHub Action (`uses: Drix10/agent-flow@v1.1.3`) that runs `doctor`, `audit-risk --fail-on-new` and `classify --fail-on-protected --fail-on-policy`, and can upload SARIF. It has not run on GitHub yet: the commands it calls are covered by tests, the YAML wrapper is not.
+- **Docs can't drift from the CLI.** `npm test` fails when a doc or skill names an `agent-flow` command or flag that doesn't exist, or a backticked repo path that isn't there.
+
 ### Security
-- The guard no longer throws on a command whose first word is `constructor`; an ordinary session used to fail open on that error and skip the protected-path check.
-- A gitignore-style `protected_paths` entry with a leading slash (`/config/`) now matches; it used to protect nothing.
-- `bootstrap_write` refuses `AGENT_STATE.md` and manifest `protected_paths`, like every other write tool.
-- The Pi `tool_call` hook fails closed for a confined role when the guard errors, matching `agent-flow guard`.
+- **Protected directories.** `dir/**` matches `dir` itself, and `rm`/`mv`/`find -delete` of a protected directory or any parent of one (up to `rm -rf .` and `rm -rf .git`) is blocked for every session. Brace expansion, `git -C dir`, and `tar -C`/`unzip -d` destinations are resolved like any other write. A directory too large to inspect is assumed to hold a protected path.
+- **Whole-tree git rewrites** (`reset --hard`, `clean -f`, `stash`, `checkout .`/`-f`, `restore .`, and targeted `checkout`/`restore`/`rm`/`mv` that reach a protected path) are blocked while `protected_paths` is set.
+- **Guard wiring, hooks and manifest are off limits** to every session: `.git/hooks/*`, `CONTEXT_MANIFEST.json`, `.claude/settings*.json` and the installed agent-flow can't be edited, deleted, moved or `chmod`-ed by an agent (a human overrides with `AGENT_FLOW_ALLOW_PROTECTED=1`). `chmod -x file` is parsed as a mode, not an option.
+- **Protection is a floor.** `protected_paths` and `deny_read` committed to `HEAD` or to the default branch still apply if the manifest is deleted, emptied, or weakened on a feature branch.
+- **The guard fails closed** on its own errors (unreadable input, a crash) whenever a manifest exists on disk or at `HEAD`, or `AGENT_FLOW_GUARD_STRICT=1`; the Pi hook does the same. Only an unconfigured session is left alone. The guard no longer throws on a command whose first word is `constructor`, which used to fail open.
+- **Secrets stay out of context.** Real env files (`.env`, `.env.local`, `.env2`, `.env_prod`, `prod.env`, …) and manifest `deny_read` paths can't be read by an agent through the shell (`cat`, `grep`, `source`, `< .env`, `--env-file=`, `curl -F f=@.env`, `git show HEAD:.env`, `mv`/`ln`/`cp`) or a read tool; `AGENT_FLOW_ALLOW_SECRET_READ=1` (a human) lifts it. The installed hook matcher now includes `Read`, `NotebookRead`, `Grep` and `Glob`, so the rule actually runs in Claude Code.
+- **Remote pushes.** Git-host MCP tools (`push_files`, `create_or_update_file`, `delete_file`) can't write to the default branch or with no branch named, are checked against protected paths, and pipeline roles can't `merge_pull_request`.
+- A gitignore-style `protected_paths` entry with a leading slash (`/config/`) matches; it used to protect nothing. `bootstrap_write` refuses `AGENT_STATE.md` and manifest `protected_paths`, like every other write tool.
+- The secret scanner finds credentials assigned to secret-named variables (`APCA_API_SECRET_KEY=…`, `FRED_API_KEY=…`, `password = "…"`) while skipping placeholders, config references and identifiers.
 
 ### Changed
-- **Existing files are preserved.** `bootstrap_write` on an existing file keeps its line endings, BOM and manifest indentation, saves a backup under `.agent-flow/backups/`, shows the human what is removed, and refuses a manifest that drops `protected_paths`, `risk_boundaries` or any other existing key. `repair` keeps the manifest's indentation and line endings and takes a lock. `install --harness claude` keeps a user's other hooks in a shared matcher group, won't import a symlinked `CLAUDE.md` into itself, and refuses a malformed `hooks` shape. `hook install` treats only its own header as "ours" and backs up a foreign hook on `--force`. `init` no longer generates an `AGENTS.md` beside a `CLAUDE.md`/`GEMINI.md`/`.cursorrules` that already holds rules.
+- **Existing files are preserved.** `bootstrap_write` on an existing file keeps its line endings, BOM and manifest indentation, saves a backup under `.agent-flow/backups/`, shows the human what is removed, and refuses a manifest that drops `protected_paths`, `risk_boundaries` or any other existing key. `repair` keeps the manifest's indentation and line endings and takes a lock. `install --harness claude` keeps a user's other hooks in a shared matcher group, won't import a symlinked `CLAUDE.md` into itself, and refuses a malformed `hooks` shape. `hook install` treats only its own header as "ours" and backs up a foreign hook on `--force`. `init` no longer generates an `AGENTS.md` beside a `CLAUDE.md`/`GEMINI.md`/`.cursorrules` that already holds rules, and suggests `protected_paths` from directories that exist (it writes none).
 - **Secret scanner allowlist.** `agent-flow:allow-secret` on or above a line, or `secret_scan.ignore_paths` in the manifest, exempts a known fake (agents writing files can't use the marker). The pre-commit check reads staged files through one `git cat-file --batch` instead of a process per file.
-- **CI checkouts.** `classify` falls back to `origin/<default>` when a detached PR checkout has no local default branch; `doctor` finds context files that are symlinks to a file in the repo.
+- **Scans use git's file list** when it is available (tracked plus untracked-not-ignored files), so untracked gitignored trees are not walked: a scan of a repo with a 7 GB ignored `data/` directory no longer takes minutes. Outside git, or when the root isn't the repository's top level, they fall back to a directory walk. Tracked files are always scanned. Ignored env files are no longer reported as "present in the working tree".
+- **CI checkouts.** `classify` falls back to `origin/<default>` when a detached PR checkout has no local default branch; `doctor` finds context files that are symlinks to a file in the repo (links out of the repo are ignored).
+- `scan` recognises C/C++ (CMake, ctest, GoogleTest, Catch2), PHP, Swift, Elixir and Dart.
+- `state_update` bounds `phase` (80) and `reason` (2000) for the CLI too; `reopen` can't target `Completed`.
+- `tests/redteam/corpus.json`: a table of blocked, allowed and documented-gap cases that `npm test` runs, and `.pre-commit-hooks.yaml` for pre-commit.com users.
+- GitHub Packages publish runs the test suite first, like the npm publish.
 
 ### Fixed
 - Paths inside the repo that begin with `..` (`..data/`) are no longer treated as outside it.
 - `schema`/`report` with a prototype-named role (`toString`) and a bare `state update --round` are usage errors instead of a crash / a silent round 1.
 - `pyproject.toml` dependencies after an extras bracket (`requests[security]`) and `[project.optional-dependencies]` are audited.
-- `state_update` bounds `phase` (80) and `reason` (2000) for the CLI too; `reopen` can't target `Completed`.
-- GitHub Packages publish runs the test suite first, like the npm publish.
+- Repeated `git -C a -C b` accumulates; the git file list keeps literal backslashes in POSIX names and drops paths that leave the repo through a symlinked directory.
 
 ### Docs
-- README, SECURITY, FAILURE_MODES, HARNESS docs and TRUST_LOOP now describe the Claude Code `agent-flow guard` hook, what the audit log records, and the real install targets; the roadmap no longer lists shipped work.
+- New [docs/ADOPTION.md](./docs/ADOPTION.md): what agent-flow writes and when, layered adoption, what the guard does not do, and which backstops belong outside the agent. README, SECURITY, FAILURE_MODES, HARNESS-MATRIX and TRUST_LOOP describe the Claude Code `agent-flow guard` hook, what the audit log records and the real install targets; ROADMAP lists what command-text analysis cannot close (OS sandbox, orchestrator-run gates, tamper-evident audit log, run budgets, richer policy, SARIF/Action) instead of implying it.
 
-Rows #77–88 in [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).
+### Upgrading from 1.1.2
+- **Re-run `npx @drix10/agent-flow install --harness claude`** to widen the hook matcher (reads and MCP tools) in an existing `.claude/settings.json`; your other hooks are kept.
+- Agents can no longer read env files by default. If a workflow needs it, launch with `AGENT_FLOW_ALLOW_SECRET_READ=1`, or keep the file out of the guard's path list by design (`deny_read` is opt-in for other paths).
+- While `protected_paths` is set, `git reset --hard`, `git stash`, `git clean -f` and friends are refused for agents; name the files, or use the human override.
+- Committing a weaker `CONTEXT_MANIFEST.json` no longer lowers protection; lowering it takes `AGENT_FLOW_ALLOW_PROTECTED=1` and a merge to the default branch.
+- `init` and `scan` skip untracked gitignored trees; tracked files are still scanned.
+- New manifest keys (`gates`, `policy`) are optional; a manifest without them behaves as before. `doctor` now reports a malformed `gates` or `policy` as a schema problem.
 
 ## [1.1.2] - 2026-09-28
 

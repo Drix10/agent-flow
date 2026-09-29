@@ -24,13 +24,14 @@ import { resolve } from "node:path";
 import { Type } from "typebox";
 import { findRepoRoot } from "./lib/fsutil.js";
 import { decide, parseRole, READ_ONLY_ROLES } from "./lib/guard.js";
-import { ContextManifest, loadManifestForGuard, manifestPathFor } from "./lib/manifest.js";
+import { ContextManifest, guardFailsClosed, loadManifestForGuard, manifestPathFor } from "./lib/manifest.js";
 import { appendAudit } from "./lib/state.js";
 import { text } from "./result.js";
 
 export default function (pi: ExtensionAPI) {
   const { role, warning } = parseRole(process.env.AGENT_FLOW_ROLE);
   const allowProtected = process.env.AGENT_FLOW_ALLOW_PROTECTED === "1";
+  const allowSecretRead = process.env.AGENT_FLOW_ALLOW_SECRET_READ === "1";
   let cache: { root: string; mtime: number; manifest: ContextManifest | null; error?: string } | null = null;
   const roots = new Map<string, string>(); // cwd → main repo root (avoids a git spawn per tool call)
   const rootOf = (cwd: string) => {
@@ -75,14 +76,16 @@ export default function (pi: ExtensionAPI) {
         manifestError: m.error,
         worktree,
         allowProtected,
+        allowSecretRead,
       });
       if (!decision) return undefined;
       appendAudit(root, { event: "guard_block", role, tool: event.toolName, rule: decision.rule, reason: decision.reason });
       return { block: true, reason: decision.reason };
     } catch (e: any) {
-      // Same stance as `agent-flow guard`: a confined role fails closed, an ordinary session isn't bricked by a guard bug.
-      if (!role) return undefined;
-      const reason = `[agent-flow guard] guard error, refusing as role "${role}": ${e?.message ?? e}`;
+      // Same stance as `agent-flow guard`: refuse when a role or configured protection (manifest on disk or
+      // committed, AGENT_FLOW_GUARD_STRICT=1) is at stake; an unconfigured session isn't bricked by a guard bug.
+      if (!role && !guardFailsClosed(root)) return undefined;
+      const reason = `[agent-flow guard] guard error, refusing${role ? ` as role "${role}"` : ""}: ${e?.message ?? e}`;
       appendAudit(root, { event: "guard_block", role, tool: event.toolName, rule: "guard-error", reason });
       return { block: true, reason };
     }

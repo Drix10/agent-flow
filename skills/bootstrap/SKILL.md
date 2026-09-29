@@ -51,7 +51,7 @@ For monorepos: propose `<package>/AGENTS.md` for each package that has its own r
 
 Ask these one at a time. Never pre-fill the answers.
 
-1. **Protected paths.** "Which paths must agents never modify?" These are usually migrations, lockfiles, CI, security modules, and vendored code. They go into `protected_paths`, and the guard and pre-commit hook enforce them.
+1. **Protected paths.** "Which paths must agents never modify?" These are usually migrations, lockfiles, CI, security modules, and vendored code. They go into `protected_paths`, and the guard and pre-commit hook enforce them (directories included: `rm`, `mv` and whole-tree git rewrites that reach them are refused). Also ask which files an agent must never read (credentials, key material beyond `.env*`, which is always denied): those go into `deny_read`. Never invent either list; the human owns it.
 2. **Critical paths.** "Where are money, auth, contracts or PII?" These become `risk_boundaries` with `risk_level: critical`. Changes there get high-reasoning review, a draft PR, and human approval.
 3. **Low-risk paths.** "What is safe for mechanical edits?" (docs, tests, generated code). These become `risk_level: low`.
 4. **Auto-merge.** "Should low-risk changes that pass QA auto-merge?" Recommend **no** until the pipeline has shipped about 10 clean PRs in this repo. This sets `pipeline.auto_merge_low_risk`.
