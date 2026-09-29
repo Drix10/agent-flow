@@ -8,8 +8,8 @@ The guard reads command text, so it has documented limits (`tests/redteam/corpus
 
 - **OS-level sandbox launcher** (`agent-flow sandbox -- <agent>`): bubblewrap, Landlock or `sandbox-exec`, with protected paths mounted read-only, `deny_read` paths masked and the environment scrubbed. The only hard guarantee for shell and interpreter writes.
 - **Run-as-user gates:** `gates` run as the orchestrator's user today. A per-gate run-as user (the QA freeze rule, for repos where tests must run unprivileged) needs a launcher that can drop privileges.
-- **Run supervision:** wall-clock, token and cost budgets per role (cost is recorded per run today, not capped), resumable runs, and a merge-conflict queue between parallel issues.
-- **Policy beyond paths:** required reviewers per path, and signed exceptions with an expiry. Size, pattern and test-must-change rules ship in 1.1.4.
+- **Run supervision:** wall-clock and per-role token budgets, a per-launch turn cap where a harness has a flag for it (the per-issue cost cap, `pipeline.max_cost_usd`, is in Unreleased), resumable runs, and a merge-conflict queue between parallel issues.
+- **Policy beyond paths:** required reviewers per path, and signed exceptions with an expiry. Size, pattern and test-must-change rules ship in 1.1.4; opt-in command presets (`policy.deny_commands`) are in Unreleased.
 - **Anchoring the audit head automatically:** `audit head` prints the hash; committing it to a place the agent can't write (a signed tag, a CI artifact, a separate repo) is still the adopter's step.
 - **Blast radius from a dependency graph:** `classify` from what a change reaches (an adapter over an existing code graph) instead of path names alone, and every classification reason tagged mechanical or heuristic. `--fail-on-heuristic` refuses the guess today; it doesn't replace it.
 - **Alias tracking in the guard:** `ln -s .env x && cat x` and other two-step symlink or variable tricks. The corpus lists them as gaps; the OS sandbox closes them.

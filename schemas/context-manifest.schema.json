@@ -252,6 +252,30 @@
       "description": "Change-size and content rules checked by `classify --fail-on-policy` and the pre-commit hook.",
       "additionalProperties": false,
       "properties": {
+        "deny_commands": {
+          "type": "object",
+          "description": "Shell commands the guard refuses in every agent session (a human overrides with AGENT_FLOW_ALLOW_PROTECTED=1). Working copies may add to what the default branch committed, never remove.",
+          "additionalProperties": false,
+          "properties": {
+            "presets": {
+              "type": "array",
+              "items": { "enum": ["database", "infra"] },
+              "description": "database: DROP/TRUNCATE through psql, mysql, sqlite3 and friends. infra: kubectl delete, terraform destroy, docker prune, helm uninstall, cloud CLI deletes."
+            },
+            "patterns": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["pattern"],
+                "additionalProperties": false,
+                "properties": {
+                  "pattern": { "type": "string", "minLength": 1, "maxLength": 500 },
+                  "message": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
         "max_changed_files": {
           "type": "integer",
           "minimum": 1

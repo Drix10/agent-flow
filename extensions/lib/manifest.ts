@@ -7,6 +7,7 @@
  * and bootstrap_write refuses to write an invalid manifest in the first place.
  */
 
+import { unionDenyCommands } from "./denycmd.js";
 import { isAbsolute, join } from "node:path";
 import { existsSync } from "node:fs";
 import { defaultBase, git } from "./git.js";
@@ -286,13 +287,16 @@ export function loadManifestForGuard(root: string): { manifest: ContextManifest 
     const floors = [head, base];
     const extra = [...new Set(floors.flatMap((f) => protectedPathsOf(f)))].filter((p) => !protectedPathsOf(disk).includes(p));
     const extraDeny = [...new Set(floors.flatMap((f) => denyReadPathsOf(f)))].filter((p) => !denyReadPathsOf(disk).includes(p));
-    if (!extra.length && !extraDeny.length) return { manifest: disk };
-    return { manifest: { ...disk, protected_paths: [...protectedPathsOf(disk), ...extra], deny_read: [...denyReadPathsOf(disk), ...extraDeny] } };
+    // `policy.deny_commands` gets the same additive floor: a session can't drop a command rule the repo committed.
+    const denyCmds = unionDenyCommands(disk, head, base);
+    const withCmds = (m: ContextManifest): ContextManifest => (denyCmds ? { ...m, policy: { ...((m as { policy?: object }).policy ?? {}), deny_commands: denyCmds } } as ContextManifest : m);
+    if (!extra.length && !extraDeny.length) return { manifest: withCmds(disk) };
+    return { manifest: withCmds({ ...disk, protected_paths: [...protectedPathsOf(disk), ...extra], deny_read: [...denyReadPathsOf(disk), ...extraDeny] }) };
   }
   if (r.error !== "manifest_not_found") return { manifest: null, error: r.error };
   // A manifest that was committed and then deleted still governs: absence is not permission.
   const held = head ?? base;
-  return held ? { manifest: head && base ? { ...head, protected_paths: [...new Set([...protectedPathsOf(head), ...protectedPathsOf(base)])], deny_read: [...new Set([...denyReadPathsOf(head), ...denyReadPathsOf(base)])] } : held, fromHead: true } : { manifest: null };
+  return held ? { manifest: head && base ? { ...head, protected_paths: [...new Set([...protectedPathsOf(head), ...protectedPathsOf(base)])], deny_read: [...new Set([...denyReadPathsOf(head), ...denyReadPathsOf(base)])], ...(unionDenyCommands(head, base) ? { policy: { ...((head as { policy?: object }).policy ?? {}), deny_commands: unionDenyCommands(head, base) } } : {}) } as ContextManifest : held, fromHead: true } : { manifest: null };
 }
 
 /**

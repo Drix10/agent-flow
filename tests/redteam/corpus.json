@@ -2,7 +2,8 @@
   "manifest": {
     "default_branch": "main",
     "protected_paths": ["research/ledger/**", "research/prereg/**", "**/STAGE", "migrations/"],
-    "deny_read": ["secrets/**"]
+    "deny_read": ["secrets/**"],
+    "policy": { "deny_commands": { "presets": ["database", "infra"], "patterns": [{ "pattern": "\\bshutdown\\b", "message": "shutdown is a human decision" }] } }
   },
   "notes": "expect: block = the guard refuses it, allow = ordinary work that must keep working, gap = a documented limit (static analysis cannot see it). A gap is asserted to still be ALLOWED so the docs stay honest: closing one fails the test, and the entry moves to block.",
   "shell": [
@@ -81,7 +82,35 @@
     { "cmd": "cat $(echo .env)", "expect": "gap", "note": "a path from a command substitution" },
     { "cmd": "python3 cleanup.py", "expect": "gap", "note": "an interpreter script run by path" },
     { "cmd": "perl -e '$d=\"research/\".\"ledger\"; unlink glob(\"$d/*\")'", "expect": "gap", "note": "inline interpreter with a built path" },
-    { "cmd": "echo cm0gLXJmIHJlc2VhcmNoL2xlZGdlcg== | base64 -d | sh", "expect": "gap", "note": "an encoded payload" }
+    { "cmd": "echo cm0gLXJmIHJlc2VhcmNoL2xlZGdlcg== | base64 -d | sh", "expect": "gap", "note": "an encoded payload" },
+    { "cmd": "rm -rf /", "expect": "block", "note": "gstack careful: rm -rf /" },
+    { "cmd": "rm -rf ~", "expect": "block", "note": "gstack careful: rm -rf ~" },
+    { "cmd": "rm -rf $HOME", "expect": "block", "note": "gstack careful: rm -rf $HOME" },
+    { "cmd": "git push --force origin main", "expect": "block", "note": "gstack careful, block-dangerous-git: force-push" },
+    { "cmd": "git push -f origin main", "expect": "block", "note": "block-dangerous-git: force-push" },
+    { "cmd": "git push origin main", "expect": "block", "note": "block-dangerous-git: push" },
+    { "cmd": "git branch -D feature/x", "expect": "gap", "note": "block-dangerous-git: branch -D" },
+    { "cmd": "git clean -fd", "expect": "block", "note": "block-dangerous-git: clean -f" },
+    { "cmd": "git checkout .", "expect": "block", "note": "gstack careful asks: checkout ." },
+    { "cmd": "git restore .", "expect": "block", "note": "gstack careful asks: discards working changes" },
+    { "cmd": "rm${IFS}-rf${IFS}research/ledger", "expect": "block", "note": "gstack careful: IFS obfuscation" },
+    { "cmd": "while IFS= read -r l; do echo \"$l\"; done < f", "expect": "allow", "note": "an ordinary IFS use" },
+    { "cmd": "IFS=, read a b <<< \"1,2\"", "expect": "allow", "note": "an ordinary IFS use" },
+    { "cmd": "psql -c \"DROP TABLE users\"", "expect": "block", "note": "gstack careful: DROP, database preset" },
+    { "cmd": "mysql -e \"truncate table orders\"", "expect": "block", "note": "gstack careful: TRUNCATE, database preset" },
+    { "cmd": "echo \"drop database prod\" | psql", "expect": "block", "note": "database preset, piped" },
+    { "cmd": "sh -c 'sqlite3 app.db \"DROP TABLE t\"'", "expect": "block", "note": "database preset, inside sh -c" },
+    { "cmd": "kubectl delete pod web-1", "expect": "block", "note": "gstack careful: kubectl delete, infra preset" },
+    { "cmd": "kubectl --context prod delete deploy web", "expect": "block", "note": "infra preset, flag before verb" },
+    { "cmd": "terraform destroy -auto-approve", "expect": "block", "note": "infra preset" },
+    { "cmd": "docker system prune -af", "expect": "block", "note": "gstack careful: docker prune, infra preset" },
+    { "cmd": "helm uninstall web", "expect": "block", "note": "infra preset" },
+    { "cmd": "shutdown -h now", "expect": "block", "note": "custom pattern from the manifest" },
+    { "cmd": "psql -c \"SELECT count(*) FROM users\"", "expect": "allow", "note": "database preset must not block reads" },
+    { "cmd": "kubectl get pods -n prod", "expect": "allow", "note": "infra preset must not block reads" },
+    { "cmd": "terraform plan", "expect": "allow", "note": "infra preset must not block plan" },
+    { "cmd": "docker ps", "expect": "allow", "note": "infra preset must not block docker ps" },
+    { "cmd": "echo \"we never drop table users\"", "expect": "allow", "note": "prose in an echo, no database CLI" }
   ],
   "tools": [
     { "tool": "Write", "input": { "file_path": "research/ledger/b.jsonl", "content": "x" }, "expect": "block" },

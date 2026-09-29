@@ -26,6 +26,7 @@ import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, parse as parsePath, relative, resolve } from "node:path";
 import { CASE_INSENSITIVE_FS, escapesBase, landingPath, toPosix, walk } from "./fsutil.js";
+import { denyCommandsOf, matchDenyCommand } from "./denycmd.js";
 import { ContextManifest, MANIFEST_FILE, contextFilePaths, denyReadPathsOf, matchAny, matchesPattern, protectedPathsOf } from "./manifest.js";
 import { isEnvFile } from "./risk.js";
 
@@ -1327,7 +1328,14 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
   const confined = role === "implementer" && !!g.worktree;
   const wtShown = g.worktree ? toPosix(relative(g.root, g.worktree)) || g.worktree : "";
   if (DEVICE.test(w.text)) return null;
+  // Deleting the home directory or the filesystem root is never part of a task, wherever the repo is.
+  if (t.destructive && !g.allowProtected && /^(~|\$HOME|\$\{HOME\})\/?(\*)?$/.test(w.text)) {
+    return block("catastrophic-delete", `command removes or moves ${w.text}, the home directory. A human does that.`);
+  }
   const abs = w.dynamic ? null : resolveShellPath(t.cwd, w.text);
+  if (abs && t.destructive && !g.allowProtected && (toPosix(abs) === "/" || toPosix(abs) === toPosix(homedir()))) {
+    return block("catastrophic-delete", `command removes or moves ${toPosix(abs)}, the ${toPosix(abs) === "/" ? "filesystem root" : "home directory"}. A human does that.`);
+  }
   if (!abs) {
     return confined ? block("worktree-confinement", `can't tell where \`${w.text || "(empty)"}\` points (a variable, substitution or unknown cwd), so it can't be confined to ${wtShown}. Write to a literal path inside the worktree.`) : null;
   }
@@ -1505,6 +1513,17 @@ function decideKnown(g: GuardInput): GuardDecision | null {
   if (tool === "bash" || tool === "powershell" || tool === "shell" || words === "run_shell_command" || words === "exec_command") {
     const cmd = [input.command, input.cmd, input.script].find((c): c is string => typeof c === "string" && c.length > 0) ?? (Array.isArray(input.command) ? input.command.join(" ") : "");
     if (!cmd) return null;
+    // `rm${IFS}-rf${IFS}x` builds a command word out of a variable, which no static rule can read.
+    if (!g.allowProtected && /[\w./-]\$\{IFS\}|[\w./-]\$IFS\$/.test(cmd)) {
+      return block("obfuscated-command", "the command splits words with $IFS, which hides what it runs from every check. Write it plainly.");
+    }
+    const deny = g.allowProtected ? null : denyCommandsOf(g.manifest);
+    if (deny) {
+      for (const c of expandCommand(cmd)) {
+        const why = matchDenyCommand(deny, c);
+        if (why) return block("deny-command", `this command ${why}. A human runs it, or lifts the rule in CONTEXT_MANIFEST.json (AGENT_FLOW_ALLOW_PROTECTED=1 for one session).`);
+      }
+    }
     for (const [i, c] of expandCommand(cmd).entries()) {
       const d = decideShell(g, c, protectedPaths, ctxFiles, i === 0);
       if (d) return d;
