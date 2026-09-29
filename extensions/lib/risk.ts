@@ -15,6 +15,7 @@
 
 import { basename, join } from "node:path";
 import { atomicWrite, isoNow, readJson, readTextFile, walk } from "./fsutil.js";
+import { matchAny, secretIgnorePaths, tryLoadManifest } from "./manifest.js";
 
 export const SELF_PACKAGE = "@drix10/agent-flow";
 
@@ -143,14 +144,30 @@ function realMatch(text: string, re: RegExp, unless?: RegExp): boolean {
   return false;
 }
 
-/** Secret kinds + line numbers in a blob of text. Never returns the matched value. */
-export function findSecrets(content: string): { kind: string; lines: number[] }[] {
+/** A line carrying this (or the line after one that does) is a known fake — a fixture or a docs sample. */
+export const ALLOW_SECRET_MARKER = "agent-flow:allow-secret";
+
+/**
+ * Secret kinds + line numbers in a blob of text. Never returns the matched value.
+ * `honorMarker: false` ignores the allow marker — for content an agent is about to write,
+ * where a marker would be the way around the check.
+ */
+export function findSecrets(content: string, opts: { honorMarker?: boolean } = {}): { kind: string; lines: number[] }[] {
   const lines = content.split(/\r?\n/);
+  const allowed = new Set<number>();
+  if (opts.honorMarker !== false) {
+    lines.forEach((l, i) => {
+      if (l.includes(ALLOW_SECRET_MARKER)) {
+        allowed.add(i);
+        allowed.add(i + 1);
+      }
+    });
+  }
   const out: { kind: string; lines: number[] }[] = [];
   for (const { kind, re, unless } of SECRET_PATTERNS) {
     const hit: number[] = [];
     lines.forEach((l, i) => {
-      if (hit.length >= 5) return;
+      if (hit.length >= 5 || allowed.has(i)) return;
       for (const w of windows(l)) {
         if (realMatch(w, re, unless)) {
           hit.push(i + 1);
@@ -274,6 +291,7 @@ export function scanRiskSurfaces(root: string, opts: AuditOptions = {}): AuditSc
   };
 
   const { files, truncated } = walk(root, { maxFiles: opts.maxFiles ?? 50_000 });
+  const secretIgnore = secretIgnorePaths(tryLoadManifest(root));
   let scanned = 0;
 
   for (const file of files) {
@@ -302,7 +320,7 @@ export function scanRiskSurfaces(root: string, opts: AuditOptions = {}): AuditSc
     const lines = content.split(/\r?\n/);
 
     // Secrets: every text file, tests included (test fixtures leak real keys too).
-    for (const { kind, lines: hit } of findSecrets(content)) {
+    for (const { kind, lines: hit } of matchAny(secretIgnore, file) ? [] : findSecrets(content)) {
       add({ key: `secret:${file}:${kind}`, type: "secret", path: file, detail: `Possible ${kind} (value redacted)`, lines: hit });
     }
 

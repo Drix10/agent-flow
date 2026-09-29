@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -1009,6 +1009,227 @@ test("CLI: prototype-named roles and a bare --round are usage errors", () => {
     assert.match(round.stderr, /--round needs a non-negative integer/);
     assert.equal(run(dir, ["state", "show", "--issue", "5", "--json"]).status, 0);
     assert.match(run(dir, ["state", "show", "--issue", "5"]).stdout, /no state yet/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rewriting files that already hold someone's content
+// ---------------------------------------------------------------------------
+
+test("merge helpers keep line endings, BOM and indentation, and report what a rewrite drops", async () => {
+  const m = await import("../extensions/lib/merge.js");
+  assert.equal(m.detectEol("a\r\nb\r\n"), "\r\n");
+  assert.equal(m.detectEol("a\nb\r\nc\n"), "\n");
+  assert.equal(m.matchExistingFormat("﻿a\r\nb\r\n", "x\ny"), "﻿x\r\ny\r\n");
+  assert.equal(m.matchExistingFormat("a\nb", "x\ny\n"), "x\ny\n");
+  assert.equal(m.detectJsonIndent('{\n\t"a": 1\n}'), "\t");
+  assert.equal(m.detectJsonIndent('{\n    "a": 1\n}'), 4);
+  assert.equal(m.detectJsonIndent('{"a":1}'), 2);
+  const d = m.lineDiff("# T\nkeep\nkeep\n\ngone\n", "# T\nkeep\nnew\n");
+  assert.deepEqual([d.kept, d.removed, d.added], [2, ["keep", "gone"], 1]);
+  assert.deepEqual(m.manifestLosses({ protected_paths: ["a/"], ci: {}, pipeline: { x: 1 } }, { protected_paths: [], pipeline: {} }).sort(), ['pipeline.x', 'protected_paths entry "a/"', 'top-level key "ci"']);
+  assert.deepEqual(m.manifestLosses({ protected_paths: ["a/"] }, { protected_paths: ["a/", "b/"] }), []);
+});
+
+test("bootstrap_write on an existing file keeps its CRLF endings, backs it up, and refuses to drop protection", async () => {
+  const bootstrap = (await import("../extensions/bootstrap.js")).default;
+  const { dir } = gitRepo("bwmerge");
+  try {
+    const tools = {};
+    bootstrap({ registerTool: (t) => (tools[t.name] = t), on() {} });
+    const ctx = { cwd: dir, hasUI: true, ui: { confirm: async () => true } };
+    const messages = [];
+    ctx.ui.confirm = async (_t, msg) => (messages.push(msg), true);
+    const w = (path, content) => tools.bootstrap_write.execute("t", { path, content, overwrite: true, repoPath: dir }, undefined, undefined, ctx);
+
+    writeFileSync(join(dir, "AGENTS.md"), "# Mine\r\nkeep me\r\nold rule\r\n");
+    const r = await w("AGENTS.md", "# Mine\nkeep me\nnew rule\n");
+    assert.equal(readFileSync(join(dir, "AGENTS.md"), "utf-8"), "# Mine\r\nkeep me\r\nnew rule\r\n");
+    assert.match(messages[0], /Keeps 2 existing line\(s\), removes 1, adds 1/);
+    assert.match(messages[0], /old rule/);
+    assert.equal(readFileSync(join(dir, r.details.backup), "utf-8"), "# Mine\r\nkeep me\r\nold rule\r\n");
+
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", context_files: [], protected_paths: ["src/billing/"], ci: { x: 1 } }, null, 4));
+    await assert.rejects(() => w("CONTEXT_MANIFEST.json", JSON.stringify({ version: "2", context_files: [] })), /drops what the current one has: protected_paths entry "src\/billing\/"; top-level key "ci"/);
+    await w("CONTEXT_MANIFEST.json", JSON.stringify({ version: "2", context_files: [], protected_paths: ["src/billing/", "db/"], ci: { x: 1 } }));
+    const written = readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8");
+    assert.match(written, /^\{\n {4}"version"/, "the user's 4-space indent survives");
+    assert.deepEqual(JSON.parse(written).protected_paths, ["src/billing/", "db/"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("install --harness claude leaves a user's other hooks in a shared group alone, and won't import a symlinked CLAUDE.md into itself", () => {
+  const { dir } = gitRepo("shared");
+  try {
+    const af = localInstall(dir);
+    const settingsPath = join(dir, ".claude", "settings.json");
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    const mine = { type: "command", command: "mine.sh" };
+    const oldOurs = { type: "command", command: 'node "$CLAUDE_PROJECT_DIR/node_modules/@drix10/agent-flow/bin/agent-flow.js" guard' };
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [mine, oldOurs] }] } }, null, "\t"));
+    writeFileSync(join(dir, "AGENTS.md"), "# rules\n");
+    if (!trySymlink("AGENTS.md", join(dir, "CLAUDE.md"), "file")) return;
+    assert.equal(af(dir, "install", "--harness", "claude").status, 0);
+    const raw = readFileSync(settingsPath, "utf-8");
+    assert.match(raw, /^\{\n\t"hooks"/, "tab indentation kept");
+    const groups = JSON.parse(raw).hooks.PreToolUse;
+    assert.deepEqual(groups[0], { matcher: "Bash", hooks: [mine] }, "the user's group keeps its matcher and hook");
+    assert.equal(groups.length, 2);
+    assert.match(groups[1].hooks[0].command, /agent-flow\.js" guard$/);
+    assert.equal(readFileSync(join(dir, "AGENTS.md"), "utf-8"), "# rules\n", "CLAUDE.md is AGENTS.md: no self-import appended");
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { PreToolUse: "nope" } }));
+    const bad = af(dir, "install", "--harness", "claude");
+    assert.equal(bad.status, 1);
+    assert.match(bad.stdout, /unexpected shape/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("hook install keeps a foreign hook that merely mentions agent-flow, and backs up on --force", () => {
+  const { dir } = gitRepo("hookkeep");
+  try {
+    const hook = join(dir, ".git", "hooks", "pre-commit");
+    mkdirSync(join(dir, ".git", "hooks"), { recursive: true });
+    writeFileSync(hook, "#!/bin/sh\n# lint; unrelated to agent-flow's own checks\nnpm run lint\n");
+    const r = run(dir, ["hook", "install"]);
+    assert.equal(r.status, 1);
+    assert.match(readFileSync(hook, "utf-8"), /npm run lint/);
+    const forced = run(dir, ["hook", "install", "--force"]);
+    assert.equal(forced.status, 0);
+    assert.match(forced.stdout, /original is at .*pre-commit\.bak-/);
+    assert.equal(run(dir, ["hook", "install"]).status, 0, "our own hook is replaced without --force");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("repair keeps the manifest's indentation, line endings and unknown keys", () => {
+  const { dir } = gitRepo("repairfmt");
+  try {
+    writeFileSync(join(dir, "AGENTS.md"), "# a\n");
+    const man = { version: "2", custom: { keep: true }, context_files: [{ path: "AGENTS.md", references: [{ path: "AGENTS.md", type: "file", last_verified: "2020-01-01T00:00:00Z" }] }] };
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify(man, null, "\t").replace(/\n/g, "\r\n") + "\r\n");
+    assert.equal(run(dir, ["repair", "--yes"]).status, 0);
+    const raw = readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8");
+    assert.match(raw, /^\{\r\n\t"version"/);
+    assert.ok(!/[^\r]\n/.test(raw), "no bare LF");
+    assert.deepEqual(JSON.parse(raw).custom, { keep: true });
+    assert.notEqual(JSON.parse(raw).context_files[0].references[0].last_verified, "2020-01-01T00:00:00Z");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("doctor finds a context file that is a symlink to a file in the repo, and ignores links that leave it", () => {
+  const { dir } = gitRepo("linkctx");
+  const outside = tmp("linkout");
+  try {
+    mkdirSync(join(dir, "docs"));
+    writeFileSync(join(dir, "docs", "agents.md"), "# rules\n\nSee `src/gone/thing.ts`.\n");
+    writeFileSync(join(outside, "AGENTS.md"), "See `nope/x.ts`.\n");
+    if (!trySymlink("docs/agents.md", join(dir, "AGENTS.md"), "file")) return;
+    const r = run(dir, ["doctor", "--json"]);
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(out.context_files, ["AGENTS.md"]);
+    assert.equal(out.report.missing_paths[0].path, "src/gone/thing.ts");
+    mkdirSync(join(dir, "sub"));
+    trySymlink(join(outside, "AGENTS.md"), join(dir, "sub", "AGENTS.md"), "file");
+    assert.deepEqual(JSON.parse(run(dir, ["doctor", "--json"]).stdout).context_files, ["AGENTS.md"], "a link out of the repo is not scanned");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("classify in a CI-style checkout: detached HEAD, no local default branch, only origin/main", () => {
+  const { dir, g } = gitRepo("cibase");
+  try {
+    writeFileSync(join(dir, "a.txt"), "1\n");
+    g("add", "-A");
+    g("commit", "-qm", "base");
+    g("update-ref", "refs/remotes/origin/main", "HEAD");
+    g("checkout", "-q", "-b", "feature");
+    mkdirSync(join(dir, "src", "payments"), { recursive: true });
+    writeFileSync(join(dir, "src", "payments", "charge.ts"), "x\n");
+    g("add", "-A");
+    g("commit", "-qm", "feat");
+    g("checkout", "-q", "--detach");
+    g("branch", "-D", "main");
+    g("branch", "-D", "feature");
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", default_branch: "main", context_files: [] }));
+    const r = run(dir, ["classify", "--json"]);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.base, "origin/main");
+    assert.ok(out.files.includes("src/payments/charge.ts"));
+    rmSync(join(dir, "CONTEXT_MANIFEST.json"));
+    assert.equal(JSON.parse(run(dir, ["classify", "--json"]).stdout).base, "origin/main", "no manifest: falls back to origin/<default> too");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("secrets: a known fake can be allowed inline or by path, bootstrap_write ignores the marker, and staged files are read in one batch", () => {
+  const { dir, g } = gitRepo("secretallow");
+  const key = "ghp_" + "b".repeat(36);
+  try {
+    assert.equal(findSecrets(`token = "${key}"`).length, 1);
+    assert.equal(findSecrets(`# agent-flow:allow-secret\ntoken = "${key}"`).length, 0, "marker on the line above");
+    assert.equal(findSecrets(`token = "${key}" # agent-flow:allow-secret`).length, 0, "marker on the same line");
+    assert.equal(findSecrets(`# agent-flow:allow-secret\nx\ntoken = "${key}"`).length, 1, "the marker covers one line only");
+    assert.equal(findSecrets(`# agent-flow:allow-secret\ntoken = "${key}"`, { honorMarker: false }).length, 1);
+
+    mkdirSync(join(dir, "fixtures"));
+    writeFileSync(join(dir, "fixtures", "leak.txt"), `k=${key}\n`);
+    writeFileSync(join(dir, "inline.txt"), `k=${key} # agent-flow:allow-secret\n`);
+    writeFileSync(join(dir, "naïve café.txt"), `k=${key}\n`);
+    g("add", "-A");
+    const blocked = run(dir, ["check-staged", "--json"]);
+    assert.equal(blocked.status, 1);
+    const problems = JSON.parse(blocked.stdout).problems.join("\n");
+    assert.match(problems, /fixtures\/leak\.txt/);
+    assert.match(problems, /naïve café\.txt/, "spaces and non-ASCII names survive the batch read");
+    assert.doesNotMatch(problems, /inline\.txt/);
+    assert.doesNotMatch(problems, new RegExp(key), "the value is never printed");
+
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", context_files: [], secret_scan: { ignore_paths: ["fixtures/", "naïve café.txt"] } }));
+    g("add", "-A");
+    const r = run(dir, ["check-staged", "--json"]);
+    assert.equal(r.status, 0, r.stdout);
+    assert.deepEqual(validateManifestForTest({ version: "2", context_files: [], secret_scan: { ignore_paths: [1] } }), ["secret_scan.ignore_paths must be an array of non-empty strings"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("init does not generate an AGENTS.md beside a CLAUDE.md that already holds the user's rules", () => {
+  const { dir } = gitRepo("initrules");
+  try {
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "app.ts"), "\n");
+    writeFileSync(join(dir, "CLAUDE.md"), "# Rules\nNever touch `src/app.ts` without tests.\n");
+    const r = run(dir, ["init", "--yes"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /CLAUDE\.md already holds your rules/);
+    assert.equal(existsSync(join(dir, "AGENTS.md")), false);
+    const man = JSON.parse(readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8"));
+    assert.deepEqual(man.context_files.map((c) => c.path), ["CLAUDE.md"]);
+    assert.equal(readFileSync(join(dir, "CLAUDE.md"), "utf-8"), "# Rules\nNever touch `src/app.ts` without tests.\n");
+
+    // A CLAUDE.md that only imports AGENTS.md holds no rules of its own: the skeleton is still written.
+    const other = gitRepo("initimport");
+    try {
+      writeFileSync(join(other.dir, "CLAUDE.md"), "@AGENTS.md\n");
+      assert.equal(run(other.dir, ["init", "--yes"]).status, 0);
+      assert.equal(existsSync(join(other.dir, "AGENTS.md")), true);
+    } finally {
+      rmSync(other.dir, { recursive: true, force: true });
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

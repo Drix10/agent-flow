@@ -17,11 +17,12 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, relative } from "node:path";
 import { Type } from "typebox";
 import { requireConfirmation } from "./lib/confirm.js";
-import { atomicWrite, resolveInside, toPosix } from "./lib/fsutil.js";
+import { backupFile, detectJsonIndent, lineDiff, manifestLosses, matchExistingFormat } from "./lib/merge.js";
+import { atomicWrite, isoNow, resolveInside, toPosix } from "./lib/fsutil.js";
 import { tamperProofMatch } from "./lib/guard.js";
 import { MANIFEST_FILE, loadManifestForGuard, matchAny, protectedPathsOf, validateManifest } from "./lib/manifest.js";
 import { findSecrets } from "./lib/risk.js";
@@ -89,7 +90,7 @@ export default function (pi: ExtensionAPI) {
         const prot = matchAny(protectedPathsOf(loaded.manifest), rel);
         if (prot) throw new Error(`refused: ${rel} is protected (${prot} in ${MANIFEST_FILE}). Escalate to Needs Me instead.`);
       }
-      const secrets = findSecrets(params.content);
+      const secrets = findSecrets(params.content, { honorMarker: false });
       if (secrets.length) {
         throw new Error(`refused: content contains ${secrets.map((x) => `${x.kind} (line ${x.lines.join(", ")})`).join("; ")}. Context files are sent to model providers — never put credentials in them.`);
       }
@@ -107,15 +108,43 @@ export default function (pi: ExtensionAPI) {
       if (exists && !params.overwrite) {
         throw new Error(`${rel} already exists. Propose a merge to the human and call again with overwrite: true only after they approve.`);
       }
-      const lines = params.content.split("\n").length;
+      const previous = exists ? readFileSync(abs, "utf-8") : "";
+      let content = params.content;
+      let summary = `${content.split("\n").length} lines, ${content.length} bytes.`;
+      if (exists) {
+        // The existing file is someone's work: keep its line endings and BOM, refuse to drop protection
+        // or configuration the new content forgot, and tell the human exactly what disappears.
+        content = matchExistingFormat(previous, content);
+        if (basename(rel) === MANIFEST_FILE) {
+          let before: unknown;
+          try {
+            before = JSON.parse(previous.replace(/^\uFEFF/, ""));
+          } catch {
+            before = null; // an unreadable manifest has nothing to preserve
+          }
+          const next = JSON.parse(content.replace(/^\uFEFF/, ""));
+          const losses = manifestLosses(before, next);
+          if (losses.length) {
+            throw new Error(
+              `refused: the new ${MANIFEST_FILE} drops what the current one has: ${losses.join("; ")}. ` +
+                `Read the existing file and carry these over (only a human removes protection or configuration).`,
+            );
+          }
+          content = matchExistingFormat(previous, `${JSON.stringify(next, null, detectJsonIndent(previous))}\n`);
+        }
+        const diff = lineDiff(previous, content);
+        summary = `Keeps ${diff.kept} existing line(s), removes ${diff.removed.length}, adds ${diff.added}.` +
+          (diff.removed.length ? ` Removed, for example: ${diff.removed.slice(0, 3).map((l) => JSON.stringify(l.slice(0, 80))).join(", ")}.` : "");
+      }
       const via = await requireConfirmation(
         ctx,
         exists ? `Overwrite ${rel}?` : `Create ${rel}?`,
-        `${exists ? "REPLACES the existing file. " : ""}${lines} lines, ${params.content.length} bytes. Approve only if you reviewed this exact content.`,
+        `${exists ? "REPLACES the existing file (a backup is kept under .agent-flow/backups). " : ""}${summary} Approve only if you reviewed this exact content.`,
       );
-      atomicWrite(abs, params.content);
-      appendAudit(root, { event: "bootstrap_write", path: rel, overwrite: exists, confirmed_via: via });
-      return text({ written: rel, bytes: params.content.length, overwrote: exists, confirmed_via: via });
+      const backup = exists ? backupFile(root, abs, rel, isoNow()) : null;
+      atomicWrite(abs, content);
+      appendAudit(root, { event: "bootstrap_write", path: rel, overwrite: exists, backup, confirmed_via: via });
+      return text({ written: rel, bytes: content.length, overwrote: exists, backup, confirmed_via: via });
     },
   });
 }

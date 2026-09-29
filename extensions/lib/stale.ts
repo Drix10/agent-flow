@@ -13,7 +13,8 @@
 import { execFileSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
-import { IGNORED_DIRS, atomicWrite, existsExact, isoNow, readJson, readTextFile, toPosix, walk } from "./fsutil.js";
+import { IGNORED_DIRS, atomicWrite, existsExact, isoNow, readJson, readTextFile, toPosix, walk, withLock } from "./fsutil.js";
+import { detectJsonIndent, matchExistingFormat } from "./merge.js";
 import { ContextManifest, DEFAULT_STALENESS_DAYS, ManifestContextFile, loadManifest, normalizeManifest } from "./manifest.js";
 
 export interface MissingPath {
@@ -60,7 +61,7 @@ const CONTEXT_FILE_RE =
 export const isContextFile = (rel: string) => CONTEXT_FILE_RE.test(rel);
 
 /** Every context file in the repo: root first, then by depth and name. */
-export function discoverContextFiles(root: string, files: string[] = walk(root, { maxFiles: 50_000 }).files): string[] {
+export function discoverContextFiles(root: string, files: string[] = walk(root, { maxFiles: 50_000, linkedFiles: true }).files): string[] {
   const depth = (p: string) => p.split("/").length;
   return files.filter(isContextFile).sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : a > b ? 1 : 0));
 }
@@ -249,7 +250,7 @@ export function detectStale(root: string, opts: DetectOptions = {}): DetectResul
   if (!loaded.ok && !(loaded.error === "manifest_not_found" && opts.discover)) return loaded as DetectResult;
   const manifest: ContextManifest = loaded.ok ? loaded.value.manifest : {};
   let repoFiles: string[] | null = null;
-  const listFiles = () => (repoFiles ??= walk(root, { maxFiles: 50_000 }).files);
+  const listFiles = () => (repoFiles ??= walk(root, { maxFiles: 50_000, linkedFiles: true }).files);
   let files: ManifestContextFile[] = loaded.ok ? loaded.value.files : [];
   const mode = files.length ? "manifest" : "discovered";
   if (mode === "discovered") files = discoverContextFiles(root, listFiles()).map((path) => ({ path, references: [] }));
@@ -360,6 +361,11 @@ export interface RepairResult {
  * Legacy `contexts/covers` manifests are migrated to `context_files`.
  */
 export function repairStale(root: string, opts: { manifestPath?: string; now?: string } = {}): RepairResult {
+  // Read-modify-write on a file people also edit: serialise with other agent-flow writers.
+  return withLock(join(root, ".agent-flow", "manifest.lock"), () => repairLocked(root, opts));
+}
+
+function repairLocked(root: string, opts: { manifestPath?: string; now?: string }): RepairResult {
   const loaded = loadManifest(root, opts.manifestPath);
   if (!loaded.ok) throw new Error(`cannot repair: ${loaded.error} (${loaded.path})`);
   const { manifest, files, legacySchema, path } = loaded.value;
@@ -397,7 +403,9 @@ export function repairStale(root: string, opts: { manifestPath?: string; now?: s
     delete out.contexts;
     delete out.lastVerified;
   }
-  atomicWrite(path, JSON.stringify(out, null, 2) + "\n");
+  // Keep the file's own indentation, line endings and BOM: the diff should show timestamps, not a reformat.
+  const previous = readTextFile(path) ?? "";
+  atomicWrite(path, matchExistingFormat(previous, `${JSON.stringify(out, null, detectJsonIndent(previous))}\n`));
   return { repaired: path, timestamp: now, refreshed, still_missing: stillMissing, migrated_legacy_schema: legacySchema };
 }
 

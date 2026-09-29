@@ -60,6 +60,22 @@ export function defaultBranch(root: string): string {
   throw new Error("cannot determine a default branch (no origin/HEAD, main, master, or checked-out branch)");
 }
 
+/**
+ * A revision to diff against when nothing names one. CI checkouts (a PR build is a detached HEAD
+ * with no local `main` and often no `origin/HEAD`) fail `defaultBranch`; the remote-tracking ref
+ * `actions/checkout` fetched is still a perfectly good base.
+ */
+export function defaultBase(root: string): string {
+  try {
+    return defaultBranch(root);
+  } catch (e) {
+    for (const b of ["main", "master", "trunk", "develop"]) {
+      if (git(["show-ref", "--verify", "--quiet", `refs/remotes/origin/${b}`], root).ok) return `origin/${b}`;
+    }
+    throw e;
+  }
+}
+
 export function gitCommonDir(root: string): string {
   return resolve(root, mustGit(["rev-parse", "--git-common-dir"], root));
 }
@@ -116,6 +132,43 @@ export function nameList(args: string[], cwd: string): string[] {
 
 export function stagedFiles(cwd: string): string[] {
   return nameList(["diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACMRDT"], cwd);
+}
+
+/**
+ * The staged (index) content of many files through ONE `git cat-file --batch`, instead of a
+ * process per file: a pre-commit hook that takes minutes on a big merge gets bypassed.
+ * Deleted or unreadable entries, and blobs above `maxBytes`, map to null.
+ */
+export function stagedBlobs(cwd: string, files: string[], maxBytes = 2_000_000): Map<string, Buffer | null> {
+  const out = new Map<string, Buffer | null>();
+  const names = files.filter((f) => !/[\n\0]/.test(f));
+  for (const f of files) out.set(f, null);
+  if (!names.length) return out;
+  let buf: Buffer;
+  try {
+    buf = execFileSync("git", ["cat-file", "--batch"], {
+      cwd,
+      input: names.map((f) => `:${f}\n`).join(""),
+      stdio: ["pipe", "pipe", "ignore"],
+      maxBuffer: 1024 * 1024 * 1024,
+      timeout: 300_000,
+    });
+  } catch {
+    return out;
+  }
+  let at = 0;
+  for (const name of names) {
+    const nl = buf.indexOf(0x0a, at);
+    if (nl < 0) break;
+    const header = buf.toString("utf-8", at, nl);
+    at = nl + 1;
+    const m = header.match(/^\S+ (\w+) (\d+)$/);
+    if (!m) continue; // "<name> missing" / "ambiguous": no body follows
+    const size = Number(m[2]);
+    if (m[1] === "blob" && size <= maxBytes) out.set(name, buf.subarray(at, at + size));
+    at += size + 1;
+  }
+  return out;
 }
 
 /** The base a worktree branch was cut from, as recorded by `createWorktree`. */

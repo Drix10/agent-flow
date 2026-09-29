@@ -6,7 +6,7 @@
  *   0 = ok   1 = check failed   2 = usage / environment error
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, chmodSync } from "node:fs";
+import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,10 +14,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -394,10 +394,11 @@ function cmdCheckStaged(args) {
       problems.push(`environment file staged: ${f} — keep secrets out of git (commit a .env.example instead)`);
     }
   }
-  for (const f of files) {
-    const r = git.git(["show", `:${f}`], rt);
-    if (!r.ok || r.stdout.length > 2_000_000 || r.stdout.slice(0, 8000).includes("\0")) continue; // deleted, huge or binary
-    for (const s of risk.findSecrets(r.stdout)) problems.push(`possible ${s.kind} in ${f} line(s) ${s.lines.join(", ")} (value not shown)`);
+  const secretIgnore = manifestLib.secretIgnorePaths(man);
+  const blobs = git.stagedBlobs(rt, files.filter((f) => !manifestLib.matchAny(secretIgnore, f)));
+  for (const [f, blob] of blobs) {
+    if (!blob || blob.subarray(0, 8000).includes(0)) continue; // deleted, huge or binary
+    for (const s of risk.findSecrets(blob.toString("utf-8"))) problems.push(`possible ${s.kind} in ${f} line(s) ${s.lines.join(", ")} (value not shown; if it is a fake, put \`${risk.ALLOW_SECRET_MARKER}\` on or above the line, or list the file in secret_scan.ignore_paths)`);
   }
   // Context drift: fail only on drift THIS commit introduces (it deletes/renames a
   // referenced path, or edits a context file that is broken). Pre-existing drift is
@@ -771,9 +772,13 @@ function cmdInstall(args) {
 /** Claude Code reads CLAUDE.md, not AGENTS.md; an `@AGENTS.md` line imports it. */
 function importAgentsMd(rt, args) {
   const path = join(rt, "CLAUDE.md");
+  // A CLAUDE.md that is a symlink to AGENTS.md (a common setup) already is the same file: an import would make it import itself.
+  const agents = join(rt, "AGENTS.md");
+  if (existsSync(path) && existsSync(agents) && realpathSync(path) === realpathSync(agents)) return console.log(dim("= CLAUDE.md (is AGENTS.md)"));
   const cur = existsSync(path) ? readFileSync(path, "utf-8") : null;
   if (cur !== null && /^[ \t]*@AGENTS\.md[ \t]*$/m.test(cur)) return console.log(dim("= CLAUDE.md (imports @AGENTS.md)"));
-  const next = cur === null ? "@AGENTS.md\n" : `${cur}${cur === "" || cur.endsWith("\n") ? "" : "\n"}\n@AGENTS.md\n`;
+  const eol = cur === null ? "\n" : mergeLib.detectEol(cur);
+  const next = cur === null ? `@AGENTS.md${eol}` : `${cur}${cur === "" || cur.endsWith("\n") ? "" : eol}${eol}@AGENTS.md${eol}`;
   if (!args["dry-run"]) writeFileSync(path, next);
   ok(`${args["dry-run"] ? "would write" : "wrote"} CLAUDE.md (${cur === null ? "new, imports" : "appended"} @AGENTS.md)`);
 }
@@ -797,34 +802,54 @@ function installClaudeHook(rt, args) {
   const command = `node "$CLAUDE_PROJECT_DIR/${binRel.split("\\").join("/")}" guard`;
   const path = join(rt, ".claude", "settings.json");
   let settings = {};
+  let indent = 2;
   if (existsSync(path)) {
     try {
-      settings = JSON.parse(readFileSync(path, "utf-8"));
+      const raw = readFileSync(path, "utf-8");
+      settings = JSON.parse(raw.replace(/^\uFEFF/, ""));
+      indent = mergeLib.detectJsonIndent(raw);
     } catch (e) {
       bad(`${label}: existing file isn't valid JSON (${e.message}) — not touched. Fix it and re-run.`);
       return false;
     }
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+      bad(`${label}: existing file isn't a JSON object — not touched.`);
+      return false;
+    }
+  }
+  if ((settings.hooks !== undefined && (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks))) || (settings.hooks?.PreToolUse !== undefined && !Array.isArray(settings.hooks.PreToolUse))) {
+    bad(`${label}: existing "hooks" has an unexpected shape — not touched. Fix it and re-run.`);
+    return false;
   }
   const before = JSON.stringify(settings);
   settings.hooks ??= {};
   settings.hooks.PreToolUse ??= [];
-  const ours = settings.hooks.PreToolUse.find((e) => (e.hooks ?? []).some((h) => /agent-flow/.test(h.command ?? "") && /\bguard\b/.test(h.command ?? "")));
+  const isOurs = (h) => /agent-flow/.test(h?.command ?? "") && /\bguard\b/.test(h?.command ?? "");
   const entry = { matcher: HOOK_MATCHER, hooks: [{ type: "command", command }] };
-  if (ours) Object.assign(ours, entry);
-  else settings.hooks.PreToolUse.push(entry);
+  // Someone else's hooks may share a matcher group with ours. Their group keeps its matcher and its
+  // other hooks; ours moves to a group of its own.
+  const group = settings.hooks.PreToolUse.find((e) => Array.isArray(e?.hooks) && e.hooks.some(isOurs));
+  if (group && group.hooks.every(isOurs)) {
+    group.matcher = HOOK_MATCHER;
+    group.hooks = [{ ...group.hooks[0], type: "command", command }];
+  } else {
+    if (group) group.hooks = group.hooks.filter((h) => !isOurs(h));
+    settings.hooks.PreToolUse.push(entry);
+  }
   if (JSON.stringify(settings) === before) {
     console.log(dim(`= ${label} (up to date)`));
     return true;
   }
   if (!args["dry-run"]) {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`);
+    writeFileSync(path, `${JSON.stringify(settings, null, indent)}\n`);
   }
   ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
   return true;
 }
 
 const toPosixPath = (p) => p.replace(/\\/g, "/");
+const HOOK_MARKER = "# agent-flow pre-commit";
 
 function cmdHook(args) {
   if (args._[1] !== "install") return sub("hook", args._[1], ["install"], "hook install [--force]");
@@ -837,7 +862,7 @@ function cmdHook(args) {
   const self = toPosixPath(fileURLToPath(import.meta.url));
   const selfLine = /\/_npx\//.test(self) ? "" : `if [ -f "${self}" ]; then exec node "${self}" check-staged; fi\n`;
   const body = `#!/bin/sh
-# agent-flow pre-commit — protected paths, secrets, broken context references.
+${HOOK_MARKER} — protected paths, secrets, broken context references.
 # Installed by \`agent-flow hook install\`. Never downloads anything.
 # Works from linked worktrees too: the binary is looked up in the MAIN checkout.
 main_root="$(cd "$(git rev-parse --git-common-dir)/.." 2>/dev/null && pwd)"
@@ -848,10 +873,20 @@ ${selfLine}if npx --no-install @drix10/agent-flow --version >/dev/null 2>&1; the
 echo "agent-flow pre-commit: can't find the agent-flow CLI. Install it (npm i -D @drix10/agent-flow, or npm i -g @drix10/agent-flow in a non-Node repo) and re-run: agent-flow hook install" >&2
 exit 1
 `;
-  if (existsSync(hook) && !readFileSync(hook, "utf-8").includes("agent-flow") && !args.force) {
-    bad(`${hook} already exists (not ours). Add \`npx --no-install @drix10/agent-flow check-staged\` to it, or re-run with --force.`);
-    return 1;
+  // Only a hook that carries our own header is ours to replace; one that merely mentions agent-flow is the user's.
+  const existing = existsSync(hook) ? readFileSync(hook, "utf-8") : null;
+  const ours = existing !== null && existing.includes(HOOK_MARKER);
+  if (existing !== null && !ours) {
+    if (!args.force) {
+      bad(`${hook} already exists (not ours). Add \`npx --no-install @drix10/agent-flow check-staged\` to it, or re-run with --force (your hook is kept as pre-commit.bak-<time>).`);
+      return 1;
+    }
+    const keep = `${hook}.bak-${Date.now()}`;
+    copyFileSync(hook, keep);
+    warn(`replaced your existing pre-commit hook; the original is at ${keep}`);
   }
+  const custom = git.git(["config", "--get", "core.hooksPath"], rt);
+  if (custom.ok && custom.stdout) warn(`core.hooksPath is set (${custom.stdout}); the hook went there. If a tool such as husky regenerates that directory, add \`npx --no-install @drix10/agent-flow check-staged\` to its pre-commit script instead.`);
   mkdirSync(hooksDir, { recursive: true });
   writeFileSync(hook, body, "utf-8");
   try {
@@ -875,6 +910,7 @@ async function cmdInit(args) {
   }
   if (!args.json) {
     for (const f of plan.files) if (f.exists) warn(`${f.path} exists — not overwritten`);
+    if (plan.existing_rules) console.log(dim(`  ${plan.existing_rules.join(", ")} already holds your rules, so no AGENTS.md was generated beside it. Move the shared rules into AGENTS.md when you're ready (other agents read that file), or ask your agent to use the bootstrap skill to merge them.`));
     if (todo.length && !args.yes) {
       for (const f of todo) console.log(`${dim(`--- ${f.path} (would write) ---`)}\n${f.content.trimEnd()}\n`);
     }

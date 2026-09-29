@@ -18,9 +18,13 @@ Agent Flow runs next to autonomous agents that can edit your repository. This pa
 | Review round cap and legal state transitions | `extensions/lib/state.ts` | `tests/tools.test.js`, `tests/cli.test.js` |
 | Secret values are never printed or written | `extensions/lib/risk.ts#findSecrets` (kind + line only) | `tests/tools.test.js`, `tests/cli.test.js` |
 
+## Your files stay yours
+
+Anything agent-flow rewrites was probably edited by a person first. `bootstrap_write` keeps line endings, BOM and manifest indentation, backs the old file up under `.agent-flow/backups/`, and refuses a manifest that drops `protected_paths`, `risk_boundaries` or any other key the current one has. `install --harness claude` merges into `.claude/settings.json` without touching other hooks (they keep their matcher group), does not import a symlinked `CLAUDE.md` into itself, and `hook install` keeps a pre-commit hook it didn't write unless `--force` (then it is saved as `pre-commit.bak-<time>`). `init` never overwrites and does not generate an `AGENTS.md` beside a `CLAUDE.md` that already holds rules. Tests: `tests/hardening.test.js`.
+
 ## Checked (detected and reported; someone still has to act)
 
-- **Pre-commit hook** (`agent-flow hook install`) blocks commits that touch protected paths, contain secret-shaped strings, or *introduce* broken context references (older drift is a warning). It works in any harness. A human can bypass it with `git commit --no-verify`; the guard stops agent sessions on Pi and Claude Code (with the hook) from doing so, as far as shell analysis can see (below).
+- **Pre-commit hook** (`agent-flow hook install`) blocks commits that touch protected paths, contain secret-shaped strings (a known fake is allowed with an `agent-flow:allow-secret` comment on or above the line, or `secret_scan.ignore_paths` in the manifest), or *introduce* broken context references (older drift is a warning). It works in any harness. A human can bypass it with `git commit --no-verify`; the guard stops agent sessions on Pi and Claude Code (with the hook) from doing so, as far as shell analysis can see (below).
 - **`agent-flow doctor` / `audit-risk --fail-on-new`** in CI.
 
 ## Best-effort (shell pattern analysis — blocks the obvious, not a determined model)

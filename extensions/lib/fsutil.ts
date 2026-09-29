@@ -75,11 +75,26 @@ export interface WalkOptions {
   filter?: (relPath: string) => boolean;
   /** Extra directory names to skip. */
   ignoreDirs?: Iterable<string>;
+  /**
+   * List symlinks that point at a regular file inside the repo (`CLAUDE.md -> AGENTS.md`,
+   * `AGENTS.md -> docs/agents.md`). Directories are still never followed, and links leaving
+   * the repo are ignored, so a scan can't be steered into reading files elsewhere.
+   */
+  linkedFiles?: boolean;
 }
 
 export interface WalkResult {
   files: string[];
   truncated: boolean;
+}
+
+function linksToRepoFile(root: string, rel: string): boolean {
+  try {
+    const real = realpathSync(join(root, rel));
+    return !escapesBase(relative(realpathSync(root), real)) && statSync(real).isFile();
+  } catch {
+    return false; // dangling
+  }
 }
 
 /** Deterministic (sorted) recursive walk. Never follows symlinks. */
@@ -101,12 +116,12 @@ export function walk(root: string, opts: WalkOptions = {}): WalkResult {
     entries.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
     for (const entry of entries) {
       const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
+      if (entry.isSymbolicLink()) {
+        if (!opts.linkedFiles || !linksToRepoFile(root, rel)) continue;
+      } else if (entry.isDirectory()) {
         if (!ignore.has(entry.name)) stack.push(rel);
         continue;
-      }
-      if (!entry.isFile()) continue;
+      } else if (!entry.isFile()) continue;
       if (opts.filter && !opts.filter(rel)) continue;
       if (files.length >= maxFiles) {
         truncated = true;

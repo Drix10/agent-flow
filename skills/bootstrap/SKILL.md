@@ -60,7 +60,7 @@ Show the resulting `risk_boundaries` and `protected_paths` back to the human and
 
 ## Phase 4: Write (one confirmation per file)
 
-Call `bootstrap_write` once per file. It shows the human a confirmation dialog, refuses paths outside the repo, refuses an invalid manifest, and refuses secret-shaped content. It will not overwrite an existing file unless you pass `overwrite: true`, and it asks again when you do.
+Call `bootstrap_write` once per file. It shows the human a confirmation dialog, refuses paths outside the repo, refuses an invalid manifest, and refuses secret-shaped content. It will not overwrite an existing file unless you pass `overwrite: true`, and it asks again when you do. On an overwrite it keeps the file's line endings, BOM and (for the manifest) indentation, saves the old file under `.agent-flow/backups/`, tells the human how many existing lines the new content removes, and refuses a manifest that drops any `protected_paths` / `risk_boundaries` entry or top-level key the current one has. Read the current file and carry everything over.
 
 1. `AGENTS.md`, plus one `AGENTS.md` per module.
 2. `CLAUDE.md` containing `@AGENTS.md`, if the user uses Claude Code (template: `CLAUDE.md`). If a `CLAUDE.md` already exists, propose adding the import line to it.

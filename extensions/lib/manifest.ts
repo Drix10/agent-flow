@@ -52,6 +52,7 @@ export interface ContextManifest {
   contexts?: { path: string; covers?: string[] }[];
   risk_boundaries?: RiskBoundary[];
   protected_paths?: string[];
+  secret_scan?: { ignore_paths?: string[] };
   pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
@@ -151,6 +152,12 @@ export function validateManifest(m: unknown): string[] {
         if (!["low", "medium", "critical"].includes(b?.risk_level as string))
           problems.push(`risk_boundaries[${i}].risk_level must be low | medium | critical`);
       });
+  }
+  const ignore = man.secret_scan?.ignore_paths;
+  if (man.secret_scan !== undefined && (typeof man.secret_scan !== "object" || man.secret_scan === null || Array.isArray(man.secret_scan))) {
+    problems.push("secret_scan must be an object like {\"ignore_paths\": []}");
+  } else if (ignore !== undefined && (!Array.isArray(ignore) || ignore.some((p) => typeof p !== "string" || !p))) {
+    problems.push("secret_scan.ignore_paths must be an array of non-empty strings");
   }
   const rounds = man.pipeline?.max_review_rounds;
   // 0 would escalate round 1 before the Implementer writes anything.
@@ -285,6 +292,12 @@ export function contextFilePaths(man: ContextManifest | null): string[] {
   const set = new Set<string>([MANIFEST_FILE, "DOCS_INDEX.md"]);
   if (man) for (const cf of normalizeManifest(man).files) set.add(toPosix(cf.path).replace(/^\.\//, ""));
   return [...set];
+}
+
+/** Paths the manifest exempts from secret scanning; anything malformed is dropped (validation reports it). */
+export function secretIgnorePaths(man: ContextManifest | null | undefined): string[] {
+  const p = man?.secret_scan?.ignore_paths;
+  return Array.isArray(p) ? p.filter((x): x is string => typeof x === "string" && x.length > 0) : [];
 }
 
 export function maxReviewRounds(man: ContextManifest | null): number {
