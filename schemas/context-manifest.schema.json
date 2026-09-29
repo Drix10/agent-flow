@@ -38,6 +38,22 @@
       }
     },
     "protected_paths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "gates": {
+      "type": "array",
+      "description": "Commands the pipeline runs itself (`agent-flow gates run`): the exit code is observed, not reported by a model. Read from the main checkout, so a branch can't edit the gate that judges it. Put a user switch in the command if it must run as another user (`sudo -u ci …`).",
+      "items": {
+        "type": "object",
+        "required": ["name", "command"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+          "command": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }], "description": "A string runs through the shell; an array is an argv with no shell." },
+          "cwd": { "type": "string", "minLength": 1, "description": "Repo-relative directory, inside the checkout being judged." },
+          "timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 86400, "default": 600 },
+          "expect_exit": { "type": "integer", "minimum": 0, "maximum": 255, "default": 0 },
+          "required": { "type": "boolean", "default": true }
+        }
+      }
+    },
     "deny_read": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },

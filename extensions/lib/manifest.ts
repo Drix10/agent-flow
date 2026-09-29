@@ -56,6 +56,8 @@ export interface ContextManifest {
   secret_scan?: { ignore_paths?: string[] };
   /** Extra paths/globs agents may not read (env files are always denied). */
   deny_read?: string[];
+  /** Commands the pipeline runs itself (see gates.ts). */
+  gates?: unknown[];
   pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
@@ -158,6 +160,26 @@ export function validateManifest(m: unknown): string[] {
   }
   if (man.deny_read !== undefined && (!Array.isArray(man.deny_read) || man.deny_read.some((p) => typeof p !== "string" || !p))) {
     problems.push("deny_read must be an array of non-empty strings");
+  }
+  if (man.gates !== undefined) {
+    if (!Array.isArray(man.gates)) problems.push("gates must be an array");
+    else {
+      const names = new Set<string>();
+      man.gates.forEach((g, i) => {
+        const w = `gates[${i}]`;
+        if (!g || typeof g !== "object" || Array.isArray(g)) return void problems.push(`${w} must be an object like {"name": "test", "command": ["npm", "test"]}`);
+        const s = g as Record<string, unknown>;
+        if (typeof s.name !== "string" || !/^[\w.-]+$/.test(s.name)) problems.push(`${w}.name must be letters, digits, ".", "_" or "-"`);
+        else if (names.has(s.name)) problems.push(`${w}.name "${s.name}" is used twice`);
+        else names.add(s.name);
+        const c = s.command;
+        if (!((typeof c === "string" && c.trim() !== "") || (Array.isArray(c) && c.length > 0 && c.every((a) => typeof a === "string" && a !== "")))) problems.push(`${w}.command must be a non-empty string or an array of non-empty strings`);
+        if (s.cwd !== undefined && (typeof s.cwd !== "string" || !s.cwd.trim())) problems.push(`${w}.cwd must be a repo-relative path string`);
+        if (s.timeout_seconds !== undefined && (typeof s.timeout_seconds !== "number" || !Number.isFinite(s.timeout_seconds) || s.timeout_seconds <= 0 || s.timeout_seconds > 86_400)) problems.push(`${w}.timeout_seconds must be a number between 1 and 86400`);
+        if (s.expect_exit !== undefined && (!Number.isInteger(s.expect_exit) || (s.expect_exit as number) < 0 || (s.expect_exit as number) > 255)) problems.push(`${w}.expect_exit must be an integer 0-255`);
+        if (s.required !== undefined && typeof s.required !== "boolean") problems.push(`${w}.required must be true or false`);
+      });
+    }
   }
   const ignore = man.secret_scan?.ignore_paths;
   if (man.secret_scan !== undefined && (typeof man.secret_scan !== "object" || man.secret_scan === null || Array.isArray(man.secret_scan))) {

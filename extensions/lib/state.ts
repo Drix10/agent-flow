@@ -11,7 +11,8 @@
  *    parallel implementers in separate worktrees share one state file.
  */
 
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, fstatSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite, isoNow, readJson, withLock } from "./fsutil.js";
 import { DEFAULT_MAX_REVIEW_ROUNDS } from "./manifest.js";
@@ -59,10 +60,56 @@ const ALLOWED: Record<string, SessionState[]> = {
   Completed: [],
 };
 
+/** The hash a fresh log starts from. */
+export const AUDIT_GENESIS = "genesis";
+
+/** Hash of one audit entry: the previous hash and the entry's own JSON (without its `hash`), so editing or removing any line breaks every hash after it. */
+export function auditHash(prev: string, body: Record<string, unknown>): string {
+  return createHash("sha256").update(`${prev}\n${JSON.stringify(body)}`).digest("hex");
+}
+
+/** The `hash` of the last line of the log, from its tail (never the whole file). */
+function lastAuditHash(path: string): string {
+  if (!existsSync(path)) return AUDIT_GENESIS;
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, 65_536);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString("utf-8").split("\n").filter((l) => l.trim() !== "");
+    for (let k = lines.length - 1; k >= 0; k--) {
+      try {
+        const h = JSON.parse(lines[k]).hash;
+        return typeof h === "string" ? h : AUDIT_GENESIS;
+      } catch {
+        /* a partial first line of the tail window */
+      }
+    }
+    return AUDIT_GENESIS;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Append one line to `.agent-flow/audit.jsonl`, chained to the line before it (`prev` → `hash`) so that
+ * `agent-flow audit verify` notices an edited, removed or reordered line. Serialised by a lock; if the lock
+ * can't be had, the line is still written, marked `unchained`, rather than lost. Best-effort: never blocks the pipeline.
+ */
 export function appendAudit(root: string, entry: Record<string, unknown>): void {
   try {
     mkdirSync(join(root, ".agent-flow"), { recursive: true });
-    appendFileSync(join(root, AUDIT_LOG), JSON.stringify({ at: isoNow(), ...entry }) + "\n", "utf-8");
+    const path = join(root, AUDIT_LOG);
+    try {
+      withLock(join(root, ".agent-flow", "audit.lock"), () => {
+        const prev = lastAuditHash(path);
+        const body = { at: isoNow(), ...entry, prev };
+        appendFileSync(path, JSON.stringify({ ...body, hash: auditHash(prev, body) }) + "\n", "utf-8");
+      }, 5_000, 2_000);
+    } catch {
+      appendFileSync(path, JSON.stringify({ at: isoNow(), ...entry, unchained: true }) + "\n", "utf-8");
+    }
   } catch {
     /* audit is best-effort; never block the pipeline on a log write */
   }

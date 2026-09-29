@@ -14,10 +14,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -66,7 +66,7 @@ function fixBools(args) {
   return args;
 }
 
-const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file"];
+const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name"];
 const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
 
 /** Closest candidate within edit distance 2, or null. */
@@ -95,11 +95,18 @@ Start here (no setup needed):
   doctor                    Check every path your AGENTS.md / CLAUDE.md / .cursorrules / … mention
   init [--yes] [--dry-run]  Write a starter CONTEXT_MANIFEST.json (+ AGENTS.md if missing) from a scan
 
+Audit log (a hash chain: edits, removals and reordering are detectable):
+  audit verify [--anchor <hash>]  Check .agent-flow/audit.jsonl; exit 1 if the chain is broken or the anchor is missing
+  audit head                Print the current head hash — record it in a commit or CI to anchor the log
+  audit summary             Guard blocks per role and rule, escalations, rounds per issue, role runs and cost
+
 Checks (CI-safe, read-only):
   doctor                    Context files vs the filesystem; with a manifest, also staleness
       --manifest <path>     Manifest path (default CONTEXT_MANIFEST.json)
       --no-prose            Skip checking \`backticked/paths\` inside context files
       --ctxlint             Also run a locally installed ctxlint (never downloads)
+  gates [list|run]          Run the manifest's gates (tests, lint, build); records exit codes, logs and hashes
+                            run [--name a,b] [--issue <n>] [--json]; exit 1 if a required gate fails, 2 if one couldn't run
   audit-risk                Diff risk surfaces against .risk-baseline.json
       --baseline <path>  --include-tests  --fail-on-new
   classify                  Mechanical risk level of a diff (vs the merge-base, so later commits on the base don't count)
@@ -312,6 +319,82 @@ function cmdAudit(args) {
   if (failNoBaseline) return 1;
   if (args["fail-on-new"] && r.newSurfaces > 0) return 1;
   return 0;
+}
+
+function cmdAuditLog(args) {
+  const rt = root();
+  const sub_ = args._[1];
+  if (sub_ === "verify" || sub_ === "head") {
+    const v = auditLib.verifyAudit(rt, { anchor: typeof args.anchor === "string" ? args.anchor : undefined });
+    if (sub_ === "head") {
+      out(args, { head: v.head, lines: v.lines }, () => console.log(v.head ?? "(no chained entries yet)"));
+      return v.head ? 0 : 1;
+    }
+    out(args, v, () => {
+      if (v.lines === 0) return warn("no audit log yet (.agent-flow/audit.jsonl)");
+      const parts = [`${v.chained} chained`, ...(v.legacy ? [`${v.legacy} from before chaining`] : []), ...(v.unchained ? [`${v.unchained} unchained`] : [])];
+      if (v.broken) bad(`audit log broken at line ${v.broken.line}: ${v.broken.reason}`);
+      else ok(`audit log intact (${parts.join(", ")})`);
+      if (v.unchained) warn(`${v.unchained} line(s) were written without a chain link (the lock was unavailable); they can't be verified`);
+      if (v.anchor) (v.anchor.found ? ok : bad)(v.anchor.found ? `anchor ${v.anchor.hash.slice(0, 12)}… found at line ${v.anchor.line}` : `anchor ${v.anchor.hash.slice(0, 12)}… not in an intact chain: history was rewritten, truncated, or the hash is wrong`);
+      if (v.head) console.log(dim(`head ${v.head}`));
+    });
+    return v.ok ? 0 : 1;
+  }
+  if (sub_ === "summary") {
+    const s = auditLib.summarizeAudit(rt);
+    out(args, s, () => {
+      if (!s.entries) return warn("no audit log yet (.agent-flow/audit.jsonl)");
+      console.log(`${s.entries} entries, ${s.from} → ${s.to}`);
+      const list = (m) => Object.entries(m).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
+      console.log(`guard blocks: ${s.guard_blocks.total} (by role: ${list(s.guard_blocks.by_role)}; by rule: ${list(s.guard_blocks.by_rule)})`);
+      console.log(`role runs: ${s.role_runs.total} (${s.role_runs.ok} ok, ${s.role_runs.failed} failed, $${s.role_runs.cost_usd})`);
+      for (const i of s.issues) console.log(`  issue #${i.issue}: ${i.state}, round ${i.round}`);
+      for (const e of s.escalations.slice(-10)) console.log(`  needs me: issue #${e.issue} — ${e.reason.slice(0, 120)}`);
+      if (s.guard_blocks.total) console.log(dim("  A rule that blocks the same thing again and again belongs in protected_paths or a lint rule, not a prompt."));
+    });
+    return 0;
+  }
+  return sub("audit", sub_, ["verify", "head", "summary"], "audit verify [--anchor <hash>] | audit head | audit summary");
+}
+
+function cmdGates(args) {
+  const rt = root();
+  const gates = gatesLib.gatesOf(manifestLib.tryLoadManifest(rt));
+  const act = args._[1] ?? "list";
+  if (act === "list") {
+    out(args, { gates }, () => {
+      if (!gates.length) return warn("no gates in CONTEXT_MANIFEST.json (add a `gates` array; see docs/ADOPTION.md)");
+      for (const g of gates) console.log(`  ${g.name}${g.required === false ? dim(" (advisory)") : ""}  ${gatesLib.describeCommand(g.command)}`);
+    });
+    return 0;
+  }
+  if (act !== "run") return sub("gates", act, ["list", "run"], "gates list | gates run [--name a,b] [--issue <n>] [--json]");
+  if (!gates.length) throw new UserError("no gates defined in CONTEXT_MANIFEST.json, so there is nothing to run");
+  let cwd = rt;
+  if (args.issue !== undefined) {
+    const n = issueNumber(args.issue, "gates run --issue <n>");
+    cwd = fsutil.resolveInside(rt, worktree.worktreeRel(n));
+    if (!existsSync(cwd)) throw new UserError(`no worktree for issue #${n} (${worktree.worktreeRel(n)}) — create it with \`agent-flow worktree create ${n}\``);
+  }
+  if (args.name !== undefined && typeof args.name !== "string") throw new UserError("--name needs a comma-separated list of gate names");
+  const only = typeof args.name === "string" ? args.name.split(",").map((x) => x.trim()).filter(Boolean) : undefined;
+  let r;
+  try {
+    r = gatesLib.runGates(rt, gates, { only, cwd, issue: args.issue !== undefined ? Number(args.issue) : undefined });
+  } catch (e) {
+    if (/^no such gate/.test(e.message)) throw new UserError(e.message);
+    throw e;
+  }
+  out(args, r, () => {
+    for (const g of r.results) {
+      const line = `${g.name}: ${g.timed_out ? "timed out" : g.error ? g.error : `exit ${g.exit_code}${g.ok ? "" : ` (expected ${g.expected_exit})`}`} ${dim(`${g.duration_ms}ms ${g.log}`)}`;
+      if (g.ok) ok(line);
+      else (g.required ? bad : warn)(g.required ? line : `${line} (advisory)`);
+    }
+    if (r.environment_error) console.log(dim("  A gate could not run at all: fix the environment (missing tool, bad cwd) before spending a review round."));
+  });
+  return r.ok ? 0 : r.environment_error ? 2 : 1;
 }
 
 function cmdBaseline(args) {
@@ -1000,6 +1083,8 @@ const table = {
   doctor: cmdDoctor,
   init: cmdInit,
   "audit-risk": cmdAudit,
+  audit: cmdAuditLog,
+  gates: cmdGates,
   baseline: cmdBaseline,
   classify: cmdClassify,
   "check-staged": cmdCheckStaged,
