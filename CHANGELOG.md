@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.3] - 2026-09-29
 
 ### Security
 - The guard no longer throws on a command whose first word is `constructor`; an ordinary session used to fail open on that error and skip the protected-path check.
