@@ -8,7 +8,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { maxReviewRounds, tryLoadManifest } from "./lib/manifest.js";
+import { maxReviewRounds, trustedManifest } from "./lib/manifest.js";
 import { readState, updateState } from "./lib/state.js";
 import { repoRoot, text } from "./result.js";
 
@@ -31,7 +31,7 @@ export default function (pi: ExtensionAPI) {
     }),
     execute: async (_id, params, _signal, _onUpdate, ctx) => {
       const root = repoRoot(ctx);
-      const limit = maxReviewRounds(tryLoadManifest(root));
+      const limit = maxReviewRounds(trustedManifest(root).manifest);
       return text(updateState(root, params, limit));
     },
   });

@@ -14,10 +14,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -386,7 +386,11 @@ function cmdAuditLog(args) {
 
 function cmdGates(args) {
   const rt = root();
-  const gates = gatesLib.gatesOf(manifestLib.tryLoadManifest(rt));
+  const trusted = manifestLib.trustedManifest(rt);
+  const gates = gatesLib.gatesOf(trusted.manifest);
+  if (trusted.ignoredEdits.includes("gates") && !args.json) {
+    warn(`the working copy's gates differ from the default branch's, and the default branch's count. Merge the change, or set ${manifestLib.TRUST_WORKING_MANIFEST_ENV}=1 to try yours locally.`);
+  }
   const act = args._[1] ?? "list";
   if (act === "list") {
     out(args, { gates }, () => {
@@ -454,7 +458,7 @@ function cmdClassify(args) {
   }
   let r;
   try {
-    r = classify.classifyDiff(cwd, rt, manifestLib.tryLoadManifest(rt), args.base, args.head);
+    r = classify.classifyDiff(cwd, rt, manifestLib.trustedManifest(rt).manifest, args.base, args.head);
   } catch (e) {
     if (/cannot determine a default branch/.test(e.message)) throw new UserError("can't tell which branch to diff against — pass --base <branch>");
     throw e;
@@ -507,13 +511,15 @@ function cmdCheckStaged(args) {
       problems.push(`environment file staged: ${f} — keep secrets out of git (commit a .env.example instead)`);
     }
   }
-  const secretIgnore = manifestLib.secretIgnorePaths(man);
+  const secretIgnore = manifestLib.secretIgnorePaths(manifestLib.trustedManifest(rt).manifest);
   const blobs = git.stagedBlobs(rt, files.filter((f) => !manifestLib.matchAny(secretIgnore, f)));
   for (const [f, blob] of blobs) {
     if (!blob || blob.subarray(0, 8000).includes(0)) continue; // deleted, huge or binary
     for (const s of risk.findSecrets(blob.toString("utf-8"))) problems.push(`possible ${s.kind} in ${f} line(s) ${s.lines.join(", ")} (value not shown; if it is a fake, put \`${risk.ALLOW_SECRET_MARKER}\` on or above the line, or list the file in secret_scan.ignore_paths)`);
   }
-  const policy = policyLib.policyOf(man);
+  const trustedMan = manifestLib.trustedManifest(rt);
+  const policy = policyLib.policyOf(trustedMan.manifest);
+  if (trustedMan.ignoredEdits.includes("policy")) console.error(dim(`  note: policy edits in the working copy are ignored until merged to the default branch (${manifestLib.TRUST_WORKING_MANIFEST_ENV}=1 to try them).`));
   if (policy) {
     const stats = new Map();
     const num = git.git(["-c", "core.quotepath=off", "diff", "--cached", "--numstat", "-z", "--no-renames"], rt);
@@ -573,7 +579,7 @@ function cmdState(args) {
       // showed issue #1. Validate like every other issue-taking command.
       const n = issueNumber(args.issue, "state show --issue <n>");
       const one = s.sessions.find((x) => x.issue === n) ?? null;
-      const limit = manifestLib.maxReviewRounds(manifestLib.tryLoadManifest(rt));
+      const limit = manifestLib.maxReviewRounds(manifestLib.trustedManifest(rt).manifest);
       const view = { issue: n, state: one?.state ?? null, phase: one?.phase ?? null, round: one?.round ?? 0, max_review_rounds: limit, reason: one?.reason ?? null };
       out(args, view, () => console.log(one ? `issue #${n}: ${one.state}${one.phase ? ` / ${one.phase}` : ""} (round ${one.round ?? 0} of ${limit})${one.reason ? ` — ${one.reason}` : ""}` : `issue #${n}: no state yet (round limit ${limit})`));
       return 0;
@@ -590,7 +596,21 @@ function cmdState(args) {
       reason: typeof args.reason === "string" ? args.reason : undefined,
       reopen: !!args.reopen,
     };
-    const r = state.updateState(rt, p, manifestLib.maxReviewRounds(manifestLib.tryLoadManifest(rt)));
+    const trustedMan = manifestLib.trustedManifest(rt).manifest;
+    if (p.state === "Completed") {
+      const session = state.readState(rt).sessions.find((s) => s.issue === p.issue);
+      const b = bindingLib.checkBinding(rt, p.issue, p.round ?? session?.round ?? 0, gatesLib.gatesOf(trustedMan));
+      if (b.enforced && !b.ok) {
+        const reason = `unreviewed_commits: ${b.problems.join("; ")}. Decide: re-run the missing role(s) on the current tip, or reset the branch to the reviewed commit.`;
+        const e = state.updateState(rt, { ...p, state: "Needs Me", reason }, manifestLib.maxReviewRounds(trustedMan));
+        out(args, { ...e, binding: b }, () => {
+          warn(`issue #${e.updated} can't be Completed: ${b.problems.join("; ")}`);
+          warn(`recorded as Needs Me (unreviewed_commits)`);
+        });
+        return 3;
+      }
+    }
+    const r = state.updateState(rt, p, manifestLib.maxReviewRounds(trustedMan));
     out(args, r, () => (r.escalated ? warn : ok)(`issue #${r.updated}: ${r.from ?? "(new)"} → ${r.state} (round ${r.round})${r.reason ? ` — ${r.reason}` : ""}`));
     // Distinct exit code so a script can't miss the escalation by only checking for failure.
     return r.escalated ? 3 : 0;
@@ -721,6 +741,8 @@ function auditRoleRun(role, file, args, r) {
     role,
     issue: intOr(args.issue),
     round: intOr(args.round),
+    head: bindingLib.branchTip(root(), intOr(args.issue)) ?? undefined,
+    verdict: r.ok && typeof r.report?.status === "string" ? r.report.status : undefined,
     harness: args.harness,
     model: typeof args.model === "string" ? args.model : null,
     argv,

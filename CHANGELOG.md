@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+### Added
+- **Verdicts are bound to the commit they judged.** `role_run` and `gate_run` audit lines record the tip of `agent/issue-N`. `state update --state Completed` exits 3 and records Needs Me `unreviewed_commits` unless the round's approved review, passed QA and every required gate name the current tip. No skip flag. Runs recorded before this version carry no `head` and aren't compared.
+
+### Changed
+- **`gates`, `policy`, `secret_scan` and `pipeline` are read from the default branch's manifest** (falling back to the last committed copy), not the working copy an agent can edit; `risk_boundaries` may be added to but not removed. `gates list` and `check-staged` say when the working copy differs. A human iterating locally can set `AGENT_FLOW_TRUST_WORKING_MANIFEST=1`. This corrects 1.1.4's "a branch can't edit the gate that judges it", which held for gates only on the main checkout.
+
 ### Security
 - **`git push origin HEAD` reached the default branch.** `HEAD`, `@`, an empty target and dynamic targets (`HEAD:$(…)`, `HEAD:refs/heads/$B`, globs) now get the same `explicit-refspec` block as a bare `git push`, because the guard can't see which branch is checked out. Name the branch: `git push origin agent/issue-N`.
 - **Roles could spawn agents through the harness's own tool.** `Task`, `Agent`, `subagent` and similar tools are refused for every role except the orchestrator, matching the shell rule for `claude -p`.

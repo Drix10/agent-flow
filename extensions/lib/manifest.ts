@@ -286,6 +286,48 @@ export function loadManifestForGuard(root: string): { manifest: ContextManifest 
   return held ? { manifest: head && base ? { ...head, protected_paths: [...new Set([...protectedPathsOf(head), ...protectedPathsOf(base)])], deny_read: [...new Set([...denyReadPathsOf(head), ...denyReadPathsOf(base)])] } : held, fromHead: true } : { manifest: null };
 }
 
+/**
+ * Manifest keys that decide what the orchestrator RUNS or how strictly a change is judged. An agent that can
+ * edit the working copy must not be able to change them for the session that is judging its own work:
+ * `gates` are commands the orchestrator executes outside the guard, and loosening `policy`, `secret_scan`
+ * or `pipeline` lowers the bar. They take effect once merged to the default branch (or committed at HEAD
+ * when the repository has no default-branch copy).
+ */
+const FLOORED_KEYS = ["gates", "policy", "secret_scan", "pipeline"] as const;
+
+/** Set to 1 by a human who is editing gates/policy locally and wants the working copy to count right now. */
+export const TRUST_WORKING_MANIFEST_ENV = "AGENT_FLOW_TRUST_WORKING_MANIFEST";
+
+/**
+ * The manifest as code that JUDGES a change should read it. `protected_paths`, `deny_read` and
+ * `risk_boundaries` keep the additive floor (the working copy may add, never remove); the keys in
+ * FLOORED_KEYS come from the default branch's copy, else HEAD's, and the working copy's version is ignored.
+ * With no committed copy anywhere (a repo that is only starting to adopt agent-flow) the working copy is used.
+ */
+export function trustedManifest(root: string): { manifest: ContextManifest | null; ignoredEdits: string[] } {
+  const disk = tryLoadManifest(root);
+  if (process.env[TRUST_WORKING_MANIFEST_ENV] === "1") return { manifest: disk, ignoredEdits: [] };
+  const floor = defaultBranchManifest(root) ?? committedManifest(root);
+  if (!floor) return { manifest: disk, ignoredEdits: [] };
+  if (!disk) return { manifest: floor, ignoredEdits: [] };
+  const out: Record<string, unknown> = { ...disk };
+  const ignored: string[] = [];
+  for (const k of FLOORED_KEYS) {
+    const want = (floor as Record<string, unknown>)[k];
+    const have = (disk as Record<string, unknown>)[k];
+    if (JSON.stringify(want ?? null) !== JSON.stringify(have ?? null)) ignored.push(k);
+    if (want === undefined) delete out[k];
+    else out[k] = want;
+  }
+  const floorBoundaries = Array.isArray(floor.risk_boundaries) ? floor.risk_boundaries : [];
+  if (floorBoundaries.length) {
+    const seen = new Set(floorBoundaries.map((b) => JSON.stringify(b)));
+    const extra = (Array.isArray(disk.risk_boundaries) ? disk.risk_boundaries : []).filter((b) => !seen.has(JSON.stringify(b)));
+    out.risk_boundaries = [...floorBoundaries, ...extra];
+  }
+  return { manifest: out as ContextManifest, ignoredEdits: ignored };
+}
+
 /** CONTEXT_MANIFEST.json as the default branch has it (a feature branch can't weaken what main already committed). */
 export function defaultBranchManifest(root: string): ContextManifest | null {
   let base: string;

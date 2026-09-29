@@ -118,6 +118,7 @@ Checking for an open PR first makes this step safe to repeat after a crash. Add 
 - Push or `gh` fails (no remote, no auth, no network) → Needs Me with the verbatim stderr. The branch stays; nothing is lost.
 - `human_approval_required: true` → a draft PR plus Needs Me ("critical change — human review required on PR #X"). Humans merge critical changes.
 - Otherwise → `AF state update --issue N --state Completed --reason "PR #X"`.
+  `Completed` is refused (exit 3, recorded as Needs Me `unreviewed_commits`) unless the latest reviewer run, QA run and every required gate for this round name the current tip of `agent/issue-N`. If it refuses, re-run the missing role or gate on the current tip; don't reset the state by hand.
 - Auto-merge only if the manifest sets `pipeline.auto_merge_low_risk: true` **and** `risk_level` is `low` **and** QA passed: `gh pr merge --auto --squash`. This still waits for CI and branch protection.
 
 The guard refuses pushes to the default branch, force-pushes and `--no-verify`. Don't route around it.

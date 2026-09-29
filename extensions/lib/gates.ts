@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { isoNow, resolveInside, toPosix } from "./fsutil.js";
 import { ContextManifest } from "./manifest.js";
 import { appendAudit } from "./state.js";
+import { branchTip } from "./binding.js";
 
 export interface GateSpec {
   name: string;
@@ -145,7 +146,7 @@ export function runGates(root: string, gates: GateSpec[], opts: RunOptions = {})
       log_sha256: createHash("sha256").update(body).digest("hex"),
     };
     results.push(r);
-    appendAudit(root, { event: "gate_run", issue: opts.issue, gate: r.name, ok: r.ok, exit_code: r.exit_code, expected_exit: r.expected_exit, timed_out: r.timed_out, error: r.error, log: r.log, log_sha256: r.log_sha256 });
+    appendAudit(root, { event: "gate_run", issue: opts.issue, head: branchTip(root, opts.issue) ?? undefined, gate: r.name, ok: r.ok, exit_code: r.exit_code, expected_exit: r.expected_exit, timed_out: r.timed_out, error: r.error, log: r.log, log_sha256: r.log_sha256 });
   }
 
   const ok = results.every((r) => r.ok || !r.required);
