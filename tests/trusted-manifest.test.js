@@ -111,3 +111,18 @@ test("with no committed manifest anywhere, the working copy is used (first-time 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("protected_paths and deny_read: deleting them from the working copy doesn't lower the committed floor", () => {
+  const base = { ...committed, deny_read: ["private/"] };
+  const edited = { ...base, protected_paths: [], deny_read: [] };
+  repo(base, edited, (dir) => {
+    const t = trustedManifest(dir).manifest;
+    assert.deepEqual(t.protected_paths, ["secrets/"]);
+    assert.deepEqual(t.deny_read, ["private/"]);
+  });
+});
+
+test("reordering a manifest's keys isn't reported as an ignored edit", () => {
+  const edited = { pipeline: committed.pipeline, policy: committed.policy, gates: committed.gates, protected_paths: committed.protected_paths, version: "1" };
+  repo(committed, edited, (dir) => assert.deepEqual(trustedManifest(dir).ignoredEdits, []));
+});

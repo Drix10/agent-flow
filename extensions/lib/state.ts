@@ -237,8 +237,8 @@ export function updateState(root: string, p: UpdateParams, maxRounds = DEFAULT_M
       escalated = true;
       reason = `max_rounds_exceeded: round ${round} exceeds limit ${maxRounds}${p.reason ? ` — ${p.reason}` : ""}`;
     }
-    // The cost cap, enforced here for the same reason: a new phase or round is where more money gets spent.
-    if (maxCostUsd !== undefined && to === "Working" && existing && (round > prevRound || (p.phase !== undefined && p.phase !== existing.phase))) {
+    // The cost cap, enforced here for the same reason: once it is reached, nothing goes back to Working without a human raising it.
+    if (maxCostUsd !== undefined && to === "Working" && existing) {
       const c = issueCost(root, p.issue);
       if (c.total >= maxCostUsd) {
         const rounds = Object.entries(c.by_round).map(([r, v]) => `round ${r}: $${Math.round(v * 100) / 100}`).join(", ");

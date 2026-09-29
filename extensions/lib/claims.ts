@@ -108,7 +108,7 @@ export function justRecipes(text: string): Set<string> | null {
       continue;
     }
     if (/^[\s#\[]/.test(line) || /^(set|export|alias)\b/.test(line)) continue;
-    const m = /^@?([A-Za-z_][\w-]*)\b[^:=\n]*:(?!=)/.exec(line);
+    const m = /^@?([A-Za-z_][\w-]*)\b[^:\n]*:(?!=)/.exec(line);
     if (m) out.add(m[1]);
   }
   return out;
@@ -136,7 +136,7 @@ function checkSegment(tokens: string[], ctx: Ctx): { reason: string; suggestion?
     if (tokens[1] === "run" || tokens[1] === "run-script") script = tokens.slice(2).find((t) => !t.startsWith("-"));
     else if (bin === "npm" && (tokens[1] === "test" || tokens[1] === "t" || tokens[1] === "tst")) script = "test";
     else return null;
-    if (!script || !NAME.test(script) || script.includes("/") ) return null;
+    if (!script || !NAME.test(script) || script.includes("/") || (bin === "npm" && script === "env")) return null;
     ctx.scripts ??= packageScripts(ctx.root, ctx.fromDir);
     if (!ctx.scripts || ctx.scripts.includes(script)) return null;
     const suggestion = didYouMean(script, ctx.scripts);
@@ -146,7 +146,13 @@ function checkSegment(tokens: string[], ctx: Ctx): { reason: string; suggestion?
   }
 
   if (bin === "make" || bin === "gmake") {
-    const targets = tokens.slice(1).filter((t) => !t.startsWith("-") && !t.includes("="));
+    const valueFlags = new Set(["-j", "-l", "-I", "-o", "-W", "-O", "--jobs", "--load-average", "--include-dir", "--old-file", "--what-if"]);
+    const targets: string[] = [];
+    for (let k = 1; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (valueFlags.has(t)) k++; // `-j 4`: the 4 isn't a target
+      else if (!t.startsWith("-") && !t.includes("=") && !/^\d+$/.test(t)) targets.push(t);
+    }
     if (!targets.length || targets.some((t) => /[$<>{}.*\/]/.test(t))) return null;
     if (ctx.make === undefined) {
       const f = findUp(ctx.root, ctx.fromDir, ["Makefile", "makefile", "GNUmakefile"]);
@@ -225,7 +231,7 @@ export function checkClaims(root: string, cfPath: string, content: string): Clai
     for (const m of line.matchAll(/`([^`]+)`/g)) commandsIn(m[1], i + 1);
 
     const prose = line.replace(/`[^`]*`/g, (s) => " ".repeat(s.length));
-    for (const m of prose.matchAll(/!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)) {
+    for (const m of prose.matchAll(/(?<![\w\]])!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)) {
       let t = m[1];
       if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith("#") || t.startsWith("//") || /[{}<>$*]/.test(t)) continue;
       t = t.replace(/[#?].*$/, "");
@@ -234,7 +240,7 @@ export function checkClaims(root: string, cfPath: string, content: string): Clai
       } catch {
         /* leave as written */
       }
-      if (!t) continue;
+      if (!t || !/[/.]/.test(t)) continue; // `[1](2)`, `arr[0](y)`: not a link to a file
       const target = t.startsWith("/") ? t.slice(1) : posix.normalize(cfDir ? `${cfDir}/${t}` : t);
       if (target.startsWith("../") || target === "..") continue; // outside the repo: not this check's business
       if (!existsExact(root, target)) issues.push({ kind: "link", line: i + 1, text: m[1], reason: "link target does not exist" });

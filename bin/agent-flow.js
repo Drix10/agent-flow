@@ -392,6 +392,7 @@ function cmdGates(args) {
   const rt = root();
   const trusted = manifestLib.trustedManifest(rt);
   const gates = gatesLib.gatesOf(trusted.manifest);
+  if (args._[1] === "stop") return gatesStop(rt, trusted.manifest);
   if (trusted.ignoredEdits.includes("gates") && !args.json) {
     warn(`the working copy's gates differ from the default branch's, and the default branch's count. Merge the change, or set ${manifestLib.TRUST_WORKING_MANIFEST_ENV}=1 to try yours locally.`);
   }
@@ -403,7 +404,6 @@ function cmdGates(args) {
     });
     return 0;
   }
-  if (act === "stop") return gatesStop(rt, trusted.manifest);
   if (act !== "run") return sub("gates", act, ["list", "run", "stop"], "gates list | gates run [--name a,b] [--issue <n>] [--json] | gates stop (Claude Code Stop hook)");
   if (!gates.length) throw new UserError("no gates defined in CONTEXT_MANIFEST.json, so there is nothing to run");
   let cwd = rt;
@@ -448,7 +448,9 @@ function gatesStop(rt, man) {
   try {
     const cwd = typeof ev.cwd === "string" && ev.cwd ? fsutil.findRepoRoot(ev.cwd) : rt;
     const d = stopGateLib.evaluateStop(cwd, gatesLib.gatesOf(man), stopGateLib.maxStopBlocks(man), ev.stop_hook_active === true);
-    if (d.message) console.error(d.message);
+    // Exit 2 shows the reason to the model; on a pass-through only `systemMessage` reaches anyone (the user).
+    if (d.block) console.error(d.message);
+    else if (d.message) console.log(JSON.stringify({ systemMessage: d.message }));
     return d.block ? 2 : 0;
   } catch (e) {
     console.error(`[agent-flow stop gate] not run: ${e.message}`);
@@ -626,18 +628,15 @@ function cmdState(args) {
       reopen: !!args.reopen,
     };
     const trustedMan = manifestLib.trustedManifest(rt).manifest;
-    if (p.state === "Completed") {
-      const session = state.readState(rt).sessions.find((s) => s.issue === p.issue);
-      const b = bindingLib.checkBinding(rt, p.issue, p.round ?? session?.round ?? 0, gatesLib.gatesOf(trustedMan));
-      if (b.enforced && !b.ok) {
-        const reason = `unreviewed_commits: ${b.problems.join("; ")}. Decide: re-run the missing role(s) on the current tip, or reset the branch to the reviewed commit.`;
-        const e = state.updateState(rt, { ...p, state: "Needs Me", reason }, manifestLib.maxReviewRounds(trustedMan), manifestLib.maxCostUsd(trustedMan));
-        out(args, { ...e, binding: b }, () => {
-          warn(`issue #${e.updated} can't be Completed: ${b.problems.join("; ")}`);
-          warn(`recorded as Needs Me (unreviewed_commits)`);
-        });
-        return 3;
-      }
+    const session = state.readState(rt).sessions.find((s) => s.issue === p.issue);
+    const esc = bindingLib.bindingEscalation(rt, p, session, gatesLib.gatesOf(trustedMan));
+    if (esc) {
+      const e = state.updateState(rt, esc.params, manifestLib.maxReviewRounds(trustedMan), manifestLib.maxCostUsd(trustedMan));
+      out(args, { ...e, binding: esc.binding }, () => {
+        warn(`issue #${e.updated} can't be Completed: ${esc.binding.problems.join("; ")}`);
+        warn(`recorded as Needs Me (unreviewed_commits)`);
+      });
+      return 3;
     }
     const r = state.updateState(rt, p, manifestLib.maxReviewRounds(trustedMan), manifestLib.maxCostUsd(trustedMan));
     out(args, r, () => (r.escalated ? warn : ok)(`issue #${r.updated}: ${r.from ?? "(new)"} → ${r.state} (round ${r.round})${r.reason ? ` — ${r.reason}` : ""}`));
@@ -770,7 +769,7 @@ function auditRoleRun(role, file, args, r) {
     role,
     issue: intOr(args.issue),
     round: intOr(args.round),
-    head: bindingLib.branchTip(root(), intOr(args.issue)) ?? undefined,
+    head: intOr(args.issue) ? bindingLib.branchTip(root(), intOr(args.issue)) : undefined,
     verdict: r.ok && typeof r.report?.status === "string" ? r.report.status : undefined,
     harness: args.harness,
     model: typeof args.model === "string" ? args.model : null,
@@ -965,6 +964,7 @@ function importAgentsMd(rt, args) {
 }
 
 // Every tool the guard has a rule for: writes, the shell, read tools (env files, deny_read) and MCP tools (remote pushes).
+const STOP_HOOK_TIMEOUT_S = 900;
 const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|NotebookRead|Grep|Glob|mcp__.*";
 
 /**
@@ -1026,9 +1026,10 @@ function installClaudeHook(rt, args) {
     settings.hooks.Stop ??= [];
     const stopCmd = `node "$CLAUDE_PROJECT_DIR/${binRel.split("\\").join("/")}" gates stop`;
     const isStop = (h) => /agent-flow/.test(h?.command ?? "") && /\bgates stop\b/.test(h?.command ?? "");
+    // Claude Code kills a hook after its timeout (60 s by default) and then doesn't block: give the gates room.
     const g = settings.hooks.Stop.find((e) => Array.isArray(e?.hooks) && e.hooks.some(isStop));
-    if (g) g.hooks = g.hooks.map((h) => (isStop(h) ? { ...h, type: "command", command: stopCmd } : h));
-    else settings.hooks.Stop.push({ hooks: [{ type: "command", command: stopCmd }] });
+    if (g) g.hooks = g.hooks.map((h) => (isStop(h) ? { ...h, type: "command", command: stopCmd, timeout: STOP_HOOK_TIMEOUT_S } : h));
+    else settings.hooks.Stop.push({ hooks: [{ type: "command", command: stopCmd, timeout: STOP_HOOK_TIMEOUT_S }] });
   }
   if (JSON.stringify(settings) === before) {
     console.log(dim(`= ${label} (up to date)`));

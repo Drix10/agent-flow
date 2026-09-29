@@ -316,7 +316,9 @@ export const TRUST_WORKING_MANIFEST_ENV = "AGENT_FLOW_TRUST_WORKING_MANIFEST";
 export function trustedManifest(root: string): { manifest: ContextManifest | null; ignoredEdits: string[] } {
   const disk = tryLoadManifest(root);
   if (process.env[TRUST_WORKING_MANIFEST_ENV] === "1") return { manifest: disk, ignoredEdits: [] };
-  const floor = defaultBranchManifest(root) ?? committedManifest(root);
+  const base = defaultBranchManifest(root);
+  const head = committedManifest(root);
+  const floor = base ?? head;
   if (!floor) return { manifest: disk, ignoredEdits: [] };
   if (!disk) return { manifest: floor, ignoredEdits: [] };
   const out: Record<string, unknown> = { ...disk };
@@ -324,7 +326,7 @@ export function trustedManifest(root: string): { manifest: ContextManifest | nul
   for (const k of FLOORED_KEYS) {
     const want = (floor as Record<string, unknown>)[k];
     const have = (disk as Record<string, unknown>)[k];
-    if (JSON.stringify(want ?? null) !== JSON.stringify(have ?? null)) ignored.push(k);
+    if (stableJson(want ?? null) !== stableJson(have ?? null)) ignored.push(k);
     if (want === undefined) delete out[k];
     else out[k] = want;
   }
@@ -334,7 +336,19 @@ export function trustedManifest(root: string): { manifest: ContextManifest | nul
     const extra = (Array.isArray(disk.risk_boundaries) ? disk.risk_boundaries : []).filter((b) => !seen.has(JSON.stringify(b)));
     out.risk_boundaries = [...floorBoundaries, ...extra];
   }
+  // Like the guard: what the default branch or HEAD protects or denies to read, the working copy may add to but not remove.
+  for (const key of ["protected_paths", "deny_read"] as const) {
+    const of = key === "protected_paths" ? protectedPathsOf : denyReadPathsOf;
+    const have = of(disk);
+    const extra = [...new Set([...of(head), ...of(base)])].filter((x) => !have.includes(x));
+    if (extra.length) out[key] = [...have, ...extra];
+  }
   return { manifest: out as ContextManifest, ignoredEdits: ignored };
+}
+
+/** JSON with sorted keys, so reordering a manifest's keys doesn't look like an edit. */
+function stableJson(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 }
 
 /** CONTEXT_MANIFEST.json as the default branch has it (a feature branch can't weaken what main already committed). */

@@ -146,7 +146,7 @@ export function runGates(root: string, gates: GateSpec[], opts: RunOptions = {})
       log_sha256: createHash("sha256").update(body).digest("hex"),
     };
     results.push(r);
-    appendAudit(root, { event: "gate_run", issue: opts.issue, head: branchTip(root, opts.issue) ?? undefined, gate: r.name, ok: r.ok, exit_code: r.exit_code, expected_exit: r.expected_exit, timed_out: r.timed_out, error: r.error, log: r.log, log_sha256: r.log_sha256 });
+    appendAudit(root, { event: "gate_run", issue: opts.issue, head: opts.issue ? branchTip(root, opts.issue) : undefined, gate: r.name, ok: r.ok, exit_code: r.exit_code, expected_exit: r.expected_exit, timed_out: r.timed_out, error: r.error, log: r.log, log_sha256: r.log_sha256 });
   }
 
   const ok = results.every((r) => r.ok || !r.required);

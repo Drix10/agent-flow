@@ -31,11 +31,12 @@ test("under the cap, phases and rounds proceed; at the cap, the next one escalat
   });
 });
 
-test("staying in the same phase and round isn't a new spend; no cap means no check; unreported cost doesn't count", () => {
+test("at the cap nothing goes back to Working, however the request is phrased; no cap means no check; unreported cost doesn't count", () => {
   root((dir) => {
     updateState(dir, { issue: 1, state: "Working", phase: "implement", round: 1 }, 2, 1);
     run(dir, 1, 9);
-    assert.equal(updateState(dir, { issue: 1, state: "Working", phase: "implement", round: 1 }, 2, 1).state, "Working");
+    assert.equal(updateState(dir, { issue: 1, state: "Working" }, 2, 1).state, "Needs Me");
+    assert.equal(updateState(dir, { issue: 1, state: "Working", phase: "implement", round: 1 }, 2, 1).state, "Needs Me");
     assert.equal(updateState(dir, { issue: 1, state: "Working", phase: "review", round: 1 }, 2, undefined).state, "Working");
   });
   root((dir) => {

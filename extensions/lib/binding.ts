@@ -32,7 +32,7 @@ interface AuditLine {
   ok?: boolean;
   verdict?: string;
   gate?: string;
-  head?: string;
+  head?: string | null;
 }
 
 function readAudit(root: string): AuditLine[] {
@@ -61,14 +61,15 @@ export interface BindingResult {
 /** Can issue N be marked Completed at `round`? `gates` are the trusted manifest's gates. */
 export function checkBinding(root: string, issue: number, round: number, gates: GateSpec[]): BindingResult {
   const lines = readAudit(root).filter((l) => l.issue === issue);
-  const bound = lines.some((l) => l.event === "role_run" && typeof l.head === "string");
+  // A `head` key (even null: the branch did not exist yet) marks a run made with binding in mind.
+  const bound = lines.some((l) => (l.event === "role_run" || l.event === "gate_run") && "head" in l);
   if (!bound) return { enforced: false, ok: true, problems: [], tip: null };
 
   const tip = branchTip(root, issue);
   if (!tip) return { enforced: true, ok: false, tip, problems: [`the branch ${branchFor(issue)} does not exist, so the reviewed commit can't be compared with anything`] };
 
   const problems: string[] = [];
-  const short = (h?: string) => (h ? h.slice(0, 8) : "unrecorded");
+  const short = (h?: string | null) => (h ? h.slice(0, 8) : "unrecorded");
   const latest = (pred: (l: AuditLine) => boolean) => [...lines].reverse().find(pred);
 
   const review = latest((l) => l.event === "role_run" && l.role === "reviewer" && l.round === round && l.ok === true);
@@ -88,4 +89,24 @@ export function checkBinding(root: string, issue: number, round: number, gates: 
     else if (run.head !== tip) problems.push(`gate "${g.name}" passed on ${short(run.head)}, but the branch tip is ${short(tip)}`);
   }
   return { enforced: true, ok: problems.length === 0, problems, tip };
+}
+
+export interface CompletionParams {
+  issue: number;
+  state: string;
+  round?: number;
+  reason?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * For a `Completed` request: null when it may proceed, else the params that record Needs Me
+ * `unreviewed_commits` instead. Shared by the CLI and the Pi tool so neither is a way around the other.
+ */
+export function bindingEscalation<T extends CompletionParams>(root: string, p: T, session: { round?: number } | undefined, gates: GateSpec[]): { params: T; binding: BindingResult } | null {
+  if (p.state !== "Completed") return null;
+  const b = checkBinding(root, p.issue, p.round ?? session?.round ?? 0, gates);
+  if (!b.enforced || b.ok) return null;
+  const reason = `unreviewed_commits: ${b.problems.join("; ")}. Decide: re-run the missing role(s) on the current tip, or reset the branch to the reviewed commit.`;
+  return { params: { ...p, state: "Needs Me", reason }, binding: b };
 }

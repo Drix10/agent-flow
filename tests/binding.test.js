@@ -77,3 +77,13 @@ test("a missing QA run, a non-approved review and a stale gate are each reported
     assert.match(reason, /gate "unit" has not run/);
   });
 });
+
+test("runs audited before the branch existed (head: null) still switch enforcement on and can't pass", () => {
+  repo({}, (dir) => {
+    run(dir, "reviewer", "approved", null);
+    run(dir, "qa", "passed", null);
+    const r = complete(dir);
+    assert.equal(r.status, 3);
+    assert.match(readState(dir).sessions[0].reason, /unrecorded/);
+  });
+});

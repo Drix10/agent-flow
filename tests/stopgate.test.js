@@ -40,7 +40,7 @@ test("a failing on_stop gate blocks twice, the third stop passes, and stop_gate_
     assert.equal(stop(dir, true).status, 2);
     const c = stop(dir, true);
     assert.equal(c.status, 0);
-    assert.match(c.stderr, /still failing after 2 block/);
+    assert.match(JSON.parse(c.stdout).systemMessage, /still failing after 2 block/);
     const ev = audit(dir).map((e) => e.event);
     assert.equal(ev.filter((e) => e === "stop_gate_blocked").length, 2);
     assert.ok(ev.includes("stop_gate_exhausted"));
@@ -117,6 +117,7 @@ test("install --stop-gate adds a Stop hook next to the guard, idempotently", () 
     const first = readFileSync(join(dir, ".claude", "settings.json"), "utf-8");
     const s = JSON.parse(first);
     assert.match(s.hooks.Stop[0].hooks[0].command, /gates stop$/);
+    assert.ok(s.hooks.Stop[0].hooks[0].timeout >= 300);
     run();
     assert.equal(readFileSync(join(dir, ".claude", "settings.json"), "utf-8"), first);
   });

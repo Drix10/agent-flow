@@ -81,3 +81,9 @@ test("doctor fails on a dead command and prints the did-you-mean", () => {
     assert.match(r.stdout, /did you mean test:ci/);
   });
 });
+
+test("no false alarms: just default params, make -j 4, npm run env, prose that only looks like a link", () => {
+  repo({ Makefile: "test:\n\techo\n", justfile: 'deploy env="prod":\n  echo\n', "package.json": pkg }, (dir) => {
+    assert.deepEqual(kinds(dir, "`just deploy`\n`make -j 4 test`\n`npm run env`\nsee arr[0](y) and [1](2)\n"), []);
+  });
+});
