@@ -11,7 +11,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/Drix10/agent-flow/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)
 [![Node](https://img.shields.io/node/v/@drix10/agent-flow?style=flat-square&logo=node.js&logoColor=white&label=node)](https://nodejs.org/)
-![runtime deps: 0](https://img.shields.io/badge/runtime%20deps-0-brightgreen?style=flat-square)
+[![Agent Flow on AI Agents Listing](https://aiagentslisting.com/agent-flow/badge.svg?claim=bb1a1fb6dafedd7eb8bea2522cdc959d)](https://aiagentslisting.com/mcp/agent-flow)
 
 <video src="https://github.com/user-attachments/assets/3acb0531-93c1-4770-a5e9-d26491bfe4c4" width="100%" autoplay loop muted playsinline>Agent Flow demo video: an AI coding agent runs the Implement → Review → QA pipeline, catching context drift and risky diffs.</video>
 
