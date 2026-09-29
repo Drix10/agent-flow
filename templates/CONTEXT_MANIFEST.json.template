@@ -17,6 +17,8 @@
     }
   ],
   "protected_paths": ["{{PROTECTED_PATH_OR_GLOB}}"],
+  "deny_read": [],
+  "secret_scan": { "ignore_paths": [] },
   "risk_boundaries": [
     { "path": "{{CRITICAL_PATH}}", "risk_level": "critical", "reviewer_model": "high-reasoning", "rationale": "{{WHY}}" }
   ],
