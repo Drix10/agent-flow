@@ -35,7 +35,7 @@ A system that doesn't feed its own outcomes back into its inputs degrades. The T
 
 ### 1. Bootstrap (Trust Creation)
 
-The `/bootstrap` command scans the repo and **proposes** `AGENTS.md` (root and per module) plus `CONTEXT_MANIFEST.json`. Each file is written only after a human approves it in a confirmation dialog. Every architectural assertion carries a confidence marker:
+The `/bootstrap` command scans the repo and **proposes** `AGENTS.md` (root and per module) plus `CONTEXT_MANIFEST.json`. Each file is written only after a human approves it: Pi shows a confirmation dialog, and other harnesses use their own permission prompt. Every architectural assertion carries a confidence marker:
 
 - `[HIGH CONFIDENCE]` — verified by reading code
 - `[INFERRED]` — guessed from patterns
@@ -53,12 +53,12 @@ Issue → Implementer → Reviewer → QA → PR
          in parallel)   ≤2 rounds)
 ```
 
-Each phase produces **trust signals**. They're recorded in `.agent-state.json` (per-session transition history) and `.agent-flow/audit.jsonl` (guard blocks, confirmations, state transitions):
-- Did the context files help or hinder?
-- Did the Reviewer catch issues that QA missed?
-- Did QA fail correctly, or produce false positives?
-- How many rounds did the fix loop take?
-- Did any agent attempt to violate its permission boundaries?
+Each phase leaves **trust signals** on disk:
+- `.agent-state.json`: per-issue state, review round and transition history (how many rounds the fix loop took, why an issue escalated);
+- `.agent-flow/audit.jsonl`: guard blocks (which role tried to cross which boundary), confirmations, state transitions, and one line per role run with its exit code, duration, cost and whether its report validated;
+- the role reports under `.agent-flow/artifacts/issue-N/` (what the Reviewer caught, what QA reproduced).
+
+Reading them is how you answer the questions that matter: did the Reviewer catch what QA missed, did QA fail for a real reason, did any agent push against its permission boundaries.
 
 ### 3. Maintenance (Trust Repair)
 
@@ -72,7 +72,7 @@ The **Gardener** agent runs periodically or on-demand:
 
 ### 4. Verification (Trust Feedback)
 
-Every execution run produces signals that feed back into the bootstrap artifacts:
+The signals above are meant to change the bootstrap artifacts, and today a person or the Gardener does that reading (a command that summarizes `audit.jsonl` is on the [ROADMAP](./ROADMAP.md)):
 - If the Reviewer consistently catches a class of issue, the fix is not a better Reviewer prompt—it's a **lint rule** that makes the issue impossible.
 - If the context files consistently mislead, the fix is not a better context file—it's a **CI check** that validates context claims against the codebase.
 
@@ -97,7 +97,7 @@ When an agent makes a mistake, fix it at the **highest leverage level first**:
 
 ## Mechanical checks
 
-`agent-flow doctor` (CI, pre-commit hook, `/doctor`) catches:
+`agent-flow doctor` (CI and `/doctor`; the pre-commit hook runs `check-staged`, which applies the same checks to what a commit introduces) catches:
 - manifest references that no longer exist, case-exact;
 - `backticked/paths` in the context prose that no longer exist;
 - context files that were deleted;

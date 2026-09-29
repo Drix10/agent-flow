@@ -7,7 +7,7 @@
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, chmodSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -428,6 +428,13 @@ function cmdCheckStaged(args) {
   return problems.length ? 1 : 0;
 }
 
+/** A bare `--round` parses as `true` and `Number(true)` is 1 — reject it instead of recording round 1. */
+function roundNumber(raw) {
+  const n = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
+  if (!Number.isInteger(n) || n < 0) throw new UserError(`--round needs a non-negative integer, got ${raw === true ? "nothing" : `"${raw}"`}`);
+  return n;
+}
+
 function cmdState(args) {
   const rt = root();
   const sub = args._[1] ?? "show";
@@ -451,7 +458,7 @@ function cmdState(args) {
       issue: issueNumber(args.issue, "state update --issue <n> --state <s>"),
       state: args.state,
       phase: typeof args.phase === "string" ? args.phase : undefined,
-      round: args.round !== undefined ? Number(args.round) : undefined,
+      round: args.round === undefined ? undefined : roundNumber(args.round),
       reason: typeof args.reason === "string" ? args.reason : undefined,
       reopen: !!args.reopen,
     };
@@ -539,7 +546,7 @@ function cmdSchema(args) {
     console.log(readFileSync(join(pkgRoot, "schemas", "context-manifest.schema.json"), "utf-8").trim());
     return 0;
   }
-  if (!(role in report.REPORT_ROLES)) return usage(`schema <${Object.keys(report.REPORT_ROLES).join("|")}|manifest> [--strict]`);
+  if (!Object.hasOwn(report.REPORT_ROLES, role)) return usage(`schema <${Object.keys(report.REPORT_ROLES).join("|")}|manifest> [--strict]`);
   // Compact on one line so it can be passed straight to `claude -p --json-schema "$(…)"`.
   const schema = report.reportSchema(role);
   console.log(JSON.stringify(args.strict ? report.strictSchema(schema) : schema));
@@ -548,7 +555,7 @@ function cmdSchema(args) {
 
 function cmdReport(args) {
   const [, role, file] = args._;
-  if (!(role in report.REPORT_ROLES) || !file) return usage(`report <${Object.keys(report.REPORT_ROLES).join("|")}> <file> [--out <file>]`);
+  if (!Object.hasOwn(report.REPORT_ROLES, role) || !file) return usage(`report <${Object.keys(report.REPORT_ROLES).join("|")}> <file> [--out <file>]`);
   // Windows PowerShell 5.1's `>` writes UTF-16LE; decode it rather than failing on "no JSON found".
   const buf = readFileSync(file);
   const text = buf[0] === 0xff && buf[1] === 0xfe ? buf.subarray(2).toString("utf16le") : buf.toString("utf-8");
@@ -782,7 +789,7 @@ const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|mcp__.*"
 function installClaudeHook(rt, args) {
   const label = ".claude/settings.json (PreToolUse guard hook)";
   const binRel = relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
-  if (binRel.startsWith("..") || isAbsolute(binRel)) {
+  if (fsutil.escapesBase(binRel)) {
     bad(`${label}: agent-flow isn't installed in this project, so the hook would point at a temporary copy.`);
     console.log(dim("    Run `npm install -D @drix10/agent-flow`, then `npx @drix10/agent-flow install --harness claude` again."));
     return false;
@@ -979,10 +986,11 @@ if (!cmd || args.help || cmd === "help") {
 }
 if (!Object.hasOwn(table, cmd)) process.exit(unknown("command", cmd, Object.keys(table), "run `agent-flow --help` for the list"));
 try {
-  process.exit(roleRefusal() || (await table[cmd](args)));
+  // exitCode, not process.exit(): exiting straight after a large write to a pipe can truncate it on macOS and Windows.
+  process.exitCode = roleRefusal() || (await table[cmd](args));
 } catch (e) {
   const msg = String(e.message ?? e).split("\n")[0];
   const friendly = /not a git repository/i.test(msg) ? "not a git repository — run this inside a git checkout (or `git init` first)" : msg;
   console.error(`${c(31, "agent-flow:")} ${friendly}`);
-  process.exit(2);
+  process.exitCode = 2;
 }

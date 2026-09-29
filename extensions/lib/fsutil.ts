@@ -60,6 +60,14 @@ export function toPosix(p: string): string {
   return p.split(sep).join("/").replace(/\\/g, "/");
 }
 
+/**
+ * Does a `path.relative()` result leave its base? A bare `startsWith("..")` also
+ * rejects legitimate names such as `..data` (Kubernetes ConfigMap mounts use them).
+ */
+export function escapesBase(rel: string): boolean {
+  return rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel);
+}
+
 export interface WalkOptions {
   /** Hard cap on files returned. Huge monorepos get truncated, never hang. */
   maxFiles?: number;
@@ -312,7 +320,7 @@ export function existsExact(root: string, relPath: string): boolean {
   // as existing — every other path check in this project is repo-confined, and stale/repair
   // certifying an outside-the-repo path as "verified" would be an inconsistent, surprising exception.
   const escapes = relative(root, resolve(root, clean));
-  if (escapes.startsWith("..") || isAbsolute(escapes)) return false;
+  if (escapesBase(escapes)) return false;
   if (!existsSync(join(root, clean))) return false;
   if (!CASE_INSENSITIVE_FS) return true;
   let dir = root;
@@ -345,7 +353,7 @@ export function resolveInside(root: string, p: string): string {
   const rootReal = realpathSync(root);
   const abs = resolve(rootReal, p);
   const rel = relative(rootReal, abs);
-  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+  if (rel === "" || escapesBase(rel)) {
     throw new Error(`path escapes the repository root: ${p}`);
   }
   // Walk up to the nearest existing ancestor and make sure its real path is inside.
@@ -353,7 +361,7 @@ export function resolveInside(root: string, p: string): string {
   while (!existsSync(probe)) probe = dirname(probe);
   const probeReal = realpathSync(probe);
   const relReal = relative(rootReal, probeReal);
-  if (relReal.startsWith("..") || isAbsolute(relReal)) {
+  if (escapesBase(relReal)) {
     throw new Error(`path resolves outside the repository through a symlink: ${p}`);
   }
   return abs;

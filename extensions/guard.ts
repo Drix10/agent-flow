@@ -60,23 +60,32 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("tool_call", (event, ctx) => {
     const cwd = ctx?.cwd ?? process.cwd();
-    const root = rootOf(cwd);
-    const worktree = process.env.AGENT_FLOW_WORKTREE ? resolve(root, process.env.AGENT_FLOW_WORKTREE) : undefined;
-    const m = manifestFor(root);
-    const decision = decide({
-      role,
-      toolName: event.toolName,
-      input: (event.input ?? {}) as Record<string, unknown>,
-      cwd,
-      root,
-      manifest: m.manifest,
-      manifestError: m.error,
-      worktree,
-      allowProtected,
-    });
-    if (!decision) return undefined;
-    appendAudit(root, { event: "guard_block", role, tool: event.toolName, rule: decision.rule, reason: decision.reason });
-    return { block: true, reason: decision.reason };
+    let root = cwd;
+    try {
+      root = rootOf(cwd);
+      const worktree = process.env.AGENT_FLOW_WORKTREE ? resolve(root, process.env.AGENT_FLOW_WORKTREE) : undefined;
+      const m = manifestFor(root);
+      const decision = decide({
+        role,
+        toolName: event.toolName,
+        input: (event.input ?? {}) as Record<string, unknown>,
+        cwd,
+        root,
+        manifest: m.manifest,
+        manifestError: m.error,
+        worktree,
+        allowProtected,
+      });
+      if (!decision) return undefined;
+      appendAudit(root, { event: "guard_block", role, tool: event.toolName, rule: decision.rule, reason: decision.reason });
+      return { block: true, reason: decision.reason };
+    } catch (e: any) {
+      // Same stance as `agent-flow guard`: a confined role fails closed, an ordinary session isn't bricked by a guard bug.
+      if (!role) return undefined;
+      const reason = `[agent-flow guard] guard error, refusing as role "${role}": ${e?.message ?? e}`;
+      appendAudit(root, { event: "guard_block", role, tool: event.toolName, rule: "guard-error", reason });
+      return { block: true, reason };
+    }
   });
 
   pi.registerTool({

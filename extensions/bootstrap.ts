@@ -22,7 +22,8 @@ import { basename, relative } from "node:path";
 import { Type } from "typebox";
 import { requireConfirmation } from "./lib/confirm.js";
 import { atomicWrite, resolveInside, toPosix } from "./lib/fsutil.js";
-import { MANIFEST_FILE, validateManifest } from "./lib/manifest.js";
+import { tamperProofMatch } from "./lib/guard.js";
+import { MANIFEST_FILE, loadManifestForGuard, matchAny, protectedPathsOf, validateManifest } from "./lib/manifest.js";
 import { findSecrets } from "./lib/risk.js";
 import { scanRepo } from "./lib/scan.js";
 import { appendAudit } from "./lib/state.js";
@@ -76,6 +77,17 @@ export default function (pi: ExtensionAPI) {
       const rel = toPosix(relative(realpathSync(root), abs));
       if (!allowedContextTarget(rel)) {
         throw new Error(`bootstrap_write only writes context files (*.md, ${MANIFEST_FILE}, .codex/agents/*.toml); refused: ${rel}`);
+      }
+      // `AGENT_STATE.md` is a `.md` file, but it is a trust signal only state_update may write.
+      const tamper = tamperProofMatch(rel);
+      if (tamper) throw new Error(`refused: ${rel} is written only by agent-flow's own tools (${tamper})`);
+      // Same rule the guard applies to write/edit: protected paths need a human's explicit override.
+      if (process.env.AGENT_FLOW_ALLOW_PROTECTED !== "1") {
+        const loaded = loadManifestForGuard(root);
+        // A manifest that can't be loaded is fixed by rewriting it, so that one write stays possible.
+        if (loaded.error && rel !== MANIFEST_FILE) throw new Error(`refused: ${MANIFEST_FILE} can't be loaded (${loaded.error}), so protected paths are unknown`);
+        const prot = matchAny(protectedPathsOf(loaded.manifest), rel);
+        if (prot) throw new Error(`refused: ${rel} is protected (${prot} in ${MANIFEST_FILE}). Escalate to Needs Me instead.`);
       }
       const secrets = findSecrets(params.content);
       if (secrets.length) {

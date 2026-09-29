@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- The guard no longer throws on a command whose first word is `constructor`; an ordinary session used to fail open on that error and skip the protected-path check.
+- A gitignore-style `protected_paths` entry with a leading slash (`/config/`) now matches; it used to protect nothing.
+- `bootstrap_write` refuses `AGENT_STATE.md` and manifest `protected_paths`, like every other write tool.
+- The Pi `tool_call` hook fails closed for a confined role when the guard errors, matching `agent-flow guard`.
+
+### Fixed
+- Paths inside the repo that begin with `..` (`..data/`) are no longer treated as outside it.
+- `schema`/`report` with a prototype-named role (`toString`) and a bare `state update --round` are usage errors instead of a crash / a silent round 1.
+- `pyproject.toml` dependencies after an extras bracket (`requests[security]`) and `[project.optional-dependencies]` are audited.
+- `state_update` bounds `phase` (80) and `reason` (2000) for the CLI too; `reopen` can't target `Completed`.
+- The CLI sets `process.exitCode` instead of calling `process.exit()`, so large piped output isn't truncated on macOS and Windows.
+- GitHub Packages publish runs the test suite first, like the npm publish.
+
+### Docs
+- README, SECURITY, FAILURE_MODES, HARNESS docs and TRUST_LOOP now describe the Claude Code `agent-flow guard` hook, what the audit log records, and the real install targets; the roadmap no longer lists shipped work.
+
+Rows #77–83 in [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).
+
 ## [1.1.2] - 2026-09-28
 
 ### Security
@@ -97,7 +118,6 @@ A self-audit found that several documented guarantees were prose rather than cod
 - `pi.extensions` names the compiled `extensions/index.js` explicitly. Verified with Pi's own loader: 14 tools, 2 hooks, no errors.
 - Zero runtime dependencies (removed `glob`, `yaml`, `zod`; `typebox` is supplied by Pi).
 - CI runs on Linux, macOS and Windows. Added `.gitattributes` (`* text=auto eol=lf`) — its absence was letting `actions/checkout` on `windows-latest` rewrite every text file to CRLF, which broke an exact `\n`-anchored regex in the skill-frontmatter test. Windows-only, deterministic, and unrelated to any of this release's actual code; see [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md).
-- Added a demo GIF and two short screen recordings under `demo/`, linked from the README.
 
 ### Removed
 - `pi run …` npm scripts and skill references. `pi run` is not a Pi command.

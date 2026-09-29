@@ -262,7 +262,9 @@ function norm(p: string): string {
 export function matchesPattern(pattern: string, file: string): boolean {
   if (!pattern || !file) return false;
   const f = norm(file);
-  const pat = toPosix(pattern).trim().replace(/^\.\//, "");
+  // `/config/` is gitignore-style "from the repo root"; files are already repo-relative, so it means `config/`.
+  const pat = toPosix(pattern).trim().replace(/^\.\//, "").replace(/^\/+/, "");
+  if (!pat) return false;
   if (/[*?]/.test(pat)) {
     const re = globToRegExp(pat.endsWith("/") ? `${pat}**` : pat);
     // A glob with no slash matches the basename anywhere (like .gitignore).

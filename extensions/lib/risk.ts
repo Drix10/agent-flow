@@ -176,6 +176,33 @@ export function isEnvFile(path: string): boolean {
 // Dependency parsing (heuristic, documented as such)
 // ---------------------------------------------------------------------------
 
+/**
+ * Bodies of the TOML arrays that start at each `opener` match. Brackets inside quoted strings
+ * (`"requests[security]>=2"`) don't end the array; a lazy `[\s\S]*?\]` stopped at the first one.
+ */
+function tomlArrays(content: string, opener: RegExp): string[] {
+  const out: string[] = [];
+  for (const m of content.matchAll(opener)) {
+    let depth = 1;
+    let quote = "";
+    const start = m.index + m[0].length;
+    for (let i = start; i < content.length; i++) {
+      const ch = content[i];
+      if (quote) {
+        if (ch === "\\") i++;
+        else if (ch === quote) quote = "";
+      } else if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === "#") i = content.indexOf("\n", i) < 0 ? content.length : content.indexOf("\n", i);
+      else if (ch === "[") depth++;
+      else if (ch === "]" && --depth === 0) {
+        out.push(content.slice(start, i));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export function parseDependencies(file: string, content: string): string[] {
   const name = basename(file);
   const deps = new Set<string>();
@@ -193,8 +220,9 @@ export function parseDependencies(file: string, content: string): string[] {
         if (m) deps.add(m[1].toLowerCase());
       }
     } else if (name === "pyproject.toml") {
-      const arr = content.match(/^\s*dependencies\s*=\s*\[([\s\S]*?)\]/m);
-      for (const m of arr?.[1].matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)/g) ?? []) deps.add(m[1].toLowerCase());
+      const optional = content.match(/\[project\.optional-dependencies\]([\s\S]*?)(\n\[|$)/)?.[1] ?? "";
+      const lists = [...tomlArrays(content, /^\s*dependencies\s*=\s*\[/gm), ...tomlArrays(optional, /^\s*[\w-]+\s*=\s*\[/gm)];
+      for (const list of lists) for (const m of list.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)/g)) deps.add(m[1].toLowerCase());
       const poetry = content.match(/\[tool\.poetry\.(?:dev-)?dependencies\]([\s\S]*?)(\n\[|$)/);
       for (const m of poetry?.[1].matchAll(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*=/gm) ?? []) {
         if (m[1] !== "python") deps.add(m[1].toLowerCase());

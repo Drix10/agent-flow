@@ -36,7 +36,8 @@ npx @drix10/agent-flow install --harness claude
 ```
 
 - Copies the skills to `.claude/skills/<name>/` and the reviewer subagent to `.claude/agents/reviewer.md` (`tools: Read, Grep, Glob`, so it really is read-only).
-- Add `@AGENTS.md` to `CLAUDE.md` so the root context loads.
+- Adds `@AGENTS.md` to `CLAUDE.md` (creating it if needed) so the root context loads.
+- Merges a `PreToolUse` entry for `agent-flow guard` into `.claude/settings.json`, pointing at the copy of agent-flow in your `node_modules`. It blocks protected-path writes, `--no-verify`, force-pushes and pushes to the default branch in every session, and applies role limits when `AGENT_FLOW_ROLE` is set. `npx @drix10/agent-flow guard --check` confirms it is wired up.
 - There are no Pi tools here. The skills call `npx @drix10/agent-flow state|worktree|classify|doctor|audit-risk` instead.
 
 ## Codex CLI

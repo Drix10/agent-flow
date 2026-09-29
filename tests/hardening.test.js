@@ -958,3 +958,58 @@ test("manifest type errors are named, not reported as 'missing'", () => {
   assert.ok(p.some((x) => /context_files\[0\] must be an object/.test(x)));
   assert.ok(p.some((x) => /context_files\[1\]\.path must be a string/.test(x)));
 });
+
+// ---------------------------------------------------------------------------
+// Audit rows #77–83
+// ---------------------------------------------------------------------------
+
+test("guard: prototype-named commands are analysed, not crashed on", () => {
+  const base = { role: null, toolName: "Bash", cwd: "/repo", root: "/repo", manifest: { protected_paths: ["config/"] } };
+  for (const cmd of ["constructor -x; rm config/a", "__proto__ x; rm config/a"]) {
+    const d = decide({ ...base, input: { command: cmd } });
+    assert.equal(d?.rule, "protected-path", cmd);
+  }
+});
+
+test("a directory named ..data is inside the repo", () => {
+  const { dir } = gitRepo("dotdot");
+  try {
+    mkdirSync(join(dir, "..data"));
+    const d = decide({ role: "implementer", toolName: "write", input: { path: join(dir, "..data", "x.txt") }, cwd: dir, root: dir, manifest: null });
+    assert.equal(d, null);
+    const out = decide({ role: "implementer", toolName: "write", input: { path: join(dir, "..", "x.txt") }, cwd: dir, root: dir, manifest: null });
+    assert.equal(out?.rule, "outside-repo");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("protected_paths entries with a leading slash match repo-relative files", () => {
+  assert.equal(matchAny(["/config/"], "config/a.ts"), "/config/");
+  assert.equal(matchAny(["/src/auth.ts"], "src/auth.ts"), "/src/auth.ts");
+  assert.equal(matchAny(["/"], "config/a.ts"), null);
+});
+
+test("parseDependencies reads past extras brackets", async () => {
+  const { parseDependencies } = await import("../extensions/lib/risk.js");
+  const toml = `[project]\ndependencies = [\n  "requests[security]>=2",  # legacy ]\n  "flask",\n]\n\n[project.optional-dependencies]\ndev = ["pytest", "black[jupyter]"]\n`;
+  assert.deepEqual(parseDependencies("pyproject.toml", toml), ["black", "flask", "pytest", "requests"]);
+});
+
+test("CLI: prototype-named roles and a bare --round are usage errors", () => {
+  const { dir } = gitRepo("cliedge");
+  try {
+    const schema = run(dir, ["schema", "toString"]);
+    assert.equal(schema.status, 2);
+    assert.match(schema.stderr, /usage: agent-flow schema/);
+    const rep = run(dir, ["report", "constructor", "x.json"]);
+    assert.equal(rep.status, 2);
+    const round = run(dir, ["state", "update", "--issue", "5", "--state", "Working", "--round"]);
+    assert.equal(round.status, 2);
+    assert.match(round.stderr, /--round needs a non-negative integer/);
+    assert.equal(run(dir, ["state", "show", "--issue", "5", "--json"]).status, 0);
+    assert.match(run(dir, ["state", "show", "--issue", "5"]).stdout, /no state yet/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
