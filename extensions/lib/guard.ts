@@ -175,7 +175,9 @@ const GIT_MUTATING_SUB = /^(commit|push|add|rm|mv|reset|checkout|switch|restore|
 const PKG_MUTATING = /^(npm|pnpm|yarn|bun)\s+(add|remove|rm|uninstall|un|publish|link|unlink|version|pkg|dedupe|prune|update|up|upgrade)\b|^(npm|pnpm|bun)\s+(install|i)\b|^yarn(\s+install)?\s*$|^yarn\s+add\b|^pip3?\s+(install|uninstall)\b|^(uv|poetry)\s+(add|remove|pip|lock)\b|^go\s+(get|mod\s+tidy)\b|^cargo\s+(add|remove|install|update)\b|^gem\s+install\b|^bundle\s+(add|update|install)\b/i;
 const CLEAN_INSTALL = /^(npm\s+ci|pnpm\s+install\s+--frozen-lockfile|yarn\s+install\s+--(frozen-lockfile|immutable)|bun\s+install\s+--frozen-lockfile|pip3?\s+install\s+-r\s+\S+|uv\s+sync\s+--(locked|frozen)|poetry\s+install\s+--no-root|bundle\s+install\s+--frozen)(\s|$)/i;
 const GH_MUTATING = /^gh\s+(pr\s+(create|merge|edit|close|comment|review|ready|reopen)|issue\s+(create|edit|close|comment|reopen|delete)|release\s+(create|delete|edit|upload)|repo\s+(create|delete|edit)|api\s+.*(-X|--method)[\s=]*(POST|PUT|PATCH|DELETE)|api\b(?!.*(-X|--method)[\s=]*GET\b).*\s(-f|-F|--field|--raw-field|--input)(\s|=|$))/i;
-const INLINE_WRITE = /\b(node|deno|bun)\s+(-e|--eval|-p)\b.*\b(writeFile|appendFile|rmSync|unlink|rename|mkdir|createWriteStream|copyFile)|\bpython3?\s+-c\b.*(open\([^)]*['"][wa+]|\.write\(|os\.remove|os\.unlink|shutil\.|os\.rename|pathlib)|\b(perl|ruby)\b[^|;&\n]*\s-(?!-)[a-zA-Z]*[ei]|\bsed\b[^|;&\n]*\s(-(?!-)[a-zA-Z]*i|--in-place)|\bawk\s+-i\s+inplace/i;
+const INLINE_WRITE = /\b(node|deno|bun)\s+(-e|--eval|-p)\b.*\b(writeFile|appendFile|rmSync|unlink|rename|mkdir|createWriteStream|copyFile)|\bpython3?\s+-c\b.*(open\([^)]*['"][wa+]|\.write\(|os\.remove|os\.unlink|shutil\.|os\.rename|pathlib)|\b(perl|ruby)\b[^|;&\n]*\s-(?!-)[a-zA-Z]*[ei]|\bsed\b[^|;&\n]*\s(-(?!-)[a-zA-Z]*i|--in-place)|\bawk\s+-i\s+inplace|\bg?awk\b[^|;&\n]*(?:>|\bsystem\s*\(|\|\s*getline\s*\w*\s*\|)|\bphp\s+-r\b.*\b(file_put_contents|fopen|fwrite|unlink|rename|mkdir|copy|system|exec|shell_exec|passthru)\b|\bpython3?\s+-c\b.*\b(os\.system|os\.popen|subprocess|exec\(|eval\()|\bsqlite3\b[^|;&\n]*\b(create|insert|update|delete|drop|alter|replace|vacuum|attach)\b/i;
+/** Unpacking an archive writes every file in it. */
+const EXTRACT = /(^|[\s;&|(])((?:bsd)?tar\s+(?:-?[a-zA-Z]*x[a-zA-Z]*\b|[^|;&\n]*\s(?:-[a-zA-Z]*x[a-zA-Z]*|--extract|--get)\b)|unzip\b(?![^|;&\n]*\s-[a-zA-Z]*[ltpvz]\b)|7z[a-z]?\s+[xe]|unrar\s+[xe]|gunzip|gzip\s+(-[a-zA-Z]*d|--decompress)|bunzip2|unxz|xz\s+(-[a-zA-Z]*d|--decompress))\b/i;
 /** A script fed on stdin can do anything; its text isn't in `command` to analyse. */
 const OPAQUE_SCRIPT = /\b(python3?|node|ruby|perl|php|deno|bun|bash|sh|zsh)\s+(-\s*)?<</i;
 /** Formatters that rewrite files unless told only to check. */
@@ -185,6 +187,8 @@ const SNAPSHOT_OR_FIX = /(--update-?snapshots?|--updateSnapshot|--snapshot-updat
 // curl short options cluster (`-sSo f`); -D/-c write header dumps and cookie jars. `-X` is skipped: `-XPOST` isn't -O.
 const DOWNLOAD_TO_NOWHERE = /(\s-[a-zA-Z]*o|\s--output)(\s+|=)(\/dev\/null|-)(\s|$)/;
 const DOWNLOAD_TO_FILE = /\bcurl\b[^|;&\n]*\s(-(?![-X])[a-zA-Z]*[oODc]|--(output|remote-name|output-dir|dump-header|cookie-jar|trace|trace-ascii|stderr)\b)|\bwget\b(?![^|;&\n]*(\s-[a-zA-Z]*O\s*-(\s|$)|--output-document=-))/;
+/** Harness tools that start another agent (matched on the snake_case form of the tool name). */
+const SPAWN_TOOL = /^(task|agent|subagent|sub_agent|spawn_agent|run_subagent|run_agent|delegate|delegate_task|invoke_agent|call_agent)$/;
 const AGENT_CLIS = new Set(["pi", "claude", "claude-code", "codex", "gemini", "gemini-cli", "cursor-agent", "aider", "opencode", "goose", "amp", "qwen", "crush", "pi-coding-agent"]);
 
 /**
@@ -359,6 +363,7 @@ export function analyzeShell(cmd: string, depth = 0): ShellFinding {
     }
     if (INLINE_WRITE.test(c)) why.push("inline interpreter/in-place edit that writes files");
     if (OPAQUE_SCRIPT.test(c)) why.push("script fed on stdin (contents can't be checked)");
+    if (EXTRACT.test(stripQuoted(c))) why.push("archive extraction writes files");
     if (DOWNLOAD_TO_FILE.test(c) && !DOWNLOAD_TO_NOWHERE.test(c)) why.push("download written to disk");
   }
   return { mutating: why.length > 0, why: [...new Set(why)] };
@@ -1052,6 +1057,9 @@ function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision |
   for (const spec of refspecs) {
     const s = spec.replace(/^\+/, "");
     const dest = (s.includes(":") ? s.slice(s.lastIndexOf(":") + 1) : s).replace(/^refs\/heads\//, "");
+    // `HEAD`/`@` name whatever is checked out (main, if the agent is on it), and `$(…)`, `` `…` `` or a glob
+    // can expand to anything: the guard can't see the branch, so they get the same answer as a bare `git push`.
+    if ((dest === "" && !s.startsWith(":")) || dest === "HEAD" || dest === "@" || /[$`*?]/.test(dest)) return block("explicit-refspec", `\`git push <remote> ${spec}\` doesn't name its target branch — spell it out (e.g. \`git push origin agent/issue-N\`).`);
     // `:` alone pushes every matching branch, the default one included.
     if (protectedBranches.has(dest) || s === ":") return block("push-default-branch", "agents never push to the default branch — push agent/issue-N and open a PR.");
     // An empty source (`:branch`) deletes the remote branch.
@@ -1517,6 +1525,13 @@ function decideKnown(g: GuardInput): GuardDecision | null {
     } else if (role && role !== "orchestrator") {
       return block("role-tool", `role "${role}" may not merge pull requests (${toolName}).`);
     }
+  }
+
+  // ---- spawning agents through the harness's own tool (Claude Code `Task`/`Agent`, Pi `subagent`, …) ----
+  // The shell path already refuses `claude -p`; a sub-agent tool is the same escalation, and the sub-agent
+  // would carry whatever agent_type the caller names. Only the orchestrator (or an unroled session) spawns.
+  if (role && role !== "orchestrator" && SPAWN_TOOL.test(words)) {
+    return block("role-escalation", `role "${role}" may not launch another agent (${toolName}). Only the orchestrator spawns roles.`);
   }
 
   // ---- read tools: env files and deny_read paths ---------------------------------

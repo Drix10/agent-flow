@@ -155,7 +155,7 @@ issue ─▶ worktree ─▶ Implementer ─▶ classify ─▶ Reviewer ─▶ 
                             └──── ≤ 2 rounds ──────────┘──▶ round 3 = 🔴 Needs Me
 ```
 
-- **Separate processes.** Each role is its own process with its own `AGENT_FLOW_ROLE` — `claude -p` on Claude Code, `codex exec` on Codex CLI, `pi -p` on Pi. The Reviewer launches read-only: the `reviewer` subagent on Claude Code, `codex exec --sandbox read-only` on Codex, `--tools read,grep,find,ls` on Pi. See [skills/invoking-agents/SKILL.md](./skills/invoking-agents/SKILL.md) for the exact command on each.
+- **Separate processes.** When the pipeline runs as documented, each role is its own process with its own `AGENT_FLOW_ROLE` — `claude -p` on Claude Code, `codex exec` on Codex CLI, `pi -p` on Pi. The Reviewer launches read-only: the `reviewer` subagent on Claude Code, `codex exec --sandbox read-only` on Codex, `--tools read,grep,find,ls` on Pi. If a session ignores the skill and does the work inline, no role applies to it and the role limits don't either (FM-18). See [skills/invoking-agents/SKILL.md](./skills/invoking-agents/SKILL.md) for the exact command on each.
 - **Artifacts only.** Roles hand off `issue.md`, `diff.patch`, `classification.json`, `review-rN.json` and `qa-rN.json`. They never hand off reasoning.
 - **Issue text is untrusted.** It is wrapped in `<untrusted_issue>`. Every skill tells the model to treat it as requirements, never instructions. The guard blocks role changes and nested agent launches from inside a role.
 - **Critical changes** get a draft PR and a human. Low-risk changes can auto-merge only if you opt in (`pipeline.auto_merge_low_risk`).

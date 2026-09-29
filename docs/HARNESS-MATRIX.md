@@ -7,8 +7,8 @@ What is **enforced** (the harness or our code blocks it), **checked** (the pre-c
 | Skill discovery | `pi.skills` | `.claude/skills/` | `.agents/skills/` | `.gemini/skills/` | `.cursor/skills/` | `.github/skills/` | none documented — `.agents/skills/` is a manual reference |
 | Root context auto-loaded | `AGENTS.md` | `CLAUDE.md` → `@AGENTS.md` | `AGENTS.md` | `GEMINI.md`, or `context.fileName` incl. `AGENTS.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md`, per-directory in monorepos |
 | `allowed-tools` restricts tools | ❌ pre-approval only (FM-16, tested) | ❌ pre-approval | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Reviewer can't write | ✅ `--tools read,grep,find,ls` + guard (write-block probed live) | ✅ subagent `tools: Read, Grep, Glob` | ✅ `codex exec --sandbox read-only` (write-block probed live) | ⚠️ tool list without write/shell, unverified | ❌ instructed | ❌ instructed | ❌ instructed |
-| Protected paths | ✅ guard (per call) + hook | ✅ `agent-flow guard` hook (per call) + pre-commit hook | ✅ hook | ✅ hook | ✅ hook | ✅ hook | ✅ hook |
+| Reviewer can't write | ✅ `--tools read,grep,find,ls` + guard (write-block probed live) | ✅ subagent `tools: Read, Grep, Glob` | ✅ `codex exec --sandbox read-only` (OS sandbox; flag verified against `--help`, write-block not yet probed by us) | ⚠️ default approval mode: headless denies writes and shell (unverified) | ❌ instructed | ❌ instructed | ❌ instructed |
+| Protected paths | ✅ guard (per call) + hook | ✅ `agent-flow guard` hook (per call) + pre-commit hook | ⚠️ pre-commit hook only | ⚠️ pre-commit hook only | ⚠️ pre-commit hook only | ⚠️ pre-commit hook only | ⚠️ pre-commit hook only |
 | Implementer confined to worktree | ✅ file tools (incl. symlinks), guard · ⚠️ shell best-effort | ✅ file tools via `agent-flow guard` hook · ⚠️ shell best-effort | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed |
 | No `--no-verify` / force-push / push to default branch by agents | ⚠️ guard, every session (shell analysis) | ⚠️ `agent-flow guard` hook, every session (shell analysis) | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed |
 | Protected directories, bulk git rewrites, env-file reads | ✅ guard | ✅ `agent-flow guard` hook | ❌ pre-commit only | ❌ pre-commit only | ❌ pre-commit only | ❌ pre-commit only | ❌ pre-commit only |
@@ -17,6 +17,10 @@ What is **enforced** (the harness or our code blocks it), **checked** (the pre-c
 | Drift / risk checks | ✅ tools + CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
 | Human confirmation for context writes | ✅ UI dialog | the harness's own permission prompt | same | same | same | same | same |
 | Install | `pi install npm:@drix10/agent-flow` | `npx @drix10/agent-flow install --harness claude` | `… --harness codex` | `… --harness gemini` | `… --harness cursor` | `… --harness copilot` | `… --harness windsurf` |
+
+"⚠️ pre-commit hook only" means the rule is *checked* when a commit is made (the hook rejects it), not blocked when the agent writes the file: the write still happens on disk. Only Pi and Claude Code block per call.
+
+**Gemini CLI:** the pipeline runs the Implementer and QA with `--approval-mode yolo` (they need a shell), so nothing confines them while they run; only the pre-commit hook and QA's before/after tree check contain them. The Reviewer runs at the default approval mode, and its write-block is unverified until someone runs the probe below. See `skills/invoking-agents/references/launch.md`.
 
 "⚠️ shell best-effort" means the guard lexes the command and resolves where it writes (redirections, `cp`/`mv`/`tee`/`sed -i`…, following `cd`), but it only sees the command text: an interpreter or script can still write anywhere. For a hard guarantee, run the agent in a container or sandbox. The same limit applies to the git row: branch protection on the remote is the real backstop.
 

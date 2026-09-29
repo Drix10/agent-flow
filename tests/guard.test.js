@@ -116,6 +116,11 @@ test("agents cannot bypass hooks, force-push, or push to the default branch", ()
   blocked(d("orchestrator", "bash", { command: "git push --force origin agent/issue-1" }), "force-push");
   blocked(d("orchestrator", "bash", { command: "git push origin main" }), "push-default-branch");
   blocked(d("orchestrator", "bash", { command: "git push origin HEAD:main" }), "push-default-branch");
+  // HEAD / @ / dynamic targets resolve to the checked-out branch, which may be the default one.
+  for (const cmd of ["git push origin HEAD", "git push -u origin HEAD", "git push origin @", "git push origin HEAD:$(git branch --show-current)", "git push origin HEAD:refs/heads/$B"]) {
+    blocked(d("orchestrator", "bash", { command: cmd }), "explicit-refspec");
+  }
+  assert.equal(d("orchestrator", "bash", { command: "git push origin HEAD:agent/issue-7" }), null);
   assert.equal(d("orchestrator", "bash", { command: "git push -u origin agent/issue-1" }), null);
 });
 
@@ -214,5 +219,25 @@ test("Pi guard hook: an internal error blocks a confined role and leaves an ordi
     } finally {
       delete process.env.AGENT_FLOW_ROLE;
     }
+  }
+});
+
+test("a role cannot spawn another agent through the harness's own tool", () => {
+  for (const role of ["reviewer", "qa", "implementer", "gardener", "bootstrap"]) {
+    for (const tool of ["Task", "Agent", "subagent"]) blocked(d(role, tool, { prompt: "x", subagent_type: "implementer" }), "role-escalation");
+  }
+  assert.equal(d("orchestrator", "Task", { prompt: "x" }), null);
+  assert.equal(d(null, "Task", { prompt: "x" }), null);
+});
+
+test("a read-only role cannot write through awk, php, sqlite3, os.system or an archive", () => {
+  const cmds = [
+    `awk 'BEGIN{print 1 > "f"}'`, `gawk 'BEGIN{system("touch f")}'`, `php -r 'file_put_contents("f",1);'`,
+    `python3 -c "import os;os.system('touch f')"`, `python3 -c "import subprocess;subprocess.run(['touch','f'])"`,
+    `sqlite3 db 'create table t(x)'`, "tar xf x.tar", "tar -xzf x.tgz", "unzip x.zip", "7z x a.7z", "gunzip a.gz",
+  ];
+  for (const command of cmds) blocked(d("reviewer", "bash", { command }), "read-only-role");
+  for (const command of ["tar tf x.tar", "tar -tzf x.tgz", "unzip -l x.zip", "awk '{print $1}' a.txt", "sqlite3 db 'select 1'"]) {
+    assert.equal(d("reviewer", "bash", { command }), null, command);
   }
 });

@@ -57,7 +57,7 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
   - reviewer and qa can't write;
   - the implementer is confined to its worktree;
   - protected paths are blocked for every role;
-  - roles can't re-role themselves or spawn other agents.
+  - roles can't re-role themselves or spawn other agents, whether by shell (`claude -p`) or by the harness's own `Task`/`Agent`/`subagent` tool.
 - The Reviewer is launched with `--tools read,grep,find,ls`.
 - The Claude Code reviewer subagent has `Read, Grep, Glob` only.
 - The pre-commit hook blocks protected paths for any harness.
@@ -65,6 +65,7 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
 **Status:**
 - **Enforced** on Pi and on Claude Code (with the `guard` hook installed) for `write`/`edit`. **Best-effort** for shell commands.
 - **Enforced** on Claude Code for the reviewer subagent.
+- Read-only roles are also refused shell commands that extract archives, or that write through `awk`, `php -r`, `sqlite3` or `os.system`. Any interpreter running a script file is still invisible to the guard.
 - **Checked** at commit time everywhere else.
 
 **v1.0.x claimed:** "Implementer's worktree is sandboxed", "Protected paths are read-only in the Implementer's sandbox", "Pre-commit hook rejects changes to protected paths". None of these were implemented. The Claude Code reviewer also had `Bash`, which can write.

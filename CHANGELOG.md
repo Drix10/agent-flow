@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **`git push origin HEAD` reached the default branch.** `HEAD`, `@`, an empty target and dynamic targets (`HEAD:$(…)`, `HEAD:refs/heads/$B`, globs) now get the same `explicit-refspec` block as a bare `git push`, because the guard can't see which branch is checked out. Name the branch: `git push origin agent/issue-N`.
+- **Roles could spawn agents through the harness's own tool.** `Task`, `Agent`, `subagent` and similar tools are refused for every role except the orchestrator, matching the shell rule for `claude -p`.
+- **Read-only roles: more write paths recognised.** Archive extraction (`tar x`, `unzip`, `7z x`, `gunzip`…), `awk` redirects and `system()`, `php -r` writes, `sqlite3` mutations and `python -c` with `os.system`/`subprocess`. Listing an archive (`tar t`, `unzip -l`) stays allowed.
+
+### Fixed (docs)
+- `HARNESS-MATRIX.md`: the "Protected paths" row showed ✅ for harnesses that only have the pre-commit hook; it now says so. The Codex reviewer cell no longer claims a live write-block probe that was not run. The Gemini reviewer cell and `.gemini/agents/reviewer.md` now match `launch.md` (default approval mode; Gemini has no `plan` mode in this version), and the matrix states that Gemini's Implementer and QA run under `yolo`.
+- README: "separate processes" is qualified with "when the pipeline runs as documented" (FM-18).
+
 ## [1.1.4] - 2026-09-29
 
 Two reviews of the guard (one on a repo with an append-only ledger, frozen specs and secrets; one on the fixes to that) closed 16 of 43 attack cases that used to pass, and made agent-flow safe to adopt in a repository that already has rules, a task file and paths that must not change. Every row has a regression test: [docs/AUDIT-v1.1.md](./docs/AUDIT-v1.1.md) #77–95.
