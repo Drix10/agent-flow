@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **Protected directories:** `dir/**` now matches `dir` itself, and `rm`/`mv` of a protected directory or any parent of one (through `rm -rf .`) is blocked for every session. Deleting or moving `CONTEXT_MANIFEST.json` is blocked too.
+- **Whole-tree git rewrites** (`reset --hard`, `clean -f`, `stash`, `checkout .`/`-f`, `restore .`, and targeted `checkout`/`restore`/`rm`/`mv` reaching a protected path) are blocked while `protected_paths` is set.
+- Deleting, moving or `chmod`-ing `.git/hooks/*` is blocked for every session (it used to pass for a session with no role); `chmod -x file` is parsed as a mode, not an option.
+- **Protection survives the manifest:** `protected_paths` committed to `HEAD` still apply if the manifest is deleted or emptied on disk.
+- **The guard fails closed** on its own errors (unreadable input, a crash) whenever a manifest exists on disk or at `HEAD`, or `AGENT_FLOW_GUARD_STRICT=1`; only an unconfigured session is left alone.
+- **Secret reads:** env files (including `.env2`, `.env_prod`) and manifest `deny_read` paths can't be read by an agent via the shell or a read tool; `AGENT_FLOW_ALLOW_SECRET_READ=1` overrides. New `deny_read` manifest key.
+- The secret scanner finds credentials assigned to secret-named variables (`APCA_API_SECRET_KEY=…`, `FRED_API_KEY=…`, `password = "…"`) while skipping placeholders, config references and identifiers.
+
+- **Guard wiring is protected:** while `protected_paths` is set, no session edits `.claude/settings*.json` or the installed agent-flow, and `rm -rf .git` is blocked for every session. The hook matcher now includes `Read`, `NotebookRead`, `Grep` and `Glob`, so the secret-read rule actually runs (existing installs are upgraded in place by re-running `install --harness claude`).
+- **Remote pushes:** git-host MCP tools (`push_files`, `create_or_update_file`, `delete_file`) can't write to the default branch or with no branch named, are checked against protected paths, and pipeline roles can't `merge_pull_request`.
+- **Shell:** brace expansion (`rm -rf research/{ledger,prereg}`), `find … -delete`/`-exec rm`, `git -C dir …`, and `tar -C`/`unzip -d` destinations are resolved like any other write; a directory too large to inspect is assumed to hold a protected path. Secret reads also catch `curl -F f=@.env`, `git show HEAD:.env` and `git diff .env`.
+- **Floor:** committed `deny_read` joins `protected_paths` as a floor, and the floor is the union of `HEAD` and the default branch's manifest.
+- `tests/redteam/corpus.json`: a table of blocked, allowed and documented-gap cases that `npm test` runs. `.pre-commit-hooks.yaml` for pre-commit.com users.
+
+### Changed
+- `scan`, `doctor`, `audit-risk` and `init` read git's file list, so gitignored trees are never walked (a scan of a repo with a 7 GB ignored `data/` dir no longer takes minutes). Ignored env files are no longer reported as "present in the working tree".
+- `scan` recognises C/C++ (CMake, ctest, GoogleTest, Catch2), PHP, Swift, Elixir and Dart. `init` suggests `protected_paths` from directories that exist and writes none.
+- New guide for existing repositories: [docs/ADOPTION.md](./docs/ADOPTION.md).
+
 ## [1.1.3] - 2026-09-29
 
 ### Security

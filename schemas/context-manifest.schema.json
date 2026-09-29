@@ -38,6 +38,11 @@
       }
     },
     "protected_paths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "deny_read": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Paths or globs agents may not read (same syntax as protected_paths). Real env files (.env, .env.local, …) are always denied; a human overrides with AGENT_FLOW_ALLOW_SECRET_READ=1."
+    },
     "secret_scan": {
       "type": "object",
       "description": "Secret-scanner settings. Known fakes (test fixtures, docs samples) belong here or behind an `agent-flow:allow-secret` comment, not behind --no-verify.",

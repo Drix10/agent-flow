@@ -9,6 +9,7 @@
 
 import { isAbsolute, join } from "node:path";
 import { existsSync } from "node:fs";
+import { defaultBase, git } from "./git.js";
 import { CASE_INSENSITIVE_FS, readJson, toPosix } from "./fsutil.js";
 
 export const MANIFEST_FILE = "CONTEXT_MANIFEST.json";
@@ -53,6 +54,8 @@ export interface ContextManifest {
   risk_boundaries?: RiskBoundary[];
   protected_paths?: string[];
   secret_scan?: { ignore_paths?: string[] };
+  /** Extra paths/globs agents may not read (env files are always denied). */
+  deny_read?: string[];
   pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
@@ -153,6 +156,9 @@ export function validateManifest(m: unknown): string[] {
           problems.push(`risk_boundaries[${i}].risk_level must be low | medium | critical`);
       });
   }
+  if (man.deny_read !== undefined && (!Array.isArray(man.deny_read) || man.deny_read.some((p) => typeof p !== "string" || !p))) {
+    problems.push("deny_read must be an array of non-empty strings");
+  }
   const ignore = man.secret_scan?.ignore_paths;
   if (man.secret_scan !== undefined && (typeof man.secret_scan !== "object" || man.secret_scan === null || Array.isArray(man.secret_scan))) {
     problems.push("secret_scan must be an object like {\"ignore_paths\": []}");
@@ -232,10 +238,75 @@ export function tryLoadManifest(root: string): ContextManifest | null {
  * For the guard: the manifest, or why an existing one can't be loaded. "Absent"
  * and "present but unparseable" must differ — the second fails closed.
  */
-export function loadManifestForGuard(root: string): { manifest: ContextManifest | null; error?: string } {
+export function loadManifestForGuard(root: string): { manifest: ContextManifest | null; error?: string; fromHead?: boolean } {
   const r = loadManifest(root);
-  if (r.ok) return { manifest: r.value.manifest };
-  return r.error === "manifest_not_found" ? { manifest: null } : { manifest: null, error: r.error };
+  const head = committedManifest(root);
+  const base = defaultBranchManifest(root);
+  if (r.ok) {
+    // Protection committed to HEAD outlives an uncommitted edit: emptying protected_paths on disk
+    // (a Write, an `rm`, a `git checkout` of an older copy) must not switch it off.
+    // The floor is what the default branch and HEAD both committed: committing a weaker manifest on a
+    // feature branch must not lower it, so the default branch's copy counts as well as HEAD's.
+    const disk = r.value.manifest;
+    const floors = [head, base];
+    const extra = [...new Set(floors.flatMap((f) => protectedPathsOf(f)))].filter((p) => !protectedPathsOf(disk).includes(p));
+    const extraDeny = [...new Set(floors.flatMap((f) => denyReadPathsOf(f)))].filter((p) => !denyReadPathsOf(disk).includes(p));
+    if (!extra.length && !extraDeny.length) return { manifest: disk };
+    return { manifest: { ...disk, protected_paths: [...protectedPathsOf(disk), ...extra], deny_read: [...denyReadPathsOf(disk), ...extraDeny] } };
+  }
+  if (r.error !== "manifest_not_found") return { manifest: null, error: r.error };
+  // A manifest that was committed and then deleted still governs: absence is not permission.
+  const held = head ?? base;
+  return held ? { manifest: head && base ? { ...head, protected_paths: [...new Set([...protectedPathsOf(head), ...protectedPathsOf(base)])], deny_read: [...new Set([...denyReadPathsOf(head), ...denyReadPathsOf(base)])] } : held, fromHead: true } : { manifest: null };
+}
+
+/** CONTEXT_MANIFEST.json as the default branch has it (a feature branch can't weaken what main already committed). */
+export function defaultBranchManifest(root: string): ContextManifest | null {
+  let base: string;
+  try {
+    base = defaultBase(root);
+  } catch {
+    return null;
+  }
+  const r = git(["show", `${base}:${MANIFEST_FILE}`], root, 10_000);
+  if (!r.ok) return null;
+  try {
+    const parsed = JSON.parse(r.stdout.replace(/^\uFEFF/, ""));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as ContextManifest) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** CONTEXT_MANIFEST.json as committed at HEAD, or null (no repo, no commit, not committed, unparseable). */
+export function committedManifest(root: string): ContextManifest | null {
+  const r = git(["show", `HEAD:${MANIFEST_FILE}`], root, 10_000);
+  if (!r.ok) return null;
+  try {
+    const parsed = JSON.parse(r.stdout.replace(/^\uFEFF/, ""));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as ContextManifest) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Should a guard that itself broke refuse the call? Yes whenever protection is configured (a manifest
+ * on disk or at HEAD) or the launcher asked for it; an unconfigured ordinary session isn't bricked by a bug.
+ */
+export function guardFailsClosed(root: string): boolean {
+  if (process.env.AGENT_FLOW_GUARD_STRICT === "1") return true;
+  try {
+    return existsSync(join(root, MANIFEST_FILE)) || committedManifest(root) !== null || defaultBranchManifest(root) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** deny_read as a clean string array. */
+export function denyReadPathsOf(man: ContextManifest | null | undefined): string[] {
+  const p = man?.deny_read;
+  return Array.isArray(p) ? p.filter((x): x is string => typeof x === "string" && x.length > 0) : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +344,8 @@ export function matchesPattern(pattern: string, file: string): boolean {
   const pat = toPosix(pattern).trim().replace(/^\.\//, "").replace(/^\/+/, "");
   if (!pat) return false;
   if (/[*?]/.test(pat)) {
+    // `research/ledger/**` protects the directory too: deleting or moving it must not slip past.
+    if (pat.endsWith("/**") && matchesPattern(pat.slice(0, -3), file)) return true;
     const re = globToRegExp(pat.endsWith("/") ? `${pat}**` : pat);
     // A glob with no slash matches the basename anywhere (like .gitignore).
     if (!pat.includes("/")) return re.test(f.split("/").pop() ?? f);

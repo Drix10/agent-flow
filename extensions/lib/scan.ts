@@ -9,7 +9,8 @@
 
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { readJson, readTextFile, walk } from "./fsutil.js";
+import { readJson, readTextFile } from "./fsutil.js";
+import { listRepoFiles } from "./repofiles.js";
 import { defaultBranch, git } from "./git.js";
 import { scanRiskSurfaces } from "./risk.js";
 import { isContextFile } from "./stale.js";
@@ -40,7 +41,7 @@ const ENTRY = /(^|\/)(main|index|app|server|cli|__main__|manage|lib|mod)\.(ts|ts
 const CI = /^(\.github\/workflows\/[^/]+\.ya?ml|\.gitlab-ci\.yml|\.circleci\/config\.yml|azure-pipelines\.yml|Jenkinsfile|\.buildkite\/[^/]+\.ya?ml|bitbucket-pipelines\.yml|\.drone\.yml)$/;
 
 export function scanRepo(root: string, opts: { maxFiles?: number } = {}): ScanResult {
-  const { files, truncated } = walk(root, { maxFiles: opts.maxFiles ?? 50_000, linkedFiles: true });
+  const { files, truncated } = listRepoFiles(root, { maxFiles: opts.maxFiles ?? 50_000, linkedFiles: true });
   const has = (f: string) => files.includes(f);
   const languages = new Set<string>();
   const pms = new Set<string>();
@@ -103,6 +104,17 @@ export function scanRepo(root: string, opts: { maxFiles?: number } = {}): ScanRe
   if (files.some((f) => /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/.test(f))) languages.add("jvm");
   if (files.some((f) => basename(f) === "Gemfile")) languages.add("ruby");
   if (files.some((f) => /\.(csproj|sln)$/.test(f))) languages.add("dotnet");
+  if (files.some((f) => /(^|\/)CMakeLists\.txt$/.test(f) || /\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$/.test(f))) {
+    languages.add(files.some((f) => /\.(cc|cpp|cxx|hh|hpp|hxx)$/.test(f) || /(^|\/)CMakeLists\.txt$/.test(f)) ? "c/c++" : "c");
+    const cmake = files.filter((f) => /(^|\/)CMakeLists\.txt$/.test(f)).map((f) => readTextFile(join(root, f)) ?? "").join("\n");
+    if (/\b(enable_testing|add_test|include\(CTest\))\b/i.test(cmake)) tests.add("ctest");
+    if (/\b(gtest|GTest|googletest)\b/.test(cmake)) tests.add("googletest");
+    if (/\bCatch2\b/.test(cmake)) tests.add("catch2");
+  }
+  if (has("composer.json")) languages.add("php");
+  if (has("Package.swift")) languages.add("swift");
+  if (has("mix.exs")) languages.add("elixir");
+  if (has("pubspec.yaml")) languages.add("dart");
 
   // --- Makefile targets ------------------------------------------------------
   if (has("Makefile")) {

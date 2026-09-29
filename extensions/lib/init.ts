@@ -25,6 +25,8 @@ export interface InitPlan {
   references: number;
   /** Root-level context files that already hold the user's rules; a fresh AGENTS.md was not generated beside them. */
   existing_rules?: string[];
+  /** Paths on disk that usually deserve `protected_paths`; suggested, never written — that call is the owner's. */
+  suggested_protected_paths: string[];
   /** Prose references that don't exist today — left out of the manifest; `doctor` reports them. */
   missing_references: { file: string; path: string }[];
 }
@@ -110,6 +112,20 @@ function countMarkers(content: string) {
   };
 }
 
+/** Directories and files whose accidental edit is expensive, from what actually exists. */
+function suggestProtectedPaths(root: string): string[] {
+  const out: string[] = [];
+  for (const d of ["migrations", "db/migrate", "prisma/migrations", "alembic", "terraform", "infra", "infrastructure", "secrets", "ledger", "audit", "deploy"]) {
+    try {
+      if (statSync(join(root, d)).isDirectory()) out.push(`${d}/`);
+    } catch {
+      /* not there */
+    }
+  }
+  if (existsSync(join(root, ".github", "workflows"))) out.push(".github/workflows/");
+  return out;
+}
+
 export function planInit(root: string, opts: { version: string; now?: string }): InitPlan {
   const now = opts.now ?? isoNow();
   const scan = scanRepo(root);
@@ -169,5 +185,6 @@ export function planInit(root: string, opts: { version: string; now?: string }):
   const problems = validateManifest(manifest);
   if (problems.length) throw new Error(`init built an invalid manifest (bug): ${problems.join("; ")}`);
   files.push({ path: MANIFEST_FILE, content: `${JSON.stringify(manifest, null, 2)}\n`, exists: existsSync(join(root, MANIFEST_FILE)) });
-  return { files, context_files: contextFiles, references: refCount, missing_references: missing, ...(existingRules.length && !existsSync(join(root, "AGENTS.md")) ? { existing_rules: existingRules } : {}) };
+  const suggested = suggestProtectedPaths(root);
+  return { files, context_files: contextFiles, suggested_protected_paths: suggested, references: refCount, missing_references: missing, ...(existingRules.length && !existsSync(join(root, "AGENTS.md")) ? { existing_rules: existingRules } : {}) };
 }

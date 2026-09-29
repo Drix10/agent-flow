@@ -11,6 +11,7 @@ What is **enforced** (the harness or our code blocks it), **checked** (the pre-c
 | Protected paths | ✅ guard (per call) + hook | ✅ `agent-flow guard` hook (per call) + pre-commit hook | ✅ hook | ✅ hook | ✅ hook | ✅ hook | ✅ hook |
 | Implementer confined to worktree | ✅ file tools (incl. symlinks), guard · ⚠️ shell best-effort | ✅ file tools via `agent-flow guard` hook · ⚠️ shell best-effort | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed |
 | No `--no-verify` / force-push / push to default branch by agents | ⚠️ guard, every session (shell analysis) | ⚠️ `agent-flow guard` hook, every session (shell analysis) | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed | ❌ instructed |
+| Protected directories, bulk git rewrites, env-file reads | ✅ guard | ✅ `agent-flow guard` hook | ❌ pre-commit only | ❌ pre-commit only | ❌ pre-commit only | ❌ pre-commit only | ❌ pre-commit only |
 | State machine (round cap, transitions) | ✅ `state_update` tool | ✅ `npx @drix10/agent-flow state update` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
 | Mechanical risk classification | ✅ `risk_classify` | ✅ `npx @drix10/agent-flow classify` | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |
 | Drift / risk checks | ✅ tools + CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI | ✅ CLI |

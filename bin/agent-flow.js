@@ -653,9 +653,11 @@ function guardCheck(args) {
 
 function cmdGuard(args) {
   if (args.check) return guardCheck(args);
-  const fail = (role, msg) => {
+  // A guard that broke must not become a way past it: refuse whenever a role, a manifest (on disk or
+  // committed) or AGENT_FLOW_GUARD_STRICT=1 says protection is wanted. Only an unconfigured session is left alone.
+  const fail = (role, msg, cwd = process.cwd()) => {
     console.error(`[agent-flow guard] ${msg}`);
-    return role ? 2 : 0; // a confined role fails closed; an ordinary session is not bricked by a guard bug
+    return role || manifestLib.guardFailsClosed(fsutil.findRepoRoot(cwd)) ? 2 : 0;
   };
   const env = guardLib.parseRole(process.env.AGENT_FLOW_ROLE);
   let ev;
@@ -680,6 +682,7 @@ function cmdGuard(args) {
       manifestError: loaded.error,
       worktree: process.env.AGENT_FLOW_WORKTREE ? resolve(rt, process.env.AGENT_FLOW_WORKTREE) : undefined,
       allowProtected: process.env.AGENT_FLOW_ALLOW_PROTECTED === "1",
+      allowSecretRead: process.env.AGENT_FLOW_ALLOW_SECRET_READ === "1",
     });
     if (!decision) return 0;
     try {
@@ -690,7 +693,7 @@ function cmdGuard(args) {
     console.error(decision.reason);
     return 2;
   } catch (e) {
-    return fail(role, `guard error: ${e.message}`);
+    return fail(role, `guard error: ${e.message}`, typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd());
   }
 }
 
@@ -783,7 +786,8 @@ function importAgentsMd(rt, args) {
   ok(`${args["dry-run"] ? "would write" : "wrote"} CLAUDE.md (${cur === null ? "new, imports" : "appended"} @AGENTS.md)`);
 }
 
-const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|mcp__.*";
+// Every tool the guard has a rule for: writes, the shell, read tools (env files, deny_read) and MCP tools (remote pushes).
+const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|NotebookRead|Grep|Glob|mcp__.*";
 
 /**
  * Wire the guard into Claude Code as a PreToolUse hook, merged into any
@@ -905,7 +909,7 @@ async function cmdInit(args) {
   const dry = !!args["dry-run"];
   const interactive = !args.json && !!process.stdin.isTTY && !!process.stdout.isTTY;
   if (args.json && !args.yes) {
-    console.log(JSON.stringify({ written: [], plan: plan.files.map((f) => ({ path: f.path, action: f.exists ? "skip_exists" : "write", content: f.content })), references: plan.references, missing_references: plan.missing_references }, null, 2));
+    console.log(JSON.stringify({ written: [], plan: plan.files.map((f) => ({ path: f.path, action: f.exists ? "skip_exists" : "write", content: f.content })), references: plan.references, missing_references: plan.missing_references, suggested_protected_paths: plan.suggested_protected_paths }, null, 2));
     return 0;
   }
   if (!args.json) {
@@ -953,6 +957,7 @@ async function cmdInit(args) {
     for (const p of written) {
       ok(`wrote ${p}${p === manifestLib.MANIFEST_FILE ? ` — ${plan.references} reference(s) from ${plan.context_files.length} context file(s)` : ""}`);
     }
+    if (plan.suggested_protected_paths.length) console.log(dim(`  protected_paths is empty. Worth protecting here: ${plan.suggested_protected_paths.join(", ")} — add what applies to CONTEXT_MANIFEST.json (nothing is protected until you do).`));
     if (plan.missing_references.length) warn(`${plan.missing_references.length} referenced path(s) don't exist, so they weren't recorded — \`agent-flow doctor\` lists them`);
     if (written.includes("AGENTS.md") && manifestSkipped) warn("add AGENTS.md to context_files in your existing CONTEXT_MANIFEST.json");
     console.log(dim(`\nnext: ${written.includes("AGENTS.md") ? "replace the [NEEDS VERIFICATION] lines in AGENTS.md, then " : ""}\`agent-flow doctor\` (and add it to CI)`));

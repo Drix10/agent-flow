@@ -1,0 +1,8 @@
+- id: agent-flow-check-staged
+  name: agent-flow check-staged
+  description: Protected paths, secrets and broken context references in the staged change.
+  entry: agent-flow check-staged
+  language: node
+  additional_dependencies: ["@drix10/agent-flow"]
+  pass_filenames: false
+  always_run: true

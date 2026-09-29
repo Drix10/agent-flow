@@ -14,7 +14,8 @@
  */
 
 import { basename, join } from "node:path";
-import { atomicWrite, isoNow, readJson, readTextFile, walk } from "./fsutil.js";
+import { atomicWrite, isoNow, readJson, readTextFile } from "./fsutil.js";
+import { listRepoFiles } from "./repofiles.js";
 import { matchAny, secretIgnorePaths, tryLoadManifest } from "./manifest.js";
 
 export const SELF_PACKAGE = "@drix10/agent-flow";
@@ -78,6 +79,24 @@ export const CODE_PATTERNS: Record<Exclude<SurfaceType, "dependency" | "secret">
 /** Placeholders and interpolation aren't secrets; docker-compose dev defaults are too common to block on. Tested against one match. */
 const CREDENTIAL_PLACEHOLDER = /^[^:]+:\/\/[^\s:@/]+:(password|passwd|pass|pwd|secret|token|changeme|postgres|root|example|test|x+|\*+|\$\{?[^@]*\}?|%[^@]*%|<[^>@]*>|\{\{[^@]*\}\})@$/i;
 
+/**
+ * A credential assigned to a variable named like one: `APCA_API_SECRET_KEY=…`, `fred_api_key: "…"`,
+ * `password = "…"`. Vendor shapes can't cover every provider, so the NAME carries the signal. To stay quiet the value
+ * must be 16+ characters mixing letters and digits, and not read like a placeholder or a reference.
+ */
+const NAMED_SECRET = /(?:api[_-]?key|api[_-]?secret|secret[_-]?key|secret[_-]?access[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|token)(?:[_-]?(?:id|key|value|str|string))?["']?\s*[:=]\s*["']?([A-Za-z0-9/+_=.-]{16,})(?![A-Za-z0-9/+_=.(-])["']?/gi;
+const NAMED_SECRET_UNLESS = {
+  // Judged per match: a placeholder, a reference to config, or an identifier is not a credential.
+  test(match: string): boolean {
+    const v = match.match(/[:=]\s*["']?([A-Za-z0-9/+_=.-]{16,})/)?.[1] ?? "";
+    if (!/[A-Za-z]/.test(v) || !/\d/.test(v)) return true; // a real key mixes letters and digits
+    if (/example|changeme|change_me|placeholder|your[_-]|dummy|sample|redacted|x{6,}|\*{4,}|process\.env|os\.environ|getenv|secrets\./i.test(v)) return true;
+    if (/^[A-Za-z]+(\.[A-Za-z_]+)+$/.test(v) || /^(.)\1+$/.test(v)) return true;
+    if (/^[a-z]+(?:[A-Z][a-z]+){2,}\d*$/.test(v) || /^[a-z0-9]+(?:_[a-z0-9]+){2,}$/i.test(v)) return true; // camelCase / snake_case identifiers
+    return false;
+  },
+} as unknown as RegExp;
+
 /** High-signal secret shapes. We report the KIND and LINE only — never the value. */
 const SECRET_PATTERNS: { kind: string; re: RegExp; unless?: RegExp }[] = [
   { kind: "AWS access key id", re: /\b(AKIA|ASIA)[0-9A-Z]{16}\b/ },
@@ -104,6 +123,8 @@ const SECRET_PATTERNS: { kind: string; re: RegExp; unless?: RegExp }[] = [
   { kind: "Shopify token", re: /\bshp(at|ca|pa|ss)_[a-fA-F0-9]{32}\b/ },
   // .npmrc: `//registry.npmjs.org/:_authToken=<uuid | npm_…>`; `${NPM_TOKEN}` doesn't match.
   { kind: "npm auth token", re: /_authToken\s*=\s*["']?(npm_[A-Za-z0-9]{36}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i },
+  { kind: "Alpaca API key", re: /\bAPCA[-_]API[-_](?:KEY[-_]ID|SECRET[-_]KEY)\b["']?\s*[:=]\s*["']?[A-Za-z0-9]{16,}/i },
+  { kind: "credential assigned to a secret-named variable", re: NAMED_SECRET, unless: NAMED_SECRET_UNLESS },
   {
     kind: "database URL with password",
     // The password may contain `/`; one that is all digits before a `/` is a port (`host:8080/a@b`).
@@ -181,7 +202,7 @@ export function findSecrets(content: string, opts: { honorMarker?: boolean } = {
 }
 
 /** `.env`, `.env.production.local`, `.envrc`, `prod.env` — any number of dot-suffixes. */
-const ENV_FILE = /(^|\/)(\.env(\.[\w-]+)*|\.envrc|[\w.-]+\.env)$/;
+const ENV_FILE = /(^|\/)(\.env(\d+|[_-][\w-]+)?(\.[\w-]+)*|\.envrc|[\w.-]+\.env)$/;
 const ENV_TEMPLATE = /\.(example|sample|template|dist|defaults)$/i;
 
 /** A real environment file, not a checked-in template (`.env.example`, `prod.env.sample`). */
@@ -290,7 +311,7 @@ export function scanRiskSurfaces(root: string, opts: AuditOptions = {}): AuditSc
     if (!surfaces.has(s.key)) surfaces.set(s.key, { ...s, firstSeen: now });
   };
 
-  const { files, truncated } = walk(root, { maxFiles: opts.maxFiles ?? 50_000 });
+  const { files, truncated } = listRepoFiles(root, { maxFiles: opts.maxFiles ?? 50_000 });
   const secretIgnore = secretIgnorePaths(tryLoadManifest(root));
   let scanned = 0;
 

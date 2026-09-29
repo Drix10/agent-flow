@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { decide, analyzeShell, roleMayRunCli } from "../extensions/lib/guard.js";
 import { findSecrets, isEnvFile } from "../extensions/lib/risk.js";
+import * as manifestModule from "../extensions/lib/manifest.js";
 import { loadManifest, matchAny, validateManifest as validateManifestForTest } from "../extensions/lib/manifest.js";
 import { checkReport, extractReport } from "../extensions/lib/report.js";
 import { changedFiles, stagedFiles } from "../extensions/lib/git.js";
@@ -106,7 +107,9 @@ test("guard: agents can't edit what constrains them (agent definitions, skills, 
       assert.equal(call(root, "gardener", "write", { path: p })?.rule, "agent-config", `gardener → ${p}`);
       assert.equal(call(root, "orchestrator", "write", { path: p })?.rule, "agent-config", `orchestrator → ${p}`);
     }
-    assert.equal(call(root, null, "write", { path: ".claude/settings.json" }), null, "a human session still can");
+    // No role: free to edit settings unless protection is configured, when the guard's own wiring is off limits too.
+    assert.equal(decide({ role: null, toolName: "write", input: { path: ".claude/settings.json" }, cwd: root, root, manifest: null }), null);
+    assert.equal(call(root, null, "write", { path: ".claude/settings.json" })?.rule, "guard-wiring");
     assert.equal(call(root, "gardener", "write", { path: "AGENTS.md" }), null, "the gardener still edits context");
     assert.equal(call(root, "implementer", "bash", { command: "rm .github/workflows/ci.yml" })?.rule, "agent-config");
   } finally {
@@ -222,9 +225,17 @@ test("guard CLI speaks Claude Code's PreToolUse contract: exit 2 + stderr blocks
     assert.match(sub.stderr, /read-only/);
     assert.equal(hook({ tool_name: "Edit", tool_input: { file_path: join(dir, "src", "a.ts") }, agent_type: "general-purpose" }).status, 0, "unrelated subagents aren't affected");
 
-    // Garbage input: a confined role fails closed, an ordinary session doesn't get bricked.
+    // Garbage input: a confined role fails closed, and so does any session in a repo that configured protection.
     assert.equal(run(dir, ["guard"], { input: "not json", env: { AGENT_FLOW_ROLE: "implementer" } }).status, 2);
-    assert.equal(run(dir, ["guard"], { input: "not json", env: { AGENT_FLOW_ROLE: "" } }).status, 0);
+    assert.equal(run(dir, ["guard"], { input: "not json", env: { AGENT_FLOW_ROLE: "" } }).status, 2, "a manifest means protection is wanted");
+    // ...while an unconfigured session isn't bricked by a guard bug, unless the launcher opts in.
+    const bare = gitRepo("hookbare");
+    try {
+      assert.equal(run(bare.dir, ["guard"], { input: "not json", env: { AGENT_FLOW_ROLE: "" } }).status, 0);
+      assert.equal(run(bare.dir, ["guard"], { input: "not json", env: { AGENT_FLOW_ROLE: "", AGENT_FLOW_GUARD_STRICT: "1" } }).status, 2);
+    } finally {
+      rmSync(bare.dir, { recursive: true, force: true });
+    }
 
     const audit = readFileSync(join(dir, ".agent-flow", "audit.jsonl"), "utf-8");
     assert.match(audit, /"harness":"claude"/);
@@ -1230,6 +1241,280 @@ test("init does not generate an AGENTS.md beside a CLAUDE.md that already holds 
     } finally {
       rmSync(other.dir, { recursive: true, force: true });
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Adoption review: protected directories, bulk git, hooks, secret reads, scans
+// ---------------------------------------------------------------------------
+
+function ledgerRepo() {
+  const { dir, g } = gitRepo("ledger");
+  mkdirSync(join(dir, "research", "ledger"), { recursive: true });
+  mkdirSync(join(dir, "research", "prereg"), { recursive: true });
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(join(dir, "research", "ledger", "a.jsonl"), "{}\n");
+  writeFileSync(join(dir, "research", "prereg", "p.md"), "x\n");
+  writeFileSync(join(dir, "src", "a.ts"), "x\n");
+  writeFileSync(join(dir, ".env"), "K=v\n");
+  const manifest = { version: "2", context_files: [], protected_paths: ["research/ledger/**", "research/prereg/**", "**/STAGE"] };
+  writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify(manifest));
+  return { dir, g, manifest };
+}
+
+test("guard: removing or moving a protected directory, or a parent of one, is blocked for every session", () => {
+  const { dir, manifest } = ledgerRepo();
+  try {
+    const sh = (command, role = null) => decide({ role, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest })?.rule ?? null;
+    for (const c of ["rm -rf research/ledger/", "rm -r research/prereg", "mv research/prereg /tmp/p", "rm -rf research", `rm -rf ${join(dir, "research", "ledger")}`, "rm -rf ."]) {
+      assert.equal(sh(c), "protected-path", c);
+      assert.equal(sh(c, "implementer"), "protected-path", `implementer: ${c}`);
+    }
+    for (const c of ["rm -rf src", "rm src/a.ts", "mv src/a.ts src/b.ts", "ls research", "cat research/ledger/a.jsonl"]) assert.equal(sh(c), null, c);
+    assert.equal(matchAny(["research/ledger/**"], "research/ledger"), "research/ledger/**", "the directory itself matches dir/**");
+    assert.equal(matchAny(["**/migrations/**"], "db/migrations"), "**/migrations/**");
+    assert.equal(matchAny(["research/ledger/**"], "research/ledger2"), null);
+    assert.equal(decide({ role: null, toolName: "Bash", input: { command: "rm -rf research" }, cwd: dir, root: dir, manifest, allowProtected: true }), null, "human override");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guard: whole-tree git rewrites are blocked while protection is configured; targeted, staged-only and read forms are not", () => {
+  const { dir, manifest } = ledgerRepo();
+  try {
+    const sh = (command, extra = {}) => decide({ role: null, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest, ...extra })?.rule ?? null;
+    for (const c of ["git reset --hard", "git reset --hard HEAD~1", "git clean -fdx", "git clean -f", "git checkout .", "git checkout -- .", "git restore .", "git checkout -- research", "git restore research/ledger/a.jsonl", "git stash", "git stash -u", "git stash pop", "git checkout -f main", "git switch -f main"]) {
+      assert.match(sh(c) ?? "", /bulk-git-protected|protected-path/, c);
+    }
+    for (const c of ["git reset --soft HEAD~1", "git reset HEAD src/a.ts", "git clean -n", "git clean -nd", "git checkout -- src/a.ts", "git checkout main", "git checkout -b feature", "git restore --staged .", "git restore src/a.ts", "git stash list", "git stash show", "git status", "git diff", "git log"]) {
+      assert.equal(sh(c), null, c);
+    }
+    assert.equal(sh("git reset --hard", { allowProtected: true }), null);
+    assert.equal(decide({ role: null, toolName: "Bash", input: { command: "git reset --hard" }, cwd: dir, root: dir, manifest: { protected_paths: [] } }), null, "nothing protected, nothing to guard");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guard: git hooks can't be deleted or chmod'ed by any session; plain .git housekeeping still works", () => {
+  const { dir, manifest } = ledgerRepo();
+  try {
+    const sh = (command, role = null) => decide({ role, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest })?.rule ?? null;
+    for (const c of ["rm .git/hooks/pre-commit", "chmod -x .git/hooks/pre-commit", "chmod 000 .git/hooks/pre-commit", "mv .git/hooks/pre-commit /tmp/x", "echo '' > .git/hooks/pre-commit"]) assert.equal(sh(c), "tamper-proof", c);
+    assert.equal(sh("echo tmp/ >> .git/info/exclude"), null);
+    assert.equal(sh("rm CONTEXT_MANIFEST.json"), "manifest-integrity");
+    assert.equal(sh("mv CONTEXT_MANIFEST.json /tmp/m.json"), "manifest-integrity");
+    assert.equal(sh("chmod +x src/a.ts"), null);
+    assert.equal(sh("chmod -R u+w src"), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guard: protection committed to HEAD survives deleting or emptying the manifest on disk", () => {
+  const { dir, g, manifest } = ledgerRepo();
+  try {
+    g("add", "-A");
+    g("commit", "-qm", "init");
+    const { loadManifestForGuard } = manifestModule;
+    assert.deepEqual(loadManifestForGuard(dir).manifest.protected_paths, manifest.protected_paths);
+    rmSync(join(dir, "CONTEXT_MANIFEST.json"));
+    const gone = loadManifestForGuard(dir);
+    assert.equal(gone.fromHead, true);
+    assert.deepEqual(gone.manifest.protected_paths, manifest.protected_paths, "deleted on disk, still protected");
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", context_files: [], protected_paths: [] }));
+    assert.deepEqual(loadManifestForGuard(dir).manifest.protected_paths, manifest.protected_paths, "emptied on disk, still protected");
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", context_files: [], protected_paths: ["extra/"] }));
+    assert.deepEqual(loadManifestForGuard(dir).manifest.protected_paths.sort(), [...manifest.protected_paths, "extra/"].sort(), "additions apply too");
+    const hook = run(dir, ["guard"], { input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(dir, "research", "ledger", "b.jsonl"), content: "x" }, cwd: dir }) });
+    assert.equal(hook.status, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+test("guard: env files and deny_read paths can't be read by an agent, through the shell or a read tool", () => {
+  const { dir, manifest } = ledgerRepo();
+  try {
+    const m = { ...manifest, deny_read: ["secrets/**", "*.pem"] };
+    const sh = (command, extra = {}) => decide({ role: null, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest: m, ...extra })?.rule ?? null;
+    const tool = (toolName, input, role = null) => decide({ role, toolName, input, cwd: dir, root: dir, manifest: m })?.rule ?? null;
+    for (const c of ["cat .env", "head -1 .env", "grep KEY .env", "cat < .env", "source .env", ". ./.env", "tail -f .env", "cat $(echo x) .env", "echo $(cat .env)", "docker run --env-file=.env img", "cat secrets/db.txt", "less server.pem", "cp .env /tmp/e", "base64 .env"]) {
+      assert.equal(sh(c), "secret-read", c);
+    }
+    for (const c of ["ls -la .env", "stat .env", "test -f .env", "echo .env", "git check-ignore .env", "cat .env.example", "cat src/a.ts", "ls secrets", "grep KEY src/a.ts"]) assert.equal(sh(c), null, c);
+    for (const t of [["read", { path: ".env" }], ["Read", { file_path: join(dir, ".env") }], ["grep", { pattern: "K", path: ".env" }], ["read_many_files", { paths: ["src/a.ts", ".env"] }], ["Read", { file_path: "secrets/x" }]]) {
+      assert.equal(tool(...t), "secret-read", JSON.stringify(t));
+    }
+    assert.equal(tool("Read", { file_path: join(dir, "src", "a.ts") }), null);
+    assert.equal(tool("Read", { file_path: join(dir, ".env.example") }), null);
+    assert.equal(tool("state_read", {}), null);
+    assert.equal(sh("cat .env", { allowSecretRead: true }), null, "human override");
+    assert.equal(tool("Read", { file_path: ".env" }, "reviewer"), "secret-read", "roles too");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guard CLI fails closed on its own errors when protection is configured or AGENT_FLOW_GUARD_STRICT=1", () => {
+  const { dir } = ledgerRepo();
+  try {
+    assert.equal(run(dir, ["guard"], { input: "{{{", env: { AGENT_FLOW_ROLE: "" } }).status, 2);
+    const env = { AGENT_FLOW_ROLE: "", AGENT_FLOW_ALLOW_SECRET_READ: "1" };
+    const ok = run(dir, ["guard"], { input: JSON.stringify({ tool_name: "Read", tool_input: { file_path: join(dir, ".env") }, cwd: dir }), env });
+    assert.equal(ok.status, 0, "AGENT_FLOW_ALLOW_SECRET_READ reaches the hook");
+    const no = run(dir, ["guard"], { input: JSON.stringify({ tool_name: "Read", tool_input: { file_path: join(dir, ".env") }, cwd: dir }), env: { AGENT_FLOW_ROLE: "" } });
+    assert.equal(no.status, 2);
+    assert.match(no.stderr, /secret|environment file/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("secrets: credential assignments by name are found, placeholders and identifiers are not; .env2-style files are env files", () => {
+  const hit = (s) => findSecrets(s).length > 0;
+  // Fixtures are assembled at runtime so secret scanners don't flag this file.
+  const j = (...parts) => parts.join("");
+  const pw = j("Sup3rS3cret", "Value99");
+  for (const s of [
+    j("APCA_API_KEY", "_ID=PK", "ABCDEFGHIJKLMNOP12"),
+    j("APCA_API_SECRET", "_KEY=abcdEFGH1234", "abcdEFGH1234abcdEFGH12345678"),
+    j("FRED_API", "_KEY=01234567", "89abcdef0123456789abcdef"),
+    j('pass', 'word = "', pw, '"'),
+    j('client_', 'secret="a8Fk29xQ', 'pL0zM4vN7bR1"'),
+    j("export ACCESS_", "TOKEN=Zk39sLq82m", "XpQw71NvB5"),
+  ]) {
+    assert.ok(hit(s), "should be found");
+  }
+  for (const s of [j("apiKey = process.env", ".API_KEY_FOR_SERVICE"), j("token = getToken", "FromVault12345()"), j("tokenizer = build_t", "okenizer_v2_large_x1"), j("password: chan", "geme12345678901"), j('api_key = "your_a', 'pi_key_here_1234"'), j("MAX_TOKENS=10", "00000000000000"), j('secret_key = os.environ', '["SECRET_KEY123456789"]'), j("const secret = 'aa", "aaaaaaaaaaaaaaaaaa'"), j("passwo", "rd = ''"), j("PASSWORD_MI", "N_LENGTH=12")]) {
+    assert.ok(!hit(s), s);
+  }
+  assert.ok(!hit(j("# agent-flow:allow-secret\npass", 'word = "', pw, '"')));
+  for (const f of [".env2", ".env_prod", "config/.env-staging", ".env.local", ".envrc"]) assert.ok(isEnvFile(f), f);
+  for (const f of [".environment.ts", ".env.example", "env.ts", "src/environment.js"]) assert.ok(!isEnvFile(f), f);
+});
+
+test("scan and doctor use git's file list: gitignored trees are never walked; other languages are recognised", async () => {
+  const { dir, g } = gitRepo("scanfast");
+  try {
+    mkdirSync(join(dir, "data", "huge"), { recursive: true });
+    for (let i = 0; i < 300; i++) writeFileSync(join(dir, "data", "huge", `f${i}.md`), "See `src/gone/x.ts`\n");
+    writeFileSync(join(dir, ".gitignore"), "data/\n");
+    mkdirSync(join(dir, "kernel"));
+    writeFileSync(join(dir, "kernel", "main.cpp"), "int main(){}\n");
+    writeFileSync(join(dir, "CMakeLists.txt"), "enable_testing()\nadd_test(NAME t COMMAND t)\nfind_package(GTest)\n");
+    writeFileSync(join(dir, "AGENTS.md"), "# a\n");
+    g("add", "-A");
+    g("commit", "-qm", "x");
+    const scan = JSON.parse(run(dir, ["scan", "--json"]).stdout);
+    assert.ok(scan.languages.includes("c/c++"), JSON.stringify(scan.languages));
+    assert.ok(scan.testFrameworks.includes("ctest") && scan.testFrameworks.includes("googletest"));
+    assert.ok(!scan.topLevelDirs.includes("data"), "gitignored data/ is not part of the scan");
+    const { listRepoFiles } = await import("../extensions/lib/repofiles.js");
+    const files = listRepoFiles(dir).files;
+    assert.ok(files.includes("kernel/main.cpp") && !files.some((f) => f.startsWith("data/")));
+    writeFileSync(join(dir, "untracked.txt"), "x");
+    assert.ok(listRepoFiles(dir).files.includes("untracked.txt"), "untracked, not ignored: included");
+    rmSync(join(dir, "kernel", "main.cpp"));
+    assert.ok(!listRepoFiles(dir).files.includes("kernel/main.cpp"), "tracked but deleted: skipped");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("init suggests protected_paths from what exists, but writes none", () => {
+  const { dir } = gitRepo("initsuggest");
+  try {
+    mkdirSync(join(dir, "migrations"));
+    mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
+    writeFileSync(join(dir, "migrations", "001.sql"), "x\n");
+    const r = run(dir, ["init", "--yes"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /Worth protecting here: migrations\/, \.github\/workflows\//);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8")).protected_paths, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("secret-read: a search pattern that spells .env is not a file read", () => {
+  const { dir, manifest } = ledgerRepo();
+  try {
+    const sh = (command) => decide({ role: null, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest })?.rule ?? null;
+    for (const c of ['grep -rn ".env" src', "rg '\\.env' src", "sed -n '/.env/p' src/a.ts", "awk '/.env/' src/a.ts", 'git commit -m "rotate .env"', "echo .env"]) assert.equal(sh(c), null, c);
+    for (const c of ['grep KEY .env', 'grep -e KEY .env', "rg KEY .env", "sed -n 1p .env"]) assert.equal(sh(c), "secret-read", c);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Peer review of the adoption hardening
+// ---------------------------------------------------------------------------
+
+test("guard: a directory too big to inspect is assumed to hold protected paths, not waved through", () => {
+  const { dir } = gitRepo("bigdir");
+  try {
+    mkdirSync(join(dir, "bulk"));
+    for (let i = 0; i < 60; i++) writeFileSync(join(dir, "bulk", `f${i}.txt`), "x");
+    mkdirSync(join(dir, "bulk", "db", "migrations"), { recursive: true });
+    writeFileSync(join(dir, "bulk", "db", "migrations", "001.sql"), "x");
+    const manifest = { protected_paths: ["**/migrations/**"] };
+    const sh = (command, walkLimit) => decide({ role: null, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest, walkLimit })?.rule ?? null;
+    assert.equal(sh("rm -rf bulk", 20_000), "protected-path", "found by walking");
+    assert.equal(sh("rm -rf bulk", 10), "protected-path", "walk cut short: assume the worst");
+    mkdirSync(join(dir, "plain"));
+    for (let i = 0; i < 60; i++) writeFileSync(join(dir, "plain", `f${i}.txt`), "x");
+    assert.equal(sh("rm -rf plain", 20_000), null, "nothing protected inside");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guard: committed protection and deny_read are a floor from HEAD and from the default branch", () => {
+  const { dir, g } = gitRepo("floor");
+  try {
+    const write = (m) => writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", context_files: [], ...m }));
+    write({ protected_paths: ["ledger/**"], deny_read: ["secrets/**"] });
+    g("add", "-A");
+    g("commit", "-qm", "main manifest");
+    g("checkout", "-q", "-b", "feature");
+    write({ protected_paths: [], deny_read: [] });
+    g("add", "-A");
+    g("commit", "-qm", "weaken the manifest on a branch");
+    const { loadManifestForGuard } = manifestModule;
+    const got = loadManifestForGuard(dir).manifest;
+    assert.deepEqual(got.protected_paths, ["ledger/**"], "main's protection survives a weaker commit on the branch");
+    assert.deepEqual(got.deny_read, ["secrets/**"]);
+    write({ protected_paths: [], deny_read: [] });
+    rmSync(join(dir, "CONTEXT_MANIFEST.json"));
+    assert.deepEqual(loadManifestForGuard(dir).manifest.protected_paths, ["ledger/**"], "deleted on disk too");
+    assert.deepEqual(loadManifestForGuard(dir).manifest.deny_read, ["secrets/**"]);
+    assert.equal(manifestModule.guardFailsClosed(dir), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("install --harness claude registers the guard on every tool it has rules for, including reads and MCP", () => {
+  const { dir } = gitRepo("matcher");
+  try {
+    const af = localInstall(dir);
+    assert.equal(af(dir, "install", "--harness", "claude").status, 0);
+    const settings = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf-8"));
+    const entry = settings.hooks.PreToolUse.find((e) => /agent-flow/.test(e.hooks[0].command));
+    const re = new RegExp(`^(?:${entry.matcher})$`);
+    for (const tool of ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "PowerShell", "Read", "NotebookRead", "Grep", "Glob", "mcp__github__push_files", "mcp__github__merge_pull_request"]) {
+      assert.ok(re.test(tool), `${tool} must reach the guard`);
+    }
+    // An older install with the narrower matcher is upgraded in place.
+    settings.hooks.PreToolUse.find((e) => /agent-flow/.test(e.hooks[0].command)).matcher = "Write|Edit|Bash";
+    writeFileSync(join(dir, ".claude", "settings.json"), JSON.stringify(settings));
+    assert.equal(af(dir, "install", "--harness", "claude").status, 0);
+    const again = JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf-8")).hooks.PreToolUse.find((e) => /agent-flow/.test(e.hooks[0].command));
+    assert.ok(new RegExp(`^(?:${again.matcher})$`).test("Read"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

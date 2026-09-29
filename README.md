@@ -218,7 +218,7 @@ All known failure modes, including the ones we found in our own code, are listed
 - **Human confirmation is real.** Pi shows a dialog that only a human can click. Headless writes need `AGENT_FLOW_HEADLESS_WRITES=1`, set by whoever launches the process.
 - **Guard blocks and state transitions are logged** to `.agent-flow/audit.jsonl`. Agents can't edit that file directly.
 
-See [SECURITY.md](./SECURITY.md) to audit these claims yourself.
+See [SECURITY.md](./SECURITY.md) to audit these claims yourself. Adding it to a repo that already has rules, a task file and frozen paths: [docs/ADOPTION.md](./docs/ADOPTION.md).
 
 ## Contributing
 
