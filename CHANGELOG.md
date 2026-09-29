@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 ## [Unreleased]
 
 ### Added
+- **Cross-vendor roles.** `pipeline.harness_by_role` (`{"reviewer": "codex"}`) runs a role on another harness than the orchestrator's; the orchestrator skill reads it into `env.sh`, the verdict still goes through the schema, round cap and audit chain, and a missing CLI is Needs Me, not a silent fallback. On the last allowed round the Implementer uses `pipeline.models.high_reasoning`.
 - **`policy.deny_commands`** (opt-in): presets `database` and `infra` plus custom regexes that the guard refuses in every agent session, with an additive floor from the default branch and the usual human override.
 - **Bounded stop gate for interactive Claude Code sessions.** Gates marked `on_stop: true` run from a Stop hook (`agent-flow gates stop`, installed with `install --harness claude --stop-gate`) when the tree changed since the last pass. It holds a session back at most `pipeline.max_stop_blocks` (default 2, max 5) times per turn, then lets it stop and records `stop_gate_exhausted`. Gates come from the default branch's manifest; `.agent-flow/stop-gate.json` and `.agent-flow/gates/` are tamper-proof.
 - **Per-issue cost cap.** `pipeline.max_cost_usd`: once an issue's role runs have cost that much, `state update` (and the Pi `state_update` tool) escalates the next new phase or round to Needs Me `budget_exceeded` with the cost per round (exit 3 in the CLI). Counts only harnesses that report cost; `audit summary` now shows how many runs reported none.

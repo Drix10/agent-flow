@@ -9,7 +9,8 @@ Many harness shells keep the working directory between tool calls but not variab
 ```bash
 N=42
 mkdir -p ".agent-flow/artifacts/issue-$N"
-model() { node -e 'try{const m=JSON.parse(require("fs").readFileSync("CONTEXT_MANIFEST.json","utf8")).pipeline?.models??{};process.stdout.write(m[process.argv[1]]??"")}catch{}' "$1"; }
+model() { npx --no-install @drix10/agent-flow config get "pipeline.models.$1" 2>/dev/null; }
+harness() { npx --no-install @drix10/agent-flow config get "pipeline.harness_by_role.$1" 2>/dev/null; }
 cat > ".agent-flow/artifacts/issue-$N/env.sh" <<EOF
 N=$N
 ROOT="$PWD"                                   # main checkout: state, guard hook and node_modules live here
@@ -19,6 +20,9 @@ GIT_COMMON="$(git rev-parse --path-format=absolute --git-common-dir)"
 AF="npx @drix10/agent-flow"
 BASE=main                                     # "base" from \`worktree create --json\`
 LIMIT=2                                       # "max_review_rounds" from \`state show --issue N --json\`
+HARNESS_IMPLEMENTER="$(harness implementer)"   # "" = the harness you run on
+HARNESS_REVIEWER="$(harness reviewer)"
+HARNESS_QA="$(harness qa)"
 FAST_MODEL="$(model fast)"
 HIGH_MODEL="$(model high_reasoning)"
 COMMANDS="npm test; npm run typecheck"        # from AGENTS.md, or none
@@ -30,6 +34,7 @@ EOF
 What each one means, and why:
 
 - **Models.** `pipeline.models.fast` and `pipeline.models.high_reasoning` in `CONTEXT_MANIFEST.json` are optional model IDs for the harness you run (`sonnet`/`opus` for Claude, a Codex or Gemini model name, a Pi pattern). When a key is missing the variable is empty, and every command below uses `${FAST_MODEL:+--model "$FAST_MODEL"}`, which drops the flag entirely. An empty `--model ""` would be an error; no flag means the harness's own default.
+- **Harness per role.** `pipeline.harness_by_role` (optional) runs a role on a different harness than yours, for example `{"reviewer": "codex"}` so the Reviewer doesn't share the Implementer's model family and blind spots. For each launch use the section below for `HARNESS_<ROLE>` when it is set, otherwise the harness you run on, and pass that name to `report --harness`. The read-only launch of each section still applies to the Reviewer, so check the [harness matrix](../../../docs/HARNESS-MATRIX.md) before pointing the Reviewer at a harness whose read-only cell isn't ✅. A missing CLI or a failed login is `role_failed` → Needs Me, never a silent fallback to the Implementer's harness. On the last allowed round (`R` = `LIMIT`) the Implementer uses `HIGH_MODEL` when it is set.
 - **`MODEL`** for a launch: `FAST_MODEL` for the Implementer and QA; for the Reviewer, `FAST_MODEL` when `reviewer_tier` is `fast` and `HIGH_MODEL` when it is `high-reasoning`.
 - **`COMMANDS`**: the test, typecheck and lint commands exactly as `AGENTS.md` lists them, `;`-separated, or `none` when it lists none. QA reports `no_commands_defined` rather than invent one.
 - **`FINDINGS`** (set per round, not in `env.sh`): `none` in round 1. Otherwise the absolute path of the report that ended the previous round: `$A/qa-r$((R-1)).json` if it exists (QA failed), else `$A/review-r$((R-1)).json`. It is absolute because the Implementer works from the worktree, not the repo root.

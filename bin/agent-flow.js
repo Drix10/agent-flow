@@ -105,6 +105,7 @@ Checks (CI-safe, read-only):
       --manifest <path>     Manifest path (default CONTEXT_MANIFEST.json)
       --no-prose            Skip checking \`backticked/paths\` inside context files
       --ctxlint             Also run a locally installed ctxlint (never downloads)
+  config get <key>          One manifest value (e.g. pipeline.models.fast) as the pipeline reads it: the default branch's copy for pipeline, gates and policy
   gates [list|run|stop]     Run the manifest's gates (tests, lint, build); records exit codes, logs and hashes
                             run [--name a,b] [--issue <n>] [--json]; exit 1 if a required gate fails, 2 if one couldn't run
   audit-risk                Diff risk surfaces against .risk-baseline.json
@@ -456,6 +457,14 @@ function gatesStop(rt, man) {
     console.error(`[agent-flow stop gate] not run: ${e.message}`);
     return 0;
   }
+}
+
+function cmdConfig(args) {
+  if (args._[1] !== "get" || typeof args._[2] !== "string") return sub("config", args._[1], ["get"], "config get <dotted.key>   e.g. config get pipeline.harness_by_role.reviewer");
+  let v = manifestLib.trustedManifest(root()).manifest;
+  for (const k of args._[2].split(".")) v = v && typeof v === "object" && Object.hasOwn(v, k) ? v[k] : undefined;
+  if (v !== undefined) console.log(typeof v === "string" ? v : JSON.stringify(v));
+  return 0;
 }
 
 function cmdBaseline(args) {
@@ -1193,6 +1202,7 @@ const table = {
   "audit-risk": cmdAudit,
   audit: cmdAuditLog,
   gates: cmdGates,
+  config: cmdConfig,
   baseline: cmdBaseline,
   classify: cmdClassify,
   "check-staged": cmdCheckStaged,

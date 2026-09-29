@@ -215,6 +215,16 @@
           "minimum": 1,
           "maximum": 5
         },
+        "harness_by_role": {
+          "type": "object",
+          "description": "Run a role on a different harness than the orchestrator's, e.g. the Reviewer on another vendor so it doesn't share the Implementer's blind spots. The verdict still goes through the schema, the round cap and the audit chain.",
+          "additionalProperties": false,
+          "properties": {
+            "implementer": { "enum": ["claude", "codex", "gemini", "pi"] },
+            "reviewer": { "enum": ["claude", "codex", "gemini", "pi"] },
+            "qa": { "enum": ["claude", "codex", "gemini", "pi"] }
+          }
+        },
         "max_stop_blocks": {
           "type": "integer",
           "minimum": 1,

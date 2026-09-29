@@ -62,7 +62,7 @@ export interface ContextManifest {
   gates?: unknown[];
   /** Change-size and content rules (see policy.ts). */
   policy?: unknown;
-  pipeline?: { max_review_rounds?: number; max_cost_usd?: number; max_stop_blocks?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
+  pipeline?: { max_review_rounds?: number; max_cost_usd?: number; max_stop_blocks?: number; harness_by_role?: Partial<Record<"implementer" | "reviewer" | "qa", string>>; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -197,6 +197,15 @@ export function validateManifest(m: unknown): string[] {
   // 0 would escalate round 1 before the Implementer writes anything.
   if (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 1 || rounds > 5)) {
     problems.push("pipeline.max_review_rounds must be an integer 1–5");
+  }
+  const hbr = man.pipeline?.harness_by_role as unknown;
+  if (hbr !== undefined) {
+    if (!hbr || typeof hbr !== "object" || Array.isArray(hbr)) problems.push('pipeline.harness_by_role must be an object like {"implementer": "claude", "reviewer": "codex"}');
+    else
+      for (const [role, h] of Object.entries(hbr as Record<string, unknown>)) {
+        if (!["implementer", "reviewer", "qa"].includes(role)) problems.push(`pipeline.harness_by_role.${role}: only implementer, reviewer and qa can be assigned a harness`);
+        else if (typeof h !== "string" || !["claude", "codex", "gemini", "pi"].includes(h)) problems.push(`pipeline.harness_by_role.${role} must be one of claude, codex, gemini, pi`);
+      }
   }
   const stopBlocks = man.pipeline?.max_stop_blocks;
   if (stopBlocks !== undefined && (!Number.isInteger(stopBlocks) || stopBlocks < 1 || stopBlocks > 5)) {

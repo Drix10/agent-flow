@@ -126,3 +126,19 @@ test("reordering a manifest's keys isn't reported as an ignored edit", () => {
   const edited = { pipeline: committed.pipeline, policy: committed.policy, gates: committed.gates, protected_paths: committed.protected_paths, version: "1" };
   repo(committed, edited, (dir) => assert.deepEqual(trustedManifest(dir).ignoredEdits, []));
 });
+
+test("pipeline.harness_by_role is validated", async () => {
+  const { validateManifest } = await import("../extensions/lib/manifest.js");
+  assert.deepEqual(validateManifest({ pipeline: { harness_by_role: { reviewer: "codex" } } }).filter((p) => /harness_by_role/.test(p)), []);
+  assert.equal(validateManifest({ pipeline: { harness_by_role: { reviewer: "gpt" } } }).filter((p) => /harness_by_role/.test(p)).length, 1);
+  assert.equal(validateManifest({ pipeline: { harness_by_role: { orchestrator: "claude" } } }).filter((p) => /harness_by_role/.test(p)).length, 1);
+});
+
+test("`config get` reads a value the way the pipeline does: from the default branch for floored keys", () => {
+  const edited = { ...committed, pipeline: { max_review_rounds: 5, models: { fast: "evil" } } };
+  repo({ ...committed, pipeline: { models: { fast: "sonnet" } } }, edited, (dir) => {
+    assert.equal(cli(dir, {}, "config", "get", "pipeline.models.fast").stdout.trim(), "sonnet");
+    assert.equal(cli(dir, {}, "config", "get", "pipeline.nope").stdout.trim(), "");
+    assert.equal(cli(dir, {}, "config", "get", "version").stdout.trim(), "1");
+  });
+});
