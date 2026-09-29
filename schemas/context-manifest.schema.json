@@ -147,6 +147,11 @@
           "required": {
             "type": "boolean",
             "default": true
+          },
+          "on_stop": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also run this gate when an interactive Claude Code session tries to end its turn (needs `install --harness claude --stop-gate`). Keep these fast: lint, typecheck, unit tests."
           }
         }
       }
@@ -209,6 +214,13 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 5
+        },
+        "max_stop_blocks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 2,
+          "description": "How many consecutive times the stop gate may hold a session back in one turn before it lets the turn end (and records stop_gate_exhausted)."
         },
         "max_cost_usd": {
           "type": "number",

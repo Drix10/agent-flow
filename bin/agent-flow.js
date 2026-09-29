@@ -14,10 +14,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -54,7 +54,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict"]);
+const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -105,7 +105,7 @@ Checks (CI-safe, read-only):
       --manifest <path>     Manifest path (default CONTEXT_MANIFEST.json)
       --no-prose            Skip checking \`backticked/paths\` inside context files
       --ctxlint             Also run a locally installed ctxlint (never downloads)
-  gates [list|run]          Run the manifest's gates (tests, lint, build); records exit codes, logs and hashes
+  gates [list|run|stop]     Run the manifest's gates (tests, lint, build); records exit codes, logs and hashes
                             run [--name a,b] [--issue <n>] [--json]; exit 1 if a required gate fails, 2 if one couldn't run
   audit-risk                Diff risk surfaces against .risk-baseline.json
       --baseline <path>  --include-tests  --fail-on-new
@@ -135,7 +135,7 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
 
 Setup (writes files; run by a human):
   baseline accept --all --yes | baseline accept <key>... --yes
-  install --harness <claude|codex|gemini|cursor|copilot|windsurf|agents> [--dry-run] [--force]
+  install --harness <claude|codex|gemini|cursor|copilot|windsurf|agents> [--dry-run] [--force] [--stop-gate]
   hook install [--force]    Install the pre-commit hook (runs check-staged)
 
 Global: --json for machine output; --sarif (doctor, audit-risk) for GitHub code scanning; --help, --version
@@ -403,7 +403,8 @@ function cmdGates(args) {
     });
     return 0;
   }
-  if (act !== "run") return sub("gates", act, ["list", "run"], "gates list | gates run [--name a,b] [--issue <n>] [--json]");
+  if (act === "stop") return gatesStop(rt, trusted.manifest);
+  if (act !== "run") return sub("gates", act, ["list", "run", "stop"], "gates list | gates run [--name a,b] [--issue <n>] [--json] | gates stop (Claude Code Stop hook)");
   if (!gates.length) throw new UserError("no gates defined in CONTEXT_MANIFEST.json, so there is nothing to run");
   let cwd = rt;
   if (args.issue !== undefined) {
@@ -429,6 +430,30 @@ function cmdGates(args) {
     if (r.environment_error) console.log(dim("  A gate could not run at all: fix the environment (missing tool, bad cwd) before spending a review round."));
   });
   return r.ok ? 0 : r.environment_error ? 2 : 1;
+}
+
+/**
+ * Claude Code Stop hook: exit 2 + reason on stderr keeps the session working, exit 0 lets it stop. Never traps a
+ * session: bounded per turn (see stopgate.ts), and an error in the hook itself lets the stop through.
+ */
+function gatesStop(rt, man) {
+  let ev = {};
+  try {
+    ev = JSON.parse(readFileSync(0, "utf-8") || "{}");
+  } catch {
+    /* no hook input: treat as a fresh stop */
+  }
+  // A pipeline role has its own gates (the orchestrator runs them); this is for interactive sessions.
+  if (process.env.AGENT_FLOW_ROLE) return 0;
+  try {
+    const cwd = typeof ev.cwd === "string" && ev.cwd ? fsutil.findRepoRoot(ev.cwd) : rt;
+    const d = stopGateLib.evaluateStop(cwd, gatesLib.gatesOf(man), stopGateLib.maxStopBlocks(man), ev.stop_hook_active === true);
+    if (d.message) console.error(d.message);
+    return d.block ? 2 : 0;
+  } catch (e) {
+    console.error(`[agent-flow stop gate] not run: ${e.message}`);
+    return 0;
+  }
 }
 
 function cmdBaseline(args) {
@@ -992,6 +1017,18 @@ function installClaudeHook(rt, args) {
   } else {
     if (group) group.hooks = group.hooks.filter((h) => !isOurs(h));
     settings.hooks.PreToolUse.push(entry);
+  }
+  if (args["stop-gate"]) {
+    if (settings.hooks.Stop !== undefined && !Array.isArray(settings.hooks.Stop)) {
+      bad(`${label}: existing "hooks.Stop" has an unexpected shape — not touched. Fix it and re-run.`);
+      return false;
+    }
+    settings.hooks.Stop ??= [];
+    const stopCmd = `node "$CLAUDE_PROJECT_DIR/${binRel.split("\\").join("/")}" gates stop`;
+    const isStop = (h) => /agent-flow/.test(h?.command ?? "") && /\bgates stop\b/.test(h?.command ?? "");
+    const g = settings.hooks.Stop.find((e) => Array.isArray(e?.hooks) && e.hooks.some(isStop));
+    if (g) g.hooks = g.hooks.map((h) => (isStop(h) ? { ...h, type: "command", command: stopCmd } : h));
+    else settings.hooks.Stop.push({ hooks: [{ type: "command", command: stopCmd }] });
   }
   if (JSON.stringify(settings) === before) {
     console.log(dim(`= ${label} (up to date)`));

@@ -61,7 +61,7 @@ export interface ContextManifest {
   gates?: unknown[];
   /** Change-size and content rules (see policy.ts). */
   policy?: unknown;
-  pipeline?: { max_review_rounds?: number; max_cost_usd?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
+  pipeline?: { max_review_rounds?: number; max_cost_usd?: number; max_stop_blocks?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -181,6 +181,7 @@ export function validateManifest(m: unknown): string[] {
         if (s.timeout_seconds !== undefined && (typeof s.timeout_seconds !== "number" || !Number.isFinite(s.timeout_seconds) || s.timeout_seconds <= 0 || s.timeout_seconds > 86_400)) problems.push(`${w}.timeout_seconds must be a number between 1 and 86400`);
         if (s.expect_exit !== undefined && (!Number.isInteger(s.expect_exit) || (s.expect_exit as number) < 0 || (s.expect_exit as number) > 255)) problems.push(`${w}.expect_exit must be an integer 0-255`);
         if (s.required !== undefined && typeof s.required !== "boolean") problems.push(`${w}.required must be true or false`);
+        if (s.on_stop !== undefined && typeof s.on_stop !== "boolean") problems.push(`${w}.on_stop must be true or false`);
       });
     }
   }
@@ -195,6 +196,10 @@ export function validateManifest(m: unknown): string[] {
   // 0 would escalate round 1 before the Implementer writes anything.
   if (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 1 || rounds > 5)) {
     problems.push("pipeline.max_review_rounds must be an integer 1–5");
+  }
+  const stopBlocks = man.pipeline?.max_stop_blocks;
+  if (stopBlocks !== undefined && (!Number.isInteger(stopBlocks) || stopBlocks < 1 || stopBlocks > 5)) {
+    problems.push("pipeline.max_stop_blocks must be an integer 1–5");
   }
   const cost = man.pipeline?.max_cost_usd;
   if (cost !== undefined && (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0)) {

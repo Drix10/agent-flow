@@ -86,7 +86,7 @@ const ROLE_TOOL_ALLOW: Record<Role, Set<string>> = {
 };
 
 /** Files only agent-flow's own tools may write — trust signals must not be forgeable. */
-const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/state.lock", ".risk-baseline.json", ".git/"];
+const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/state.lock", ".agent-flow/stop-gate.json", ".agent-flow/gates/", ".risk-baseline.json", ".git/"];
 /**
  * The wiring that makes the guard run: the hook registration and the installed copy of agent-flow itself.
  * While protection is configured, no session edits these; a human does (AGENT_FLOW_ALLOW_PROTECTED=1).

@@ -239,6 +239,14 @@ If the provider is down, the pipeline stalls. State is persisted, so a run can r
 
 **Status:** **Enforced** for the dangerous actions listed. **Instructed** for everything else.
 
+### Ending a turn with failing checks (interactive sessions)
+
+**What happens:** An interactive session can finish its turn with a failing test suite; only CI notices. A hook that keeps blocking until the suite passes is worse: it can loop forever.
+
+**Fix:** `agent-flow install --harness claude --stop-gate` adds a Claude Code Stop hook (`agent-flow gates stop`). It runs the manifest gates marked `on_stop`, only when the tree changed since the last pass, and blocks at most `pipeline.max_stop_blocks` (default 2, max 5) consecutive times per turn, then allows the stop and records `stop_gate_exhausted`. The gates are read from the default branch's manifest, and `.agent-flow/stop-gate.json` is tamper-proof.
+
+**Status:** **Enforced, bounded, Claude Code only, opt-in.** An error in the hook itself lets the stop through (it never traps a session).
+
 ## FM-20: Unattended writes
 
 **What happens:** In headless mode no human sees anything, and a string the model can type counted as "confirmation".
