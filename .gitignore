@@ -28,3 +28,4 @@ Thumbs.db
 
 # Agent scratch worktrees
 .claude/worktrees/
+graphify/
