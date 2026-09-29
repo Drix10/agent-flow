@@ -987,6 +987,11 @@ function roleRefusal() {
 
 // ---------------------------------------------------------------------------
 
+/** Exit once stdout and stderr have flushed: a bare process.exit() after a large write to a pipe can truncate it. */
+function finish(code) {
+  process.stdout.write("", () => process.stderr.write("", () => process.exit(code)));
+}
+
 const args = fixBools(parseArgs(process.argv.slice(2)));
 if (args._[0] === "-h") args.help = true;
 if (args._[0] === "-v" || args._[0] === "-V") args.version = true;
@@ -1022,11 +1027,10 @@ if (!cmd || args.help || cmd === "help") {
 }
 if (!Object.hasOwn(table, cmd)) process.exit(unknown("command", cmd, Object.keys(table), "run `agent-flow --help` for the list"));
 try {
-  // exitCode, not process.exit(): exiting straight after a large write to a pipe can truncate it on macOS and Windows.
-  process.exitCode = roleRefusal() || (await table[cmd](args));
+  finish(roleRefusal() || (await table[cmd](args)));
 } catch (e) {
   const msg = String(e.message ?? e).split("\n")[0];
   const friendly = /not a git repository/i.test(msg) ? "not a git repository — run this inside a git checkout (or `git init` first)" : msg;
   console.error(`${c(31, "agent-flow:")} ${friendly}`);
-  process.exitCode = 2;
+  finish(2);
 }

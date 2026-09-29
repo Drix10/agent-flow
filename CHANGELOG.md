@@ -20,7 +20,7 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 - `schema`/`report` with a prototype-named role (`toString`) and a bare `state update --round` are usage errors instead of a crash / a silent round 1.
 - `pyproject.toml` dependencies after an extras bracket (`requests[security]`) and `[project.optional-dependencies]` are audited.
 - `state_update` bounds `phase` (80) and `reason` (2000) for the CLI too; `reopen` can't target `Completed`.
-- The CLI sets `process.exitCode` instead of calling `process.exit()`, so large piped output isn't truncated on macOS and Windows.
+- The CLI exits only after stdout and stderr have flushed, so large piped output cannot be truncated.
 - GitHub Packages publish runs the test suite first, like the npm publish.
 
 ### Docs
