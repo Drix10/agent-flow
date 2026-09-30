@@ -4,6 +4,9 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+- `doctor` warns (never fails) when `protected_paths` have no CODEOWNERS entry, since only the host can stop a pull request editing them.
+- Guard: recognises Codex/OpenCode patch payloads, Gemini `replace`, argv-form shells, `workdir`/`dir_path`, and protects the Gemini/Codex/Cursor/OpenCode hook wiring from edits.
+
 - `install --harness gemini|codex|cursor` also installs the guard as a pre-tool hook; the guard understands Cursor's tool-less `beforeShellExecution`/`beforeReadFile` payloads. Live verification pending.
 - `policy.deny_commands: ["infra"]` shorthand accepted (it used to load no rule at all).
 
