@@ -38,7 +38,7 @@ test("the manifest validates deny_commands", () => {
   assert.deepEqual(validateDenyCommands(undefined), []);
   assert.equal(validateDenyCommands({ presets: ["nope"] }).length, 1);
   assert.equal(validateDenyCommands({ patterns: [{ pattern: "(" }] }).length, 1);
-  assert.ok(validateManifest({ policy: { deny_commands: [] } }).some((p) => /deny_commands/.test(p)));
+  assert.ok(validateManifest({ policy: { deny_commands: "infra" } }).some((p) => /deny_commands/.test(p)));
 });
 
 test("the guard blocks with exit 2 (never 1) and a session can't drop a committed rule from the working copy", () => {
@@ -70,4 +70,12 @@ test("no input makes the matcher slow, and an unsafe user regex is rejected and 
   assert.ok(Date.now() - t < 2000, `took ${Date.now() - t}ms`);
   assert.equal(validateDenyCommands({ patterns: [{ pattern: "(a+)+$" }] }).length, 1);
   assert.equal(validateDenyCommands({ preset: ["infra"] }).length, 1, "a typo'd key is an error, not silently no protection");
+});
+
+test("the array shorthand [\"infra\"] loads the preset instead of silently loading nothing", async () => {
+  const { matchDenyCommand, denyCommandsOf, validateDenyCommands } = await import("../extensions/lib/denycmd.js");
+  const spec = denyCommandsOf({ policy: { deny_commands: ["infra"] } });
+  assert.match(matchDenyCommand(spec, "kubectl delete pod x"), /infra/);
+  assert.deepEqual(validateDenyCommands(["infra"]), []);
+  assert.notDeepEqual(validateDenyCommands(["nope"]), []);
 });
