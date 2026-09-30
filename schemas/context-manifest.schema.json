@@ -263,7 +263,8 @@
       "additionalProperties": false,
       "properties": {
         "deny_commands": {
-          "type": "object",
+          "type": ["object", "array"],
+          "items": { "enum": ["database", "infra"] },
           "description": "Shell commands the guard refuses in every agent session (a human overrides with AGENT_FLOW_ALLOW_PROTECTED=1). Working copies may add to what the default branch committed, never remove.",
           "additionalProperties": false,
           "properties": {

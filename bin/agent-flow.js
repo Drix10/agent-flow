@@ -14,10 +14,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -241,10 +241,22 @@ function cmdDoctor(args) {
     section("commands exist", rep.dead_commands, (m) => [`${m.file}${m.line ? `:${m.line}` : ""}`, `${m.command}${m.reason ? ` — ${m.reason}` : ""}${m.suggestion ? `  → did you mean ${c(1, m.suggestion)}?` : ""}`]);
     section("relative links resolve", rep.broken_links, (m) => [`${m.file}:${m.line}`, m.target]);
     section("cited commits exist", rep.unknown_commits, (m) => [`${m.file}:${m.line}`, m.sha]);
+    reportCodeowners(rt, r.manifest);
     if (discovered) console.log(dim(`note: ${r.manifest ? "the manifest lists no context files" : "no CONTEXT_MANIFEST.json"}, so only paths were checked — \`agent-flow init\` adds staleness tracking`));
     console.log(r.healthy ? c(32, "\nhealthy") : `\n${c(31, "unhealthy")} — ${doctorNextStep(rep, schema)}`);
   }, () => doctorSarif(rt, rep, r.manifest));
   return none || r.healthy ? 0 : 1;
+}
+
+/** Advisory only: server-side review of protected paths is the host's job, so this never fails doctor. */
+function reportCodeowners(rt, manifestPath) {
+  const loaded = manifestLib.loadManifest(rt, typeof manifestPath === "string" ? manifestPath : undefined);
+  const prot = loaded.ok ? (loaded.value.manifest.protected_paths ?? []).filter((x) => typeof x === "string") : [];
+  if (!prot.length) return;
+  const missing = codeownersLib.uncoveredProtected(rt, prot);
+  if (missing === null) warn("protected_paths are enforced for local agents only; add a CODEOWNERS file and require Code Owner review so a pull request can't change them either");
+  else if (missing.length) warn(`CODEOWNERS doesn't cover protected path${missing.length > 1 ? "s" : ""}: ${missing.join(", ")} (a pull request could change ${missing.length > 1 ? "them" : "it"} without that review)`);
+  else ok("protected paths have CODEOWNERS entries");
 }
 
 function doctorSarif(rt, rep, manifestPath) {
@@ -856,11 +868,18 @@ function cmdGuard(args) {
   } catch (e) {
     return fail(env.role, `unreadable hook input: ${e.message}`);
   }
+  // Cursor's beforeShellExecution / beforeReadFile carry no tool_name: a `command` is a shell call, a bare `file_path` a read.
+  if (!ev.tool_name && typeof ev.command === "string") ev = { ...ev, tool_name: "Bash", tool_input: { command: ev.command } };
+  else if (!ev.tool_name && typeof ev.file_path === "string") ev = { ...ev, tool_name: "Read", tool_input: { file_path: ev.file_path } };
+  if (!ev.cwd && Array.isArray(ev.workspace_roots) && typeof ev.workspace_roots[0] === "string") ev.cwd = ev.workspace_roots[0];
   // A subagent launched as one of our roles (e.g. the orchestrator's `reviewer`) runs under that role.
+  if (typeof ev.tool_input === "string") ev.tool_input = { command: ev.tool_input };
   const role = guardLib.ROLES.includes(ev.agent_type) ? ev.agent_type : env.role;
   try {
-    const cwd = typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd();
-    const rt = fsutil.findRepoRoot(cwd);
+    const baseCwd = typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd();
+    const rt = fsutil.findRepoRoot(baseCwd);
+    // `workdir` / `dir_path` move a shell call to another directory: judge it from there.
+    const cwd = ev.tool_input && typeof ev.tool_input === "object" && guardLib.isShellTool(String(ev.tool_name ?? "").toLowerCase(), String(ev.tool_name ?? "").replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[-\s]+/g, "_").toLowerCase()) ? guardLib.workdirOf(ev.tool_input, baseCwd) : baseCwd;
     const loaded = manifestLib.loadManifestForGuard(rt);
     const decision = guardLib.decide({
       role,
@@ -894,16 +913,24 @@ const TARGETS = {
   codex: {
     skills: ".agents/skills",
     agents: [[".codex/agents/reviewer.toml", ".codex/agents/reviewer.toml"]],
+    hook: "codex",
     note: "The pipeline launches the Reviewer with `codex exec --sandbox read-only` (Codex's OS-level sandbox); .codex/agents/reviewer.toml is for delegating a review from an interactive Codex session.",
   },
   gemini: {
     skills: ".gemini/skills",
     agents: [[".gemini/agents/reviewer.md", ".gemini/agents/reviewer.md"]],
+    hook: "gemini",
     note: 'Trust the workspace (/trust) and set `"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}` in .gemini/settings.json so Gemini loads AGENTS.md. The pipeline runs the Reviewer as `gemini --approval-mode plan` (read-only); .gemini/agents/reviewer.md is for `@reviewer` in interactive sessions.',
   },
-  cursor: { skills: ".cursor/skills", agents: [], note: "Cursor reads AGENTS.md natively." },
+  cursor: { skills: ".cursor/skills", agents: [], hook: "cursor", note: "Cursor reads AGENTS.md natively." },
   copilot: { skills: ".github/skills", agents: [], note: "VS Code / Copilot also reads .claude/skills and .agents/skills." },
   windsurf: { skills: ".agents/skills", agents: [], note: "Windsurf (Cascade) reads AGENTS.md natively, including per-directory AGENTS.md in monorepos. No skill-folder or read-only-subagent mechanism is documented for it, so enforcement here is the pre-commit hook." },
+  opencode: {
+    skills: ".agents/skills",
+    agents: [],
+    plugin: true,
+    note: "Wrote .opencode/plugins/agent-flow-guard.js: a tool.execute.before plugin that runs agent-flow's guard before every tool call and denies the call on a block. Restart opencode to load it. Live verification pending: run the probe in docs/HARNESS-MATRIX.md.",
+  },
   agents: { skills: ".agents/skills", agents: [], note: ".agents/skills is the cross-client convention — also the right target for Aider, Zed, Warp, Amp, opencode, goose, JetBrains Junie, RooCode, and anything else that reads AGENTS.md but has no harness-specific integration below." },
 };
 
@@ -952,6 +979,23 @@ function cmdInstall(args) {
     wrote++;
     ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
   }
+  if (t.plugin) {
+    const dst = join(rt, ".opencode/plugins/agent-flow-guard.js");
+    const body = readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => join(pkgRoot, "bin", "agent-flow.js").replace(/\\/g, "/"));
+    if (existsSync(dst) && readFileSync(dst, "utf-8") === body) console.log(dim("= .opencode/plugins/agent-flow-guard.js (up to date)"));
+    else if (existsSync(dst) && !args.force) {
+      conflicts.push(".opencode/plugins/agent-flow-guard.js");
+      bad(".opencode/plugins/agent-flow-guard.js exists and differs — not overwritten (use --force)");
+    } else {
+      if (!args["dry-run"]) {
+        mkdirSync(dirname(dst), { recursive: true });
+        writeFileSync(dst, body);
+      }
+      wrote++;
+      ok(`${args["dry-run"] ? "would write" : "wrote"} .opencode/plugins/agent-flow-guard.js`);
+    }
+  }
+  if (t.hook) installGuardHook(rt, args, t.hook); // best effort: skills alone are still a valid install
   if (args.harness === "claude") {
     if (!installClaudeHook(rt, args)) conflicts.push(".claude/settings.json");
     importAgentsMd(rt, args);
@@ -1043,6 +1087,77 @@ function installClaudeHook(rt, args) {
     const g = settings.hooks.Stop.find((e) => Array.isArray(e?.hooks) && e.hooks.some(isStop));
     if (g) g.hooks = g.hooks.map((h) => (isStop(h) ? { ...h, type: "command", command: stopCmd, timeout: STOP_HOOK_TIMEOUT_S } : h));
     else settings.hooks.Stop.push({ hooks: [{ type: "command", command: stopCmd, timeout: STOP_HOOK_TIMEOUT_S }] });
+  }
+  if (JSON.stringify(settings) === before) {
+    console.log(dim(`= ${label} (up to date)`));
+    return true;
+  }
+  if (!args["dry-run"]) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(settings, null, indent)}\n`);
+  }
+  ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
+  return true;
+}
+
+// Harnesses whose hooks speak (nearly) Claude Code's protocol: JSON on stdin, exit 2 blocks.
+const HOOK_FILES = {
+  gemini: { path: ".gemini/settings.json", event: "BeforeTool", matcher: "read_file|read_many_files|write_file|replace|edit_file|run_shell_command|search_file_content|grep_search|save_memory|glob|list_directory|web_fetch|mcp_.*", wrap: true, dir: "$GEMINI_PROJECT_DIR/" },
+  codex: { path: ".codex/hooks.json", event: "PreToolUse", matcher: "", wrap: true, dir: "./" },
+  cursor: { path: ".cursor/hooks.json", event: ["beforeShellExecution", "beforeReadFile", "preToolUse"], wrap: false, dir: "./" },
+};
+
+/** Wire `agent-flow guard` into Gemini CLI, Codex or Cursor without touching anyone else's hooks. Unverified live: see docs/HARNESS-MATRIX.md. */
+function installGuardHook(rt, args, name) {
+  const cfg = HOOK_FILES[name];
+  const label = `${cfg.path} (guard hook)`;
+  const binRel = relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
+  if (fsutil.escapesBase(binRel)) {
+    bad(`${label}: agent-flow isn't installed in this project, so the hook would point at a temporary copy.`);
+    console.log(dim("    Run `npm install -D @drix10/agent-flow`, then install again."));
+    return false;
+  }
+  const command = `node "${cfg.dir}${binRel.split("\\").join("/")}" guard`;
+  const path = join(rt, cfg.path);
+  let settings = {};
+  let indent = 2;
+  if (existsSync(path)) {
+    try {
+      const raw = readFileSync(path, "utf-8");
+      settings = JSON.parse(raw.replace(/^\uFEFF/, ""));
+      indent = mergeLib.detectJsonIndent(raw);
+    } catch (e) {
+      bad(`${label}: existing file isn't valid JSON (${e.message}) — not touched. Fix it and re-run.`);
+      return false;
+    }
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+      bad(`${label}: existing file isn't a JSON object — not touched.`);
+      return false;
+    }
+  }
+  const events = [].concat(cfg.event);
+  if (settings.hooks !== undefined && (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks))) {
+    bad(`${label}: existing "hooks" has an unexpected shape — not touched. Fix it and re-run.`);
+    return false;
+  }
+  if (events.some((e) => settings.hooks?.[e] !== undefined && !Array.isArray(settings.hooks[e]))) {
+    bad(`${label}: an existing hook event has an unexpected shape — not touched. Fix it and re-run.`);
+    return false;
+  }
+  const before = JSON.stringify(settings);
+  settings.hooks ??= {};
+  if (!cfg.wrap) settings.version ??= 1;
+  const isOurs = (h) => /node\s+"[^"]*agent-flow\/bin\/agent-flow\.js"\s+guard\s*$/.test(h?.command ?? "");
+  for (const ev of events) {
+    const list = (settings.hooks[ev] ??= []);
+    const flat = (e) => (cfg.wrap ? (Array.isArray(e?.hooks) ? e.hooks : []) : [e]);
+    for (let i = list.length - 1; i >= 0; i--) {
+      const kept = flat(list[i]).filter((h) => !isOurs(h));
+      if (kept.length === flat(list[i]).length) continue;
+      if (cfg.wrap && kept.length) list[i] = { ...list[i], hooks: kept };
+      else list.splice(i, 1);
+    }
+    list.push(cfg.wrap ? { ...(cfg.matcher ? { matcher: cfg.matcher } : {}), hooks: [{ type: "command", command }] } : { command, failClosed: true });
   }
   if (JSON.stringify(settings) === before) {
     console.log(dim(`= ${label} (up to date)`));

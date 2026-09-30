@@ -78,12 +78,15 @@ export interface DenyCommands {
 
 export function denyCommandsOf(man: ContextManifest | null | undefined): DenyCommands | null {
   const d = (man as { policy?: { deny_commands?: unknown } } | null | undefined)?.policy?.deny_commands;
-  return d && typeof d === "object" && !Array.isArray(d) ? (d as DenyCommands) : null;
+  // Shorthand `["infra"]` means `{"presets": ["infra"]}`: a rule the author plainly meant must not silently load nothing.
+  if (Array.isArray(d)) return { presets: d.filter((x): x is string => typeof x === "string") };
+  return d && typeof d === "object" ? (d as DenyCommands) : null;
 }
 
 export function validateDenyCommands(d: unknown): string[] {
   if (d === undefined) return [];
-  if (!d || typeof d !== "object" || Array.isArray(d)) return ["policy.deny_commands must be an object like {\"presets\": [\"database\"], \"patterns\": []}"];
+  if (Array.isArray(d)) return validateDenyCommands({ presets: d });
+  if (!d || typeof d !== "object") return ["policy.deny_commands must be an object like {\"presets\": [\"database\"], \"patterns\": []}"];
   const s = d as DenyCommands;
   const problems: string[] = [];
   for (const k of Object.keys(s)) if (k !== "presets" && k !== "patterns") problems.push(`policy.deny_commands.${k} is not a known key (presets, patterns)`);

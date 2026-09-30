@@ -70,7 +70,7 @@ export function parseRole(raw: string | undefined): { role: Role | null; warning
   return { role: "reviewer", warning: `unknown AGENT_FLOW_ROLE "${raw}" — failing closed as read-only reviewer` };
 }
 
-const FILE_WRITE_TOOLS = new Set(["write", "edit"]);
+const FILE_WRITE_TOOLS = new Set(["write", "edit", "replace", "save_memory"]);
 const MUTATING_CUSTOM = /(^|_)(write|edit|multi_?edit|notebook_?edit|patch|apply_?patch|str_?replace|create_?file|create_or_update_file|update_?file|push_?files|delete|remove|rename|move|mkdir|append)(_|$)/;
 /** Tools whose names look mutating but only touch the harness's own UI state. */
 const HARMLESS = new Set(["todo_write", "todowrite", "todo_read"]);
@@ -92,7 +92,7 @@ const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.
  * The wiring that makes the guard run: the hook registration and the installed copy of agent-flow itself.
  * While protection is configured, no session edits these; a human does (AGENT_FLOW_ALLOW_PROTECTED=1).
  */
-const GUARD_WIRING = [".claude/settings.json", ".claude/settings.local.json", "node_modules/@drix10/agent-flow/"];
+const GUARD_WIRING = [".claude/settings.json", ".claude/settings.local.json", ".gemini/settings.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".opencode/plugins/agent-flow-guard.js", "node_modules/@drix10/agent-flow/"];
 
 /** The tamper-proof pattern `rel` falls under, if any. */
 export const tamperProofMatch = (rel: string): string | null => underAny(rel, TAMPER_PROOF);
@@ -112,8 +112,31 @@ function toolWords(name: string): string {
     .toLowerCase();
 }
 
-const PATH_KEYS = ["path", "file_path", "filePath", "file", "target", "destination", "notebook_path", "notebookPath", "new_path", "newPath", "old_path", "oldPath", "source", "from", "to"];
-const PATCH_KEYS = ["input", "patch", "diff", "content"];
+
+const SHELL_WORDS = /(^|_)(shell|exec|bash|terminal|powershell)(_|$)/;
+const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "cmd"]);
+/** Shell tools under any harness's name: `bash`, `run_shell_command`, `exec_command`, `local_shell`, `unified_exec`, `run_terminal_cmd`… */
+export const isShellTool = (tool: string, words: string) => tool === "cmd" || SHELL_WORDS.test(words);
+
+/** The command line a shell tool was given: a string, or an argv array (Codex `["bash","-lc","rm -rf x"]`). */
+function commandText(input: Record<string, unknown>): string {
+  for (const c of [input.command, input.cmd, input.script]) if (typeof c === "string" && c.length > 0) return c;
+  const argv = [input.command, input.cmd].find((c): c is string[] => Array.isArray(c) && c.length > 0 && c.every((x) => typeof x === "string"));
+  if (!argv) return "";
+  const first = basename(toPosix(argv[0])).toLowerCase().replace(/\.exe$/, "");
+  const flag = argv.findIndex((a, i) => i > 0 && /^-[a-z]*c[a-z]*$/i.test(a));
+  if (SHELLS.has(first) && flag > 0 && argv[flag + 1] !== undefined) return argv.slice(flag + 1).join(" ");
+  return argv.map((a) => (/[^\w@%+=:,./-]/.test(a) ? `'${a.replace(/'/g, "'\\''")}'` : a)).join(" ");
+}
+
+/** The directory a shell tool was told to run in (`workdir`, `dir_path`), resolved against the session cwd. */
+export function workdirOf(input: Record<string, unknown>, cwd: string): string {
+  const d = [input.workdir, input.dir_path, input.working_directory].find((x): x is string => typeof x === "string" && x.length > 0);
+  return d ? resolve(cwd, d) : cwd;
+}
+
+const PATH_KEYS = ["path", "file_path", "filePath", "file", "target", "destination", "notebook_path", "notebookPath", "target_file", "target_notebook", "new_path", "newPath", "old_path", "oldPath", "source", "from", "to"];
+const PATCH_KEYS = ["input", "patch", "diff", "content", "command", "cmd", "patchText", "patch_text"];
 
 /** Every path a file-writing call would touch: plain keys, edit batches, and patch headers. */
 export function targetPaths(input: Record<string, unknown>, isPatchTool = false): string[] {
@@ -1266,7 +1289,7 @@ function decideGitBulk(g: GuardInput, gc: GitCall, protectedPaths: string[]): Gu
 
 /** Commands that name a file without reading its contents. */
 const NAME_ONLY_VERBS = new Set(["ls", "dir", "stat", "test", "[", "[[", "cd", "pushd", "echo", "printf", "which", "dirname", "basename", "realpath", "readlink", "file", "mkdir", "touch", "rm", "rmdir", "unlink", "chmod", "chown", "chgrp", "find", "wslpath", "true", "false"]);
-const READ_TOOL = /^(read|notebook_?read|view|read_file|read_many_files|grep|search_file_content|glob|cat|open_file)$/;
+const READ_TOOL = /^(read|notebook_?read|view|read_file|read_many_files|grep|grep_search|search_file_content|glob|cat|open_file)$/;
 
 /** The deny-read pattern (or "env file") that a repo-relative path falls under, or null. */
 function deniedRead(g: GuardInput, abs: string): string | null {
@@ -1349,7 +1372,7 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
       }
     }
     // `rm -rf .` (or a parent of the repo): everything protected goes with it.
-    if (t.destructive && !g.allowProtected && protectedPaths.length && !escapesBase(toPosix(relative(landingPath(p), landingPath(g.root))))) {
+    if (t.destructive && !t.dest && !g.allowProtected && protectedPaths.length && !escapesBase(toPosix(relative(landingPath(p), landingPath(g.root))))) {
       return block("protected-path", `command removes or moves ${toPosix(p)}, which contains the whole repository including protected paths (${MANIFEST_FILE}). Escalate to Needs Me instead.`);
     }
     for (const rel of shellRels(g, p)) {
@@ -1507,8 +1530,8 @@ export function decide(g: GuardInput): GuardDecision | null {
   const { toolName, input } = g;
   const words = toolWords(toolName);
   const tool = toolName.toLowerCase();
-  const cmd = [input.command, input.cmd, input.script].find((c): c is string => typeof c === "string" && c.length > 0);
-  const isShell = tool === "bash" || tool === "powershell" || tool === "shell" || words === "run_shell_command" || words === "exec_command";
+  const cmd = commandText(input) || undefined;
+  const isShell = isShellTool(tool, words);
   const isFileWrite = !HARMLESS.has(words) && (FILE_WRITE_TOOLS.has(tool) || (!AGENT_FLOW_MUTATORS.has(tool) && MUTATING_CUSTOM.test(words)));
   let writes = false;
   if (isShell && cmd) writes = expandCommand(cmd).some((c) => analyzeShell(c).mutating || shellWrites(c, g.cwd).some((t) => !DEVICE.test(t.word.text)));
@@ -1534,8 +1557,8 @@ function decideKnown(g: GuardInput): GuardDecision | null {
   }
 
   // ---- shell tools ----------------------------------------------------------------
-  if (tool === "bash" || tool === "powershell" || tool === "shell" || words === "run_shell_command" || words === "exec_command") {
-    const cmd = [input.command, input.cmd, input.script].find((c): c is string => typeof c === "string" && c.length > 0) ?? (Array.isArray(input.command) ? input.command.join(" ") : "");
+  if (isShellTool(tool, words)) {
+    const cmd = commandText(input);
     if (!cmd) return null;
     // `rm -rf ${HOME}`: the parser reads a braced expansion as "unknown", so the home directory is caught on the text.
     if (!g.allowProtected && /(?:^|[\s;&|(])(?:sudo\s+)?(?:rm|rmdir|shred|unlink)\b[^;&|\n]*?\s"?\$\{HOME[^}]*\}"?\/?(?:\*|\.\*|\.\.)?"?(?=\s|$|[;&|)])/.test(cmd)) {
@@ -1583,7 +1606,7 @@ function decideKnown(g: GuardInput): GuardDecision | null {
 
   // ---- read tools: env files and deny_read paths ---------------------------------
   if (READ_TOOL.test(words) && !g.allowSecretRead) {
-    const listed = Array.isArray(input.paths) ? input.paths.filter((p): p is string => typeof p === "string") : [];
+    const listed = [input.paths, input.include].flatMap((a) => (Array.isArray(a) ? a.filter((p): p is string => typeof p === "string") : typeof a === "string" ? [a] : []));
     for (const p of [...targetPaths(input), ...listed]) {
       const hit = deniedRead(g, resolve(g.cwd, p));
       if (hit) return secretReadBlock(toolName, `${p} (${hit})`);
