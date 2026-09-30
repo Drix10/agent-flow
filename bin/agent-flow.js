@@ -904,6 +904,12 @@ const TARGETS = {
   cursor: { skills: ".cursor/skills", agents: [], note: "Cursor reads AGENTS.md natively." },
   copilot: { skills: ".github/skills", agents: [], note: "VS Code / Copilot also reads .claude/skills and .agents/skills." },
   windsurf: { skills: ".agents/skills", agents: [], note: "Windsurf (Cascade) reads AGENTS.md natively, including per-directory AGENTS.md in monorepos. No skill-folder or read-only-subagent mechanism is documented for it, so enforcement here is the pre-commit hook." },
+  opencode: {
+    skills: ".agents/skills",
+    agents: [],
+    plugin: true,
+    note: "Wrote .opencode/plugins/agent-flow-guard.js: a tool.execute.before plugin that runs agent-flow's guard before every tool call and denies the call on a block. Restart opencode to load it. Live verification pending: run the probe in docs/HARNESS-MATRIX.md.",
+  },
   agents: { skills: ".agents/skills", agents: [], note: ".agents/skills is the cross-client convention — also the right target for Aider, Zed, Warp, Amp, opencode, goose, JetBrains Junie, RooCode, and anything else that reads AGENTS.md but has no harness-specific integration below." },
 };
 
@@ -951,6 +957,22 @@ function cmdInstall(args) {
     }
     wrote++;
     ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
+  }
+  if (t.plugin) {
+    const dst = join(rt, ".opencode/plugins/agent-flow-guard.js");
+    const body = readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => join(pkgRoot, "bin", "agent-flow.js").replace(/\\/g, "/"));
+    if (existsSync(dst) && readFileSync(dst, "utf-8") === body) console.log(dim("= .opencode/plugins/agent-flow-guard.js (up to date)"));
+    else if (existsSync(dst) && !args.force) {
+      conflicts.push(".opencode/plugins/agent-flow-guard.js");
+      bad(".opencode/plugins/agent-flow-guard.js exists and differs — not overwritten (use --force)");
+    } else {
+      if (!args["dry-run"]) {
+        mkdirSync(dirname(dst), { recursive: true });
+        writeFileSync(dst, body);
+      }
+      wrote++;
+      ok(`${args["dry-run"] ? "would write" : "wrote"} .opencode/plugins/agent-flow-guard.js`);
+    }
   }
   if (args.harness === "claude") {
     if (!installClaudeHook(rt, args)) conflicts.push(".claude/settings.json");

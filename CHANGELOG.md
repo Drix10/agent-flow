@@ -4,6 +4,9 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+- `install --harness opencode`: OpenCode guard plugin (`tool.execute.before`), fails closed. Live verification pending.
+- Guard: `mv x ~/` no longer flagged when the repo lives under the home directory (found by a live OpenCode run).
+
 ### Added
 - **Cross-vendor roles.** `pipeline.harness_by_role` (`{"reviewer": "codex"}`) runs a role on another harness than the orchestrator's; the orchestrator skill reads it into `env.sh`, the verdict still goes through the schema, round cap and audit chain, and a missing CLI is Needs Me, not a silent fallback. On the last allowed round the Implementer uses `pipeline.models.high_reasoning`.
 - **`policy.deny_commands`** (opt-in): presets `database` and `infra` plus custom regexes that the guard refuses in every agent session, with an additive floor from the default branch and the usual human override.

@@ -26,6 +26,8 @@ What is **enforced** (the harness or our code blocks it), **checked** (the pre-c
 
 A ✅ from the CLI means the rule is enforced when the CLI is called. Whether the agent calls it depends on the skill (instructed), but the rule itself can't be bypassed by calling the CLI with different arguments.
 
+**OpenCode:** `npx @drix10/agent-flow install --harness opencode` writes `.opencode/plugins/agent-flow-guard.js`, a `tool.execute.before` plugin that runs the guard before each tool call and throws (denying the call) on a block. Unit-tested against the plugin API; **not yet verified in a live OpenCode session**. Probe: protect a path in `CONTEXT_MANIFEST.json`, ask OpenCode to write there, and expect a denial naming the rule.
+
 ## Everything else that reads `AGENTS.md`
 
 The CLI rows above (`doctor`, `classify`, `audit-risk`, `state`, the pre-commit hook) don't care which harness is running — they read your repo, your manifest and your git history, not the agent. So they already work, unmodified, with every other tool that has adopted the [AGENTS.md](https://agents.md) convention: Aider, Zed, Warp, Amp, opencode, goose, JetBrains Junie, RooCode, Kilo Code, Devin, Jules, Factory, and Augment Code among them. `npx @drix10/agent-flow install --harness agents` gives any of these a conventional `.agents/skills/` folder to point their own instructions at; only the harness-specific rows above (skill auto-discovery, a locked-down reviewer subagent) need a name in the table.
