@@ -903,7 +903,11 @@ function cmdGuard(args) {
       /* the block matters more than the log line */
     }
     console.error(decision.reason);
-    return 2;
+    // Exit 2 + stderr blocks on Claude Code, Gemini, Cursor and (per its docs) Codex. Also say it as JSON on
+    // stdout, which Codex documents as a second deny channel; the other harnesses ignore stdout on exit 2.
+    // AGENT_FLOW_GUARD_JSON_ONLY=1 (experiment): deny via JSON and exit 0, for a harness that ignores exit 2.
+    console.log(JSON.stringify({ decision: "block", reason: decision.reason, permission: "deny", user_message: decision.reason, agent_message: decision.reason, hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: decision.reason } }));
+    return process.env.AGENT_FLOW_GUARD_JSON_ONLY === "1" ? 0 : 2;
   } catch (e) {
     return fail(role, `guard error: ${e.message}`, typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd());
   }

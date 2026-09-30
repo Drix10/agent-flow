@@ -4,6 +4,7 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+- Guard blocks also print a JSON deny (`permissionDecision`) on stdout besides exit 2 + stderr; set `AGENT_FLOW_GUARD_JSON_ONLY=1` to deny by JSON with exit 0 (experiment for a harness that ignores exit 2).
 - `agent-flow sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>] -- <cmd>` runs a command under bubblewrap (read-only filesystem except the worktree), an OS-level boundary the hook cannot give. Linux/WSL only.
 
 - `doctor` warns (never fails) when `protected_paths` have no CODEOWNERS entry, since only the host can stop a pull request editing them.
