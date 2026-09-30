@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-10-01
+
+- Read each vendor's hook docs and source and fixed what they contradicted: Gemini's hook now matches every tool (the allow-list named a tool that doesn't exist and missed others); Cursor's Windows BOM on stdin no longer makes the guard fail open, and Cursor's Delete tool counts as a write; the OpenCode plugin is one flat file with no SDK import (v1 and v2 load it; it no longer writes `.opencode/package.json` or depends on `@opencode/plugin`). `docs/HARNESS-MATRIX.md` says, per harness, what is live-verified and what is docs-verified only, with the caveats each vendor's docs give (untrusted folders, fail-open exits, headless modes).
+
 - Codex guard hook live-verified on Linux/WSL (protected write, `--no-verify` commit and hook-config write all blocked); docs note that Codex's bypass-hook-trust / full-access options disable enforcement.
 - Guard: PowerShell writes are judged like their POSIX twins — named parameters in any order (`-LiteralPath`, `-Destination`, …), Windows `\` paths, `Copy-Item` writes only its destination, and .NET `[IO.File]::Write*` calls count as writes. A live Codex-on-Windows probe found `Set-Content -LiteralPath .codex/hooks.json …` slipped through.
 - Guard blocks also print a JSON deny (`permissionDecision`) on stdout besides exit 2 + stderr; set `AGENT_FLOW_GUARD_JSON_ONLY=1` to deny by JSON with exit 0 (experiment for a harness that ignores exit 2).

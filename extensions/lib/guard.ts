@@ -70,7 +70,7 @@ export function parseRole(raw: string | undefined): { role: Role | null; warning
   return { role: "reviewer", warning: `unknown AGENT_FLOW_ROLE "${raw}" — failing closed as read-only reviewer` };
 }
 
-const FILE_WRITE_TOOLS = new Set(["write", "edit", "replace", "save_memory"]);
+const FILE_WRITE_TOOLS = new Set(["write", "edit", "replace", "save_memory", "delete", "multiedit", "multi_edit"]);
 const MUTATING_CUSTOM = /(^|_)(write|edit|multi_?edit|notebook_?edit|patch|apply_?patch|str_?replace|create_?file|create_or_update_file|update_?file|push_?files|delete|remove|rename|move|mkdir|append)(_|$)/;
 /** Tools whose names look mutating but only touch the harness's own UI state. */
 const HARMLESS = new Set(["todo_write", "todowrite", "todo_read"]);

@@ -455,7 +455,7 @@ function cmdGates(args) {
 function gatesStop(rt, man) {
   let ev = {};
   try {
-    ev = JSON.parse(readFileSync(0, "utf-8") || "{}");
+    ev = JSON.parse(readFileSync(0, "utf-8").replace(/^\uFEFF/, "") || "{}"); // Cursor on Windows prefixes stdin with a BOM
   } catch {
     /* no hook input: treat as a fresh stop */
   }
@@ -867,7 +867,7 @@ function cmdGuard(args) {
   const env = guardLib.parseRole(process.env.AGENT_FLOW_ROLE);
   let ev;
   try {
-    ev = JSON.parse(readFileSync(0, "utf-8") || "{}");
+    ev = JSON.parse(readFileSync(0, "utf-8").replace(/^\uFEFF/, "") || "{}"); // Cursor on Windows prefixes stdin with a BOM
   } catch (e) {
     return fail(env.role, `unreadable hook input: ${e.message}`);
   }
@@ -1002,7 +1002,6 @@ function cmdInstall(args) {
       wrote++;
       ok(`${args["dry-run"] ? "would write" : "wrote"} .opencode/plugins/agent-flow-guard.js`);
     }
-    if (!conflicts.includes(pluginLabel)) installOpenCodeSdk(rt, args, conflicts);
   }
   if (t.hook) installGuardHook(rt, args, t.hook); // best effort: skills alone are still a valid install
   if (args.harness === "claude") {
@@ -1013,32 +1012,6 @@ function cmdInstall(args) {
   const who = args.harness === "claude" ? "Claude" : "your agent";
   console.log(`\nNext:\n  1. npx @drix10/agent-flow doctor\n  2. ask ${who}: "use the bootstrap skill to set up this repo"\n  3. npx @drix10/agent-flow hook install`);
   return conflicts.length ? 1 : 0;
-}
-
-function installOpenCodeSdk(rt, args, conflicts) {
-  const path = join(rt, ".opencode/package.json");
-  let pkg = { dependencies: {} };
-  if (existsSync(path)) {
-    try {
-      pkg = JSON.parse(readFileSync(path, "utf-8"));
-      if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) throw new Error("expected a JSON object");
-    } catch (e) {
-      conflicts.push(".opencode/package.json");
-      bad(`.opencode/package.json can't be updated (${e.message})`);
-      return;
-    }
-  }
-  if (!pkg.dependencies || typeof pkg.dependencies !== "object" || Array.isArray(pkg.dependencies)) pkg.dependencies = {};
-  if (pkg.dependencies["@opencode/plugin"]) {
-    console.log(dim("= .opencode/package.json (@opencode/plugin already declared)"));
-    return;
-  }
-  pkg.dependencies["@opencode/plugin"] = "^2.0.20";
-  if (!args["dry-run"]) {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
-  }
-  ok(`${args["dry-run"] ? "would add" : "added"} @opencode/plugin to .opencode/package.json`);
 }
 
 /** Claude Code reads CLAUDE.md, not AGENTS.md; an `@AGENTS.md` line imports it. */
@@ -1137,7 +1110,7 @@ function installClaudeHook(rt, args) {
 
 // Harnesses whose hooks speak (nearly) Claude Code's protocol: JSON on stdin, exit 2 blocks.
 const HOOK_FILES = {
-  gemini: { path: ".gemini/settings.json", event: "BeforeTool", matcher: "read_file|read_many_files|write_file|replace|edit_file|run_shell_command|search_file_content|grep_search|save_memory|glob|list_directory|web_fetch|mcp_.*", wrap: true, dir: "$GEMINI_PROJECT_DIR/" },
+  gemini: { path: ".gemini/settings.json", event: "BeforeTool", matcher: "", wrap: true, dir: "$GEMINI_PROJECT_DIR/" },
   codex: { path: ".codex/hooks.json", event: "PreToolUse", matcher: "", wrap: true, dir: "./" },
   cursor: { path: ".cursor/hooks.json", event: ["beforeShellExecution", "beforeReadFile", "preToolUse"], wrap: false, dir: "./" },
 };
