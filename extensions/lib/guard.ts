@@ -1349,7 +1349,7 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
       }
     }
     // `rm -rf .` (or a parent of the repo): everything protected goes with it.
-    if (t.destructive && !g.allowProtected && protectedPaths.length && !escapesBase(toPosix(relative(landingPath(p), landingPath(g.root))))) {
+    if (t.destructive && !t.dest && !g.allowProtected && protectedPaths.length && !escapesBase(toPosix(relative(landingPath(p), landingPath(g.root))))) {
       return block("protected-path", `command removes or moves ${toPosix(p)}, which contains the whole repository including protected paths (${MANIFEST_FILE}). Escalate to Needs Me instead.`);
     }
     for (const rel of shellRels(g, p)) {
