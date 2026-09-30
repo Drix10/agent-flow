@@ -981,10 +981,11 @@ function cmdInstall(args) {
   }
   if (t.plugin) {
     const dst = join(rt, ".opencode/plugins/agent-flow-guard.js");
+    const pluginLabel = ".opencode/plugins/agent-flow-guard.js";
     const body = readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => join(pkgRoot, "bin", "agent-flow.js").replace(/\\/g, "/"));
     if (existsSync(dst) && readFileSync(dst, "utf-8") === body) console.log(dim("= .opencode/plugins/agent-flow-guard.js (up to date)"));
     else if (existsSync(dst) && !args.force) {
-      conflicts.push(".opencode/plugins/agent-flow-guard.js");
+      conflicts.push(pluginLabel);
       bad(".opencode/plugins/agent-flow-guard.js exists and differs — not overwritten (use --force)");
     } else {
       if (!args["dry-run"]) {
@@ -994,6 +995,7 @@ function cmdInstall(args) {
       wrote++;
       ok(`${args["dry-run"] ? "would write" : "wrote"} .opencode/plugins/agent-flow-guard.js`);
     }
+    if (!conflicts.includes(pluginLabel)) installOpenCodeSdk(rt, args, conflicts);
   }
   if (t.hook) installGuardHook(rt, args, t.hook); // best effort: skills alone are still a valid install
   if (args.harness === "claude") {
@@ -1004,6 +1006,32 @@ function cmdInstall(args) {
   const who = args.harness === "claude" ? "Claude" : "your agent";
   console.log(`\nNext:\n  1. npx @drix10/agent-flow doctor\n  2. ask ${who}: "use the bootstrap skill to set up this repo"\n  3. npx @drix10/agent-flow hook install`);
   return conflicts.length ? 1 : 0;
+}
+
+function installOpenCodeSdk(rt, args, conflicts) {
+  const path = join(rt, ".opencode/package.json");
+  let pkg = { dependencies: {} };
+  if (existsSync(path)) {
+    try {
+      pkg = JSON.parse(readFileSync(path, "utf-8"));
+      if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) throw new Error("expected a JSON object");
+    } catch (e) {
+      conflicts.push(".opencode/package.json");
+      bad(`.opencode/package.json can't be updated (${e.message})`);
+      return;
+    }
+  }
+  if (!pkg.dependencies || typeof pkg.dependencies !== "object" || Array.isArray(pkg.dependencies)) pkg.dependencies = {};
+  if (pkg.dependencies["@opencode/plugin"]) {
+    console.log(dim("= .opencode/package.json (@opencode/plugin already declared)"));
+    return;
+  }
+  pkg.dependencies["@opencode/plugin"] = "^2.0.20";
+  if (!args["dry-run"]) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
+  }
+  ok(`${args["dry-run"] ? "would add" : "added"} @opencode/plugin to .opencode/package.json`);
 }
 
 /** Claude Code reads CLAUDE.md, not AGENTS.md; an `@AGENTS.md` line imports it. */
