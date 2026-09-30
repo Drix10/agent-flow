@@ -11,7 +11,7 @@ const BIN = join(ROOT, "bin", "agent-flow.js");
 
 function walk(dir, out = []) {
   for (const n of readdirSync(dir)) {
-    if (n === "node_modules" || n === ".git" || n === ".worktrees") continue;
+    if (n === "node_modules" || n === ".git" || n === ".worktrees" || n === "plan") continue;
     const p = join(dir, n);
     if (statSync(p).isDirectory()) walk(p, out);
     else if (/\.md$/.test(n)) out.push(p);
@@ -72,7 +72,7 @@ test("backticked repo paths in the docs exist (illustrative ones are listed)", (
 
 function walkAll(dir, out = []) {
   for (const n of readdirSync(dir)) {
-    if (n === "node_modules" || n === ".git") continue;
+    if (n === "node_modules" || n === ".git" || n === ".worktrees" || n === "plan") continue;
     const p = join(dir, n);
     if (statSync(p).isDirectory()) walkAll(p, out);
     else out.push(p);
