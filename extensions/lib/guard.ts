@@ -120,6 +120,12 @@ export const isShellTool = (tool: string, words: string) => tool === "cmd" || SH
 
 /** The command line a shell tool was given: a string, or an argv array (Codex `["bash","-lc","rm -rf x"]`). */
 function commandText(input: Record<string, unknown>): string {
+  const raw = rawCommandText(input);
+  // PowerShell has no backslash escapes (its escape is the backtick) and Windows paths use `\`: read them as `/`, or `secrets\\k.txt` lexes as `secretsk.txt`.
+  return PS_CMDLET.test(raw) ? raw.replace(/\\/g, "/") : raw;
+}
+
+function rawCommandText(input: Record<string, unknown>): string {
   for (const c of [input.command, input.cmd, input.script]) if (typeof c === "string" && c.length > 0) return c;
   const argv = [input.command, input.cmd].find((c): c is string[] => Array.isArray(c) && c.length > 0 && c.every((x) => typeof x === "string"));
   if (!argv) return "";
@@ -199,7 +205,7 @@ const GIT_MUTATING_SUB = /^(commit|push|add|rm|mv|reset|checkout|switch|restore|
 const PKG_MUTATING = /^(npm|pnpm|yarn|bun)\s+(add|remove|rm|uninstall|un|publish|link|unlink|version|pkg|dedupe|prune|update|up|upgrade)\b|^(npm|pnpm|bun)\s+(install|i)\b|^yarn(\s+install)?\s*$|^yarn\s+add\b|^pip3?\s+(install|uninstall)\b|^(uv|poetry)\s+(add|remove|pip|lock)\b|^go\s+(get|mod\s+tidy)\b|^cargo\s+(add|remove|install|update)\b|^gem\s+install\b|^bundle\s+(add|update|install)\b/i;
 const CLEAN_INSTALL = /^(npm\s+ci|pnpm\s+install\s+--frozen-lockfile|yarn\s+install\s+--(frozen-lockfile|immutable)|bun\s+install\s+--frozen-lockfile|pip3?\s+install\s+-r\s+\S+|uv\s+sync\s+--(locked|frozen)|poetry\s+install\s+--no-root|bundle\s+install\s+--frozen)(\s|$)/i;
 const GH_MUTATING = /^gh\s+(pr\s+(create|merge|edit|close|comment|review|ready|reopen)|issue\s+(create|edit|close|comment|reopen|delete)|release\s+(create|delete|edit|upload)|repo\s+(create|delete|edit)|api\s+.*(-X|--method)[\s=]*(POST|PUT|PATCH|DELETE)|api\b(?!.*(-X|--method)[\s=]*GET\b).*\s(-f|-F|--field|--raw-field|--input)(\s|=|$))/i;
-const INLINE_WRITE = /\b(node|deno|bun)\s+(-e|--eval|-p)\b.*\b(writeFile|appendFile|rmSync|unlink|rename|mkdir|createWriteStream|copyFile)|\bpython3?\s+-c\b.*(open\([^)]*['"][wa+]|\.write\(|os\.remove|os\.unlink|shutil\.|os\.rename|pathlib)|\b(perl|ruby)\b[^|;&\n]*\s-(?!-)[a-zA-Z]*[ei]|\bsed\b[^|;&\n]*\s(-(?!-)[a-zA-Z]*i|--in-place)|\bawk\s+-i\s+inplace|\bg?awk\b[^|;&\n]*(?:>|\bsystem\s*\(|\|\s*getline\s*\w*\s*\|)|\bphp\s+-r\b.*\b(file_put_contents|fopen|fwrite|unlink|rename|mkdir|copy|system|exec|shell_exec|passthru)\b|\bpython3?\s+-c\b.*\b(os\.system|os\.popen|subprocess|exec\(|eval\()|\bsqlite3\b[^|;&\n]*\b(create|insert|update|delete|drop|alter|replace|vacuum|attach)\b/i;
+const INLINE_WRITE = /\[(?:System\.)?IO\.(?:File|Directory)\]::(?:Write|Append|Create|Delete|Move|Copy|Replace|Set)\w*|\b(node|deno|bun)\s+(-e|--eval|-p)\b.*\b(writeFile|appendFile|rmSync|unlink|rename|mkdir|createWriteStream|copyFile)|\bpython3?\s+-c\b.*(open\([^)]*['"][wa+]|\.write\(|os\.remove|os\.unlink|shutil\.|os\.rename|pathlib)|\b(perl|ruby)\b[^|;&\n]*\s-(?!-)[a-zA-Z]*[ei]|\bsed\b[^|;&\n]*\s(-(?!-)[a-zA-Z]*i|--in-place)|\bawk\s+-i\s+inplace|\bg?awk\b[^|;&\n]*(?:>|\bsystem\s*\(|\|\s*getline\s*\w*\s*\|)|\bphp\s+-r\b.*\b(file_put_contents|fopen|fwrite|unlink|rename|mkdir|copy|system|exec|shell_exec|passthru)\b|\bpython3?\s+-c\b.*\b(os\.system|os\.popen|subprocess|exec\(|eval\()|\bsqlite3\b[^|;&\n]*\b(create|insert|update|delete|drop|alter|replace|vacuum|attach)\b/i;
 /** Unpacking an archive writes every file in it. */
 const EXTRACT = /(^|[\s;&|(])((?:bsd)?tar\s+(?:-?[a-zA-Z]*x[a-zA-Z]*\b|[^|;&\n]*\s(?:-[a-zA-Z]*x[a-zA-Z]*|--extract|--get)\b)|unzip\b(?![^|;&\n]*\s-[a-zA-Z]*[ltpvz]\b)|7z[a-z]?\s+[xe]|unrar\s+[xe]|gunzip|gzip\s+(-[a-zA-Z]*d|--decompress)|bunzip2|unxz|xz\s+(-[a-zA-Z]*d|--decompress))\b/i;
 /** A script fed on stdin can do anything; its text isn't in `command` to analyse. */
@@ -783,6 +789,45 @@ function splitArgs(args: readonly ShWord[], vals: RegExp): { pos: ShWord[]; opts
   return { pos, opts };
 }
 
+const PS_CMDLET = /\b(?:set|add|out|clear|new|remove|rename|move|copy)-(?:content|file|item)\b|(?:^|[;&|(]\s*)(?:sc|ac|ri|ni|del|erase|rd|ren|mi|cpi|rni|clc)\s/i;
+/** PowerShell cmdlets (and aliases) that write, and which positionals they write: `first` = the path, `all` = every path, `both` = source and destination. */
+const PS_WRITES: Record<string, "first" | "all" | "both" | "dest"> = {
+  "set-content": "first", "add-content": "first", "out-file": "first", "clear-content": "first", "new-item": "first", "remove-item": "all", "rename-item": "first",
+  "move-item": "both", "copy-item": "dest", sc: "first", ac: "first", ni: "first", ri: "all", del: "all", erase: "all", rd: "all", ren: "first", mi: "both", move: "both", copy: "dest", cpi: "dest", rni: "first", clc: "first",
+};
+/** Named parameters that hold a path (PowerShell accepts any unambiguous prefix, so `-Lit` works). */
+const PS_PATH_PARAM = /^-(p(a(t(h)?)?)?|lit(e(r(a(l(p(a(t(h)?)?)?)?)?)?)?)?|pspath|filepath|destination|dest?|de(s(t(i(n(a(t(i(o(n)?)?)?)?)?)?)?)?)?)$/i;
+/** Named parameters that take a non-path value we must not mistake for a positional. */
+const PS_VALUE_PARAM = /^-(value|v(a(l(u(e)?)?)?)?|encoding|itemtype|type|inputobject|filter|include|exclude|stream|newname|credential|width|delimiter|totalcount|attributes|force:\$?\w+)$/i;
+
+/** Targets of a PowerShell write cmdlet: named path parameters plus positionals, backslashes read as separators. */
+function psTargets(v: string, args: readonly ShWord[]): ShWord[] {
+  const kind = PS_WRITES[v];
+  const named: ShWord[] = [];
+  const destNamed: ShWord[] = [];
+  const pos: ShWord[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i].text;
+    if (t.startsWith("-") && t.length > 1 && !args[i].dynamic) {
+      const colon = t.indexOf(":");
+      const name = colon > 0 ? t.slice(0, colon) : t;
+      if (PS_PATH_PARAM.test(name)) {
+        const val = colon > 0 ? { ...args[i], text: t.slice(colon + 1) } : args[++i];
+        if (val) for (const piece of val.text.split(",")) (/^-de/i.test(name) ? destNamed : named).push({ ...val, text: piece.trim() });
+      } else if (PS_VALUE_PARAM.test(name) && colon < 0) i++;
+    } else pos.push(args[i]);
+  }
+  let out: ShWord[] = kind === "dest" ? [] : [...named, ...destNamed];
+  if (kind === "dest") out = destNamed.length ? destNamed : named.length ? pos.slice(0, 1) : pos.slice(1, 2);
+  else if (kind === "all") out.push(...pos);
+  else if (kind === "first") {
+    if (!named.length && pos.length) out.push(pos[0]);
+  } else if (!named.length) out.push(...pos.slice(0, 2));
+  else if (named.length === 1 && pos.length) out.push(pos[0]);
+  out = out.filter((w) => w.text !== "");
+  return out.map((w) => ({ ...w, text: w.text.replace(/\\/g, "/") }));
+}
+
 /** Paths a simple command writes through its arguments (redirections are in `ShCmd.writes`). */
 export function writeTargets(argv: readonly ShWord[]): ShWord[] {
   const v = cmdName(argv[0]);
@@ -801,6 +846,7 @@ export function writeTargets(argv: readonly ShWord[]): ShWord[] {
     const rest = args.filter((a) => !known.test(a.text));
     return rest.some((a) => a.text.startsWith("--reference=")) ? rest.filter((a) => !a.text.startsWith("--reference=")) : rest.slice(1);
   }
+  if (Object.hasOwn(PS_WRITES, v)) return psTargets(v, args);
   const spec = Object.hasOwn(WRITE_ARGS, v) ? WRITE_ARGS[v] : undefined;
   if (!spec) return [];
   const { pos, opts } = splitArgs(args, spec.vals);
@@ -1152,6 +1198,8 @@ function extractRoots(v: string, argv: readonly ShWord[]): ShWord[] {
 type ShellWrite = { word: ShWord; cwd: string | null; destructive?: boolean; /** The place a `mv` puts things: written to, not removed. */ dest?: boolean };
 
 function shellWrites(src: string, cwd: string | null, depth = 0): ShellWrite[] {
+  // PowerShell has no backslash escapes (its escape is the backtick) and Windows paths use `\`: read them as `/`, or `secrets\\k.txt` lexes as `secretsk.txt`.
+  if (PS_CMDLET.test(src)) src = src.replace(/\\/g, "/");
   const out: ShellWrite[] = [];
   for (const sc of lexShell(src)) {
     for (const w of sc.writes) for (const x of braceVariants(w)) out.push({ word: x, cwd });
