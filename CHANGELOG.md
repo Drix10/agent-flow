@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+- `agent-flow sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>] -- <cmd>` runs a command under bubblewrap (read-only filesystem except the worktree), an OS-level boundary the hook cannot give. Linux/WSL only.
+
 - `doctor` warns (never fails) when `protected_paths` have no CODEOWNERS entry, since only the host can stop a pull request editing them.
 - Guard: recognises Codex/OpenCode patch payloads, Gemini `replace`, argv-form shells, `workdir`/`dir_path`, and protects the Gemini/Codex/Cursor/OpenCode hook wiring from edits.
 

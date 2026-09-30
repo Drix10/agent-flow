@@ -9,6 +9,7 @@
 import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
@@ -131,6 +132,8 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
       --harness <h> [--model m --exit n --seconds s --argv-file f --issue n --round r]
                             Also append a role_run line (argv, exit, duration, cost/tokens) to .agent-flow/audit.jsonl
   repair --yes              Refresh manifest timestamps after the prose was re-verified (Gardener)
+  sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>] -- <cmd>
+                            Run <cmd> under bubblewrap: read-only filesystem except this worktree (Linux/WSL)
   guard                     Claude Code PreToolUse hook: reads the hook JSON on stdin, exit 2 = blocked
   guard --check             Exit 1 unless the Claude Code hook is installed and its target exists
 
@@ -1284,6 +1287,46 @@ async function cmdInit(args) {
   return 0;
 }
 
+/**
+ * `agent-flow sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>]... -- <cmd...>`
+ * Runs a command (typically an agent harness) under bubblewrap: the whole filesystem is
+ * read-only except the worktree (and --allow dirs), /tmp is private, and the process can't
+ * see other processes. Unlike the guard hook this is an OS boundary, so interpreters and
+ * scripts can't write outside it either. Linux/WSL only; needs `bwrap`.
+ */
+function sandboxArgv(av, cwd, home) {
+  const i = av.indexOf("--");
+  const opts = i === -1 ? av : av.slice(0, i);
+  const cmdv = i === -1 ? [] : av.slice(i + 1);
+  const o = { ro: false, net: true, hideHome: false, allow: [] };
+  for (let k = 0; k < opts.length; k++) {
+    const f = opts[k];
+    if (f === "--ro") o.ro = true;
+    else if (f === "--no-net") o.net = false;
+    else if (f === "--hide-home") o.hideHome = true;
+    else if (f === "--allow" && opts[k + 1]) o.allow.push(resolve(cwd, opts[++k]));
+    else throw new UserError(`sandbox: unknown option ${f}`);
+  }
+  if (!cmdv.length) throw new UserError("usage: agent-flow sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>]... -- <command...>");
+  const b = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session"];
+  if (!o.net) b.push("--unshare-net");
+  if (o.hideHome && home) {
+    b.push("--tmpfs", home); // credentials, dotfiles and other repos disappear
+    if (cwd === home || cwd.startsWith(home + "/")) b.push("--ro-bind", cwd, cwd);
+  }
+  if (!o.ro) b.push("--bind", cwd, cwd);
+  for (const d of o.allow) b.push("--bind", d, d);
+  b.push("--chdir", cwd, "--", ...cmdv);
+  return b;
+}
+
+function cmdSandbox(av) {
+  const bw = spawnSync("bwrap", ["--version"], { encoding: "utf8" });
+  if (bw.error || bw.status !== 0) throw new UserError("sandbox needs bubblewrap (`bwrap`) — Linux/WSL only: apt install bubblewrap");
+  const r = spawnSync("bwrap", sandboxArgv(av, realpathSync(process.cwd()), process.env.HOME), { stdio: "inherit" });
+  return r.status ?? 1;
+}
+
 function usage(msg) {
   console.error(`usage: agent-flow ${msg}`);
   return 2;
@@ -1311,6 +1354,14 @@ function roleRefusal() {
 
 // ---------------------------------------------------------------------------
 
+if (process.argv[2] === "sandbox") {
+  try {
+    process.exit(roleRefusal() || cmdSandbox(process.argv.slice(3)));
+  } catch (e) {
+    console.error(`${c(31, "agent-flow:")} ${String(e.message ?? e).split("\n")[0]}`);
+    process.exit(2);
+  }
+}
 const args = fixBools(parseArgs(process.argv.slice(2)));
 if (args._[0] === "-h") args.help = true;
 if (args._[0] === "-v" || args._[0] === "-V") args.version = true;
