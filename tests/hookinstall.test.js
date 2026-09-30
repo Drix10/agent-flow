@@ -62,3 +62,37 @@ test("codex-style payloads: exec_command is a shell, apply_patch a write", () =>
     assert.equal(guard(dir, { tool_name: "write_file", tool_input: { file_path: join(dir, "keep/a.txt"), content: "x" }, cwd: dir }).status, 2);
   });
 });
+
+test("harness payload shapes from the review: patches, replace, argv shells, workdir, string input, wiring", () => {
+  proj((dir) => {
+    const patch = "*** Begin Patch\n*** Update File: keep/a\n@@\n-a\n+b\n*** End Patch";
+    const blocked = (ev) => assert.equal(guard(dir, { cwd: dir, ...ev }).status, 2, JSON.stringify(ev));
+    const allowed = (ev) => assert.equal(guard(dir, { cwd: dir, ...ev }).status, 0, JSON.stringify(ev));
+    blocked({ tool_name: "apply_patch", tool_input: { command: patch } });
+    blocked({ tool_name: "apply_patch", tool_input: { patchText: patch } });
+    blocked({ tool_name: "replace", tool_input: { file_path: "keep/a", old_string: "a", new_string: "b" } });
+    blocked({ tool_name: "edit_file", tool_input: { target_file: "keep/a" } });
+    blocked({ tool_name: "shell", tool_input: { command: ["bash", "-lc", "rm -rf keep"] } });
+    blocked({ tool_name: "local_shell", tool_input: { command: ["rm", "-rf", "keep"] } });
+    blocked({ tool_name: "unified_exec", tool_input: { cmd: "rm -rf keep" } });
+    blocked({ tool_name: "run_shell_command", tool_input: { command: "rm -rf a", dir_path: "keep" } });
+    blocked({ tool_name: "bash", tool_input: { command: "rm -rf a", workdir: "keep" } });
+    blocked({ tool_name: "Shell", tool_input: "rm -rf keep" });
+    blocked({ tool_name: "write_file", tool_input: { file_path: ".gemini/settings.json", content: "{}" } });
+    blocked({ tool_name: "write_file", tool_input: { file_path: ".cursor/hooks.json", content: "{}" } });
+    blocked({ tool_name: "read_many_files", tool_input: { include: [".env"] } });
+    allowed({ tool_name: "local_shell", tool_input: { command: ["ls", "-la"] } });
+    allowed({ tool_name: "run_shell_command", tool_input: { command: "ls", dir_path: "." } });
+  });
+});
+
+test("install keeps user hooks that merely mention agent-flow and guard", () => {
+  proj((dir, cli) => {
+    mkdirSync(join(dir, ".gemini"), { recursive: true });
+    writeFileSync(join(dir, ".gemini/settings.json"), JSON.stringify({ hooks: { BeforeTool: [{ matcher: "x", hooks: [{ type: "command", command: "./scripts/agent-flow-guard.sh" }] }] } }));
+    cli("install", "--harness", "gemini");
+    const s = readFileSync(join(dir, ".gemini/settings.json"), "utf-8");
+    assert.match(s, /agent-flow-guard\.sh/);
+    assert.match(s, /agent-flow\/bin\/agent-flow\.js\\" guard/);
+  });
+});

@@ -14,10 +14,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -241,10 +241,22 @@ function cmdDoctor(args) {
     section("commands exist", rep.dead_commands, (m) => [`${m.file}${m.line ? `:${m.line}` : ""}`, `${m.command}${m.reason ? ` — ${m.reason}` : ""}${m.suggestion ? `  → did you mean ${c(1, m.suggestion)}?` : ""}`]);
     section("relative links resolve", rep.broken_links, (m) => [`${m.file}:${m.line}`, m.target]);
     section("cited commits exist", rep.unknown_commits, (m) => [`${m.file}:${m.line}`, m.sha]);
+    reportCodeowners(rt, r.manifest);
     if (discovered) console.log(dim(`note: ${r.manifest ? "the manifest lists no context files" : "no CONTEXT_MANIFEST.json"}, so only paths were checked — \`agent-flow init\` adds staleness tracking`));
     console.log(r.healthy ? c(32, "\nhealthy") : `\n${c(31, "unhealthy")} — ${doctorNextStep(rep, schema)}`);
   }, () => doctorSarif(rt, rep, r.manifest));
   return none || r.healthy ? 0 : 1;
+}
+
+/** Advisory only: server-side review of protected paths is the host's job, so this never fails doctor. */
+function reportCodeowners(rt, manifestPath) {
+  const loaded = manifestLib.loadManifest(rt, typeof manifestPath === "string" ? manifestPath : undefined);
+  const prot = loaded.ok ? (loaded.value.manifest.protected_paths ?? []).filter((x) => typeof x === "string") : [];
+  if (!prot.length) return;
+  const missing = codeownersLib.uncoveredProtected(rt, prot);
+  if (missing === null) warn("protected_paths are enforced for local agents only; add a CODEOWNERS file and require Code Owner review so a pull request can't change them either");
+  else if (missing.length) warn(`CODEOWNERS doesn't cover protected path${missing.length > 1 ? "s" : ""}: ${missing.join(", ")} (a pull request could change ${missing.length > 1 ? "them" : "it"} without that review)`);
+  else ok("protected paths have CODEOWNERS entries");
 }
 
 function doctorSarif(rt, rep, manifestPath) {
@@ -861,10 +873,13 @@ function cmdGuard(args) {
   else if (!ev.tool_name && typeof ev.file_path === "string") ev = { ...ev, tool_name: "Read", tool_input: { file_path: ev.file_path } };
   if (!ev.cwd && Array.isArray(ev.workspace_roots) && typeof ev.workspace_roots[0] === "string") ev.cwd = ev.workspace_roots[0];
   // A subagent launched as one of our roles (e.g. the orchestrator's `reviewer`) runs under that role.
+  if (typeof ev.tool_input === "string") ev.tool_input = { command: ev.tool_input };
   const role = guardLib.ROLES.includes(ev.agent_type) ? ev.agent_type : env.role;
   try {
-    const cwd = typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd();
-    const rt = fsutil.findRepoRoot(cwd);
+    const baseCwd = typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd();
+    const rt = fsutil.findRepoRoot(baseCwd);
+    // `workdir` / `dir_path` move a shell call to another directory: judge it from there.
+    const cwd = ev.tool_input && typeof ev.tool_input === "object" && guardLib.isShellTool(String(ev.tool_name ?? "").toLowerCase(), String(ev.tool_name ?? "").replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[-\s]+/g, "_").toLowerCase()) ? guardLib.workdirOf(ev.tool_input, baseCwd) : baseCwd;
     const loaded = manifestLib.loadManifestForGuard(rt);
     const decision = guardLib.decide({
       role,
@@ -1087,7 +1102,7 @@ function installClaudeHook(rt, args) {
 
 // Harnesses whose hooks speak (nearly) Claude Code's protocol: JSON on stdin, exit 2 blocks.
 const HOOK_FILES = {
-  gemini: { path: ".gemini/settings.json", event: "BeforeTool", matcher: "read_file|read_many_files|write_file|replace|edit_file|run_shell_command|search_file_content|glob|list_directory|mcp_.*", wrap: true, dir: "$GEMINI_PROJECT_DIR/" },
+  gemini: { path: ".gemini/settings.json", event: "BeforeTool", matcher: "read_file|read_many_files|write_file|replace|edit_file|run_shell_command|search_file_content|grep_search|save_memory|glob|list_directory|web_fetch|mcp_.*", wrap: true, dir: "$GEMINI_PROJECT_DIR/" },
   codex: { path: ".codex/hooks.json", event: "PreToolUse", matcher: "", wrap: true, dir: "./" },
   cursor: { path: ".cursor/hooks.json", event: ["beforeShellExecution", "beforeReadFile", "preToolUse"], wrap: false, dir: "./" },
 };
@@ -1132,7 +1147,7 @@ function installGuardHook(rt, args, name) {
   const before = JSON.stringify(settings);
   settings.hooks ??= {};
   if (!cfg.wrap) settings.version ??= 1;
-  const isOurs = (h) => /agent-flow/.test(h?.command ?? "") && /\bguard\b/.test(h?.command ?? "");
+  const isOurs = (h) => /node\s+"[^"]*agent-flow\/bin\/agent-flow\.js"\s+guard\s*$/.test(h?.command ?? "");
   for (const ev of events) {
     const list = (settings.hooks[ev] ??= []);
     const flat = (e) => (cfg.wrap ? (Array.isArray(e?.hooks) ? e.hooks : []) : [e]);
