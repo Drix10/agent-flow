@@ -4,6 +4,9 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+- `install --harness gemini|codex|cursor` also installs the guard as a pre-tool hook; the guard understands Cursor's tool-less `beforeShellExecution`/`beforeReadFile` payloads. Live verification pending.
+- `policy.deny_commands: ["infra"]` shorthand accepted (it used to load no rule at all).
+
 - `install --harness opencode`: OpenCode guard plugin (`tool.execute.before`), fails closed. Live verification pending.
 - Guard: `mv x ~/` no longer flagged when the repo lives under the home directory (found by a live OpenCode run).
 

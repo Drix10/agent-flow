@@ -26,6 +26,8 @@ What is **enforced** (the harness or our code blocks it), **checked** (the pre-c
 
 A ✅ from the CLI means the rule is enforced when the CLI is called. Whether the agent calls it depends on the skill (instructed), but the rule itself can't be bypassed by calling the CLI with different arguments.
 
+**Gemini CLI, Codex, Cursor:** `install --harness gemini|codex|cursor` now also wires the guard as a pre-tool hook (`.gemini/settings.json` `BeforeTool`, `.codex/hooks.json` `PreToolUse`, `.cursor/hooks.json` `beforeShellExecution`/`beforeReadFile`/`preToolUse`, fail-closed). Built from each vendor's hook documentation and unit-tested with their payload shapes; **not yet verified in a live session**, and hook config paths/shapes for Codex and Gemini's project-dir variable are the likeliest things to need a fix. Run the same A/B/C probe as for OpenCode. Existing hooks in those files are kept.
+
 **OpenCode:** `npx @drix10/agent-flow install --harness opencode` writes `.opencode/plugins/agent-flow-guard.js`, a `tool.execute.before` plugin that runs the guard before each tool call and throws (denying the call) on a block. Unit-tested against the plugin API; **not yet verified in a live OpenCode session**. Probe: protect a path in `CONTEXT_MANIFEST.json`, ask OpenCode to write there, and expect a denial naming the rule.
 
 ## Everything else that reads `AGENTS.md`
