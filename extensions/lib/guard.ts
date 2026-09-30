@@ -1394,6 +1394,8 @@ function catastrophicTarget(text: string, abs: string | null, glob: boolean): st
     cands.push(a.replace(/(.)\/+$/, "$1"));
   }
   for (const c of cands) {
+    if (/^[A-Za-z]:\/?$/.test(c)) return "a drive root"; // `cd / && rm -rf *` on Windows resolves to the drive
+    if (/^[A-Za-z]:\/(?:windows|program files(?: \(x86\))?|programdata|users)$/i.test(c)) return "a system directory";
     if (c === home) return "the home directory";
     if (SYSTEM_DIRS.has(c)) return c === "/" ? "the filesystem root" : "a system directory";
   }
