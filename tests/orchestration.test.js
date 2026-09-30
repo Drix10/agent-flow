@@ -77,7 +77,7 @@ test("schema CLI: --strict prints the strict variant, --dir writes both variants
       assert.equal(JSON.parse(readFileSync(join(dir, `${name}.strict.schema.json`), "utf-8")).additionalProperties, false, name);
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows keeps a killed child's directory busy for a moment
   }
 });
 
@@ -197,7 +197,7 @@ test("report --harness appends a role_run line to .agent-flow/audit.jsonl", () =
     assert.equal(e.ok, true);
     assert.match(e.argv, /max-turns/);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows keeps a killed child's directory busy for a moment
   }
 });
 
@@ -229,7 +229,7 @@ test("launch.md runner: detaches, passes KEY=VALUE env, records exit and duratio
     assert.ok(existsSync(`${base}.pid`) && existsSync(`${base}.secs`) && existsSync(`${base}.argv`));
     assert.ok(!JSON.parse(readFileSync(`${base}.argv`, "utf-8")).includes("AGENT_FLOW_ROLE=qa"), "env assignments aren't part of argv");
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows keeps a killed child's directory busy for a moment
   }
 });
 
@@ -243,7 +243,7 @@ test("launch.md runner: a role past its wall-clock limit exits 124", () => {
     assert.ok(waitFor(`${base}.exit`), "exit file written");
     assert.equal(readFileSync(`${base}.exit`, "utf-8"), "124");
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows keeps a killed child's directory busy for a moment
   }
 });
 
