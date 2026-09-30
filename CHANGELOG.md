@@ -4,6 +4,7 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+- Codex guard hook live-verified on Linux/WSL (protected write, `--no-verify` commit and hook-config write all blocked); docs note that Codex's bypass-hook-trust / full-access options disable enforcement.
 - Guard: PowerShell writes are judged like their POSIX twins — named parameters in any order (`-LiteralPath`, `-Destination`, …), Windows `\` paths, `Copy-Item` writes only its destination, and .NET `[IO.File]::Write*` calls count as writes. A live Codex-on-Windows probe found `Set-Content -LiteralPath .codex/hooks.json …` slipped through.
 - Guard blocks also print a JSON deny (`permissionDecision`) on stdout besides exit 2 + stderr; set `AGENT_FLOW_GUARD_JSON_ONLY=1` to deny by JSON with exit 0 (experiment for a harness that ignores exit 2).
 - `agent-flow sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>] -- <cmd>` runs a command under bubblewrap (read-only filesystem except the worktree), an OS-level boundary the hook cannot give. Linux/WSL only.
