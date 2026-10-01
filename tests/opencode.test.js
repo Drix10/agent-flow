@@ -20,6 +20,8 @@ test("install --harness opencode writes a working tool.execute.before plugin", a
     const file = join(dir, ".opencode/plugins/agent-flow-guard.js");
     assert.ok(!existsSync(join(dir, ".opencode/package.json")), "no SDK dependency is written: the plugin imports nothing");
     assert.doesNotMatch(readFileSync(file, "utf-8"), /__AGENT_FLOW_BIN__/);
+    // No npm install here: the plugin runs the vendored runtime by a path relative to itself, so any clone works.
+    assert.match(readFileSync(file, "utf-8"), /new URL\("\.\.\/\.\.\/\.agent-flow-runtime\/bin\/agent-flow\.js", import\.meta\.url\)/);
     const plugin = await import(pathToFileURL(file).href);
     assert.equal(plugin.default.id, "agent-flow-guard");
     const hooks = await plugin.AgentFlowGuard({ directory: dir });

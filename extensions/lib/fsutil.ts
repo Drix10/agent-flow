@@ -33,6 +33,7 @@ export const IGNORED_DIRS = new Set([
   ".git",
   ".worktrees",
   ".agent-flow",
+  ".agent-flow-runtime",
   "dist",
   "build",
   "out",

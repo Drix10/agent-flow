@@ -70,7 +70,7 @@ export function classifyFiles(allFiles: string[], manifest: ContextManifest | nu
     }
   }
 
-  const depFiles = files.filter(isDependencyManifest);
+  const depFiles = files.filter((f) => isDependencyManifest(f) && !f.startsWith(".agent-flow-runtime/"));
   if (depFiles.length) bump("medium", `dependency manifest changed (${depFiles.join(", ")}) — risk review required`);
 
   const ctx = contextFilePaths(manifest);

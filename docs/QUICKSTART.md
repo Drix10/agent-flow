@@ -17,7 +17,8 @@ npx @drix10/agent-flow init          # preview; add --yes to write
 ## 1. Install
 
 ```bash
-npm i -D @drix10/agent-flow && npx @drix10/agent-flow install --harness claude    # or codex | gemini | cursor | copilot | windsurf | agents
+npx @drix10/agent-flow install --harness claude    # Node repos: `npm i -D @drix10/agent-flow` first (optional). Other repos: the hook runs from a vendored .agent-flow-runtime/.
+# or codex | gemini | cursor | copilot | windsurf | agents
 pi install npm:@drix10/agent-flow                                         # Pi, additionally gets tool-level enforcement
 npx @drix10/agent-flow hook install                                               # everyone
 ```

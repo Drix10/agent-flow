@@ -92,7 +92,7 @@ const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.
  * The wiring that makes the guard run: the hook registration and the installed copy of agent-flow itself.
  * While protection is configured, no session edits these; a human does (AGENT_FLOW_ALLOW_PROTECTED=1).
  */
-const GUARD_WIRING = [".claude/settings.json", ".claude/settings.local.json", ".gemini/settings.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".opencode/plugins/agent-flow-guard.js", "node_modules/@drix10/agent-flow/"];
+const GUARD_WIRING = [".claude/settings.json", ".claude/settings.local.json", ".gemini/settings.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".opencode/plugins/agent-flow-guard.js", "node_modules/@drix10/agent-flow/", ".agent-flow-runtime/"];
 
 /** The tamper-proof pattern `rel` falls under, if any. */
 export const tamperProofMatch = (rel: string): string | null => underAny(rel, TAMPER_PROOF);
@@ -926,7 +926,7 @@ const DEVICE = /^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/;
 // The CLI twins of agent-flow's own mutating tools
 // ---------------------------------------------------------------------------
 
-const CLI_COMMANDS = new Set(["doctor", "init", "audit-risk", "baseline", "classify", "check-staged", "state", "worktree", "scan", "install", "hook", "schema", "template", "report", "repair", "guard", "audit", "gates"]);
+const CLI_COMMANDS = new Set(["doctor", "init", "audit-risk", "baseline", "classify", "check-staged", "state", "worktree", "scan", "install", "hook", "schema", "template", "report", "repair", "guard", "audit", "gates", "manifest", "codeowners"]);
 
 /**
  * May `role` run `agent-flow <argv…>`? Returns a block reason, or null if allowed.
@@ -958,7 +958,7 @@ export function roleMayRunCli(role: Role | null, argv: readonly string[]): strin
           ? "risk_baseline_update"
           : sub === "repair"
             ? "stale_repair"
-            : sub === "init"
+            : sub === "init" || sub === "codeowners" || (sub === "manifest" && act === "sync")
               ? "bootstrap_write"
             : sub === "worktree" && (act === "create" || act === "remove")
               ? `worktree_${act}`
@@ -1354,6 +1354,94 @@ function secretReadBlock(what: string, why: string): GuardDecision {
   return block("secret-read", `${what} reads ${why}. Real credentials stay out of agent context: use the variable name, ask a human, or (human only) launch with AGENT_FLOW_ALLOW_SECRET_READ=1.`);
 }
 
+const RG_FAMILY = new Set(["rg", "ag", "ack"]);
+
+// Short flags that take a value, per tool: grep's -r is "recurse", rg's -r is "replace with X".
+const SEARCH_SHORT_WITH_VALUE = {
+  grep: new Set(["e", "f", "m", "A", "B", "C", "d", "D"]),
+  rg: new Set(["e", "f", "m", "A", "B", "C", "g", "t", "T", "j", "E", "M", "r", "d"]),
+};
+const SEARCH_LONG_WITH_VALUE = /^--(regexp|file|max-count|context|after-context|before-context|include|exclude|exclude-dir|exclude-from|directories|devices|glob|iglob|type|type-not|type-add|max-depth|threads|encoding|ignore-file|pre|pre-glob|replace|max-columns|sort|sortr)$/;
+const SWEEP_BUDGET = 20_000;
+const SWEEP_MS = 1_500;
+
+/** First file under `dir` that is denied to agents, looking at no more than `budget` entries. Never follows symlinks. */
+function firstDeniedUnder(g: GuardInput, dir: string, hiddenToo: boolean, budget = SWEEP_BUDGET): { file: string; rule: string } | null {
+  const stack = [""];
+  const deny = denyReadPathsOf(g.manifest);
+  const t0 = Date.now();
+  let seen = 0;
+  while (stack.length && seen < budget && Date.now() - t0 < SWEEP_MS) {
+    const relDir = stack.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(join(dir, relDir), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (++seen > budget) return null;
+      if (e.isSymbolicLink()) continue;
+      const rel = relDir ? `${relDir}/${e.name}` : e.name;
+      if (!hiddenToo && e.name.startsWith(".")) continue;
+      if (e.isDirectory()) {
+        if (e.name !== ".git" && e.name !== "node_modules") stack.push(rel);
+        continue;
+      }
+      // Plain string work: this runs for every file of a sweep, so no realpath calls.
+      if (isEnvFile(e.name)) return { file: rel, rule: "environment file" };
+      const inRepo = toPosix(relative(g.root, join(dir, rel)));
+      const hit = inRepo && !escapesBase(inRepo) ? matchAny(deny, inRepo) : null;
+      if (hit) return { file: rel, rule: hit };
+    }
+  }
+  return null;
+}
+
+/**
+ * `grep -r KEY .` and `rg KEY` never name .env, but read every file under the directory.
+ * Returns the first denied file such a sweep would open. rg/ag/ack skip hidden files unless told not to.
+ * Looks at no more than SWEEP_BUDGET entries, so `grep -r x /` answers fast instead of walking the disk.
+ */
+function recursiveSearchHit(g: GuardInput, verb: string, argv: ShWord[]): { dir: string; file: string; rule: string } | null {
+  const rgLike = RG_FAMILY.has(verb);
+  const grepLike = /^(grep|egrep|fgrep)$/.test(verb);
+  if (!rgLike && !grepLike) return null;
+  const operands: ShWord[] = [];
+  const flags: string[] = [];
+  let patternFlag = false;
+  const args = argv.slice(1);
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i].text;
+    if (t === "--") {
+      operands.push(...args.slice(i + 1));
+      break;
+    }
+    if (t.startsWith("--")) {
+      flags.push(t);
+      if (/^--(regexp|file)(=|$)/.test(t)) patternFlag = true;
+      if (!t.includes("=") && SEARCH_LONG_WITH_VALUE.test(t)) i++;
+    } else if (t.startsWith("-") && t.length > 1) {
+      flags.push(t);
+      const letters = t.slice(1);
+      if (/[ef]/.test(letters)) patternFlag = true;
+      // `-A 3`, `-g '*.py'`, `-rnA 3`: a value-taking flag at the end of the cluster consumes the next word.
+      if (/^[a-zA-Z]+$/.test(letters) && SEARCH_SHORT_WITH_VALUE[rgLike ? "rg" : "grep"].has(letters[letters.length - 1])) i++;
+    } else operands.push(args[i]);
+  }
+  if (grepLike && !flags.some((o) => /^-[a-zA-Z]*[rR]/.test(o) || /^--(recursive|dereference-recursive)$/.test(o))) return null;
+  const hiddenToo = !rgLike || flags.some((o) => /^(--hidden|--unrestricted|-[a-zA-Z]*u|--no-ignore)/.test(o));
+  const dirs = patternFlag ? operands : operands.slice(1);
+  for (const w of dirs.length ? dirs : [{ text: ".", dynamic: false, glob: false } as ShWord]) {
+    if (w.dynamic) continue;
+    const abs = resolveShellPath(g.cwd, w.text);
+    if (!abs) continue;
+    const hit = firstDeniedUnder(g, abs, hiddenToo);
+    if (hit) return { dir: w.text, ...hit };
+  }
+  return null;
+}
+
 /** Shell: any command that names an env file (or a manifest deny_read path) as an argument or `<` input. */
 function decideSecretRead(g: GuardInput, cmd: string): GuardDecision | null {
   if (g.allowSecretRead) return null;
@@ -1379,6 +1467,8 @@ function decideSecretRead(g: GuardInput, cmd: string): GuardDecision | null {
         if (!value.dynamic && (!value.text.startsWith("-") || value === w)) words.push(value);
       }
     }
+    const swept = recursiveSearchHit(g, verb, argv);
+    if (swept) return secretReadBlock(`\`${verb}\``, `${swept.dir} recursively, which holds ${swept.file} (${swept.rule})`);
     for (const w of words) {
       if (w.dynamic || !w.text) continue;
       // `curl -F f=@.env`, `git show HEAD:.env`, `--post-file=.env`: the path can sit after `=`, `@` or `:`.
@@ -1386,8 +1476,12 @@ function decideSecretRead(g: GuardInput, cmd: string): GuardDecision | null {
       for (const form of forms) {
         if (!form || (form.startsWith("-") && form.length > 1 && !form.includes("/"))) continue;
         const abs = resolveShellPath(g.cwd, form);
-        const hit = abs && deniedRead(g, abs);
-        if (hit) return secretReadBlock(`\`${verb || "command"}\``, `${w.text} (${hit})`);
+        if (!abs) continue;
+        // An unquoted glob expands in the shell: `cat .e*` reads .env as surely as `cat .env`.
+        for (const t of w.glob ? expandGlob(abs) : [abs]) {
+          const hit = deniedRead(g, t);
+          if (hit) return secretReadBlock(`\`${verb || "command"}\``, `${w.text}${t === abs ? "" : ` -> ${toPosix(relative(g.root, t))}`} (${hit})`);
+        }
       }
     }
   }

@@ -262,13 +262,13 @@ test("install --harness claude merges the guard hook into existing settings, ide
     assert.equal(JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf-8")).hooks.PreToolUse.length, 2, "re-running doesn't duplicate the hook");
     assert.equal(af(dir, "guard", "--check").status, 0);
 
-    // Without a project-local install the hook would point at a temporary copy: refuse, loudly.
+    // Without a project-local install the hook would point at a temporary copy: vendor the runtime instead.
     const bare = gitRepo("bare");
     try {
       const r = run(bare.dir, ["install", "--harness", "claude"]);
-      assert.equal(r.status, 1);
-      assert.match(r.stdout, /isn't installed in this project/);
-      assert.equal(run(bare.dir, ["guard", "--check"]).status, 1);
+      assert.equal(r.status, 0, r.stdout);
+      assert.match(r.stdout, /copied the runtime to .agent-flow-runtime/);
+      assert.equal(spawnSync(process.execPath, [join(bare.dir, ".agent-flow-runtime/bin/agent-flow.js"), "guard", "--check"], { cwd: bare.dir }).status, 0);
     } finally {
       rmSync(bare.dir, { recursive: true, force: true });
     }
@@ -1450,6 +1450,31 @@ test("secret-read: a search pattern that spells .env is not a file read", () => 
   }
 });
 
+test("secret-read: a recursive search over a directory holding an env file is a read of it", () => {
+  const { dir, manifest } = ledgerRepo();
+  try {
+    writeFileSync(join(dir, ".env"), "KEY=1\n");
+    const sh = (command) => decide({ role: null, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest })?.rule ?? null;
+    for (const c of ["grep -r KEY .", "grep -rn KEY", "grep -rn -e KEY .", "rg --hidden KEY"]) assert.equal(sh(c), "secret-read", c);
+    // rg skips hidden files by default; a search that stays out of the directory never reaches it.
+    for (const c of ["rg KEY", "grep -r KEY src", "grep KEY src/a.ts"]) assert.equal(sh(c), null, c);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("secret-read: an unquoted glob that expands to an env file is a read of it", () => {
+  const { dir, manifest } = ledgerRepo();
+  try {
+    writeFileSync(join(dir, ".env"), "KEY=1\n");
+    const sh = (command) => decide({ role: null, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest })?.rule ?? null;
+    for (const c of ["cat .e*", "cat .en?", "head .env*"]) assert.equal(sh(c), "secret-read", c);
+    for (const c of ["cat src/*", "ls .e*"]) assert.equal(sh(c), null, c);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Peer review of the adoption hardening
 // ---------------------------------------------------------------------------
@@ -1562,6 +1587,37 @@ test("guard: mv and hard links count as touching a secret, and repeated git -C a
     assert.match(sh("git -C sub -C .. restore -- config/./db.yml") ?? "", /bulk-git-protected|protected-path/);
     assert.equal(sh("git -C sub -C .. status"), null);
     assert.equal(sh(`git -C ${join(dir, "sub").replace(/\\/g, "/")} -C .. restore -- config/db.yml`) === null, false, "an absolute -C then a relative one");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("secret-read: a recursive search sees through option values, build output dirs, and stays bounded", () => {
+  const { dir, manifest } = ledgerRepo();
+  try {
+    mkdirSync(join(dir, "build"), { recursive: true });
+    writeFileSync(join(dir, "build", ".env"), "KEY=1\n");
+    const sh = (command) => decide({ role: null, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest })?.rule ?? null;
+    for (const c of ["grep -r -d recurse KEY", "grep -rn --include='*.py' KEY .", "rg --hidden -t py KEY", "rg --hidden -g '*.cfg' KEY", "rg --hidden -m 5 KEY", "grep -r KEY build"]) assert.equal(sh(c), "secret-read", c);
+    // A sweep over a huge tree answers from a bounded look, it doesn't walk the disk.
+    const t0 = Date.now();
+    sh("grep -r KEY /");
+    assert.ok(Date.now() - t0 < 5000, `bounded: ${Date.now() - t0}ms`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a gate whose os excludes this machine does not block binding", async () => {
+  const { checkBinding } = await import("../extensions/lib/binding.js");
+  const other = process.platform === "linux" ? "darwin" : "linux";
+  const { dir } = gitRepo("bind-os");
+  try {
+    const gates = [{ name: "elsewhere", command: "false", os: [other] }];
+    // No binding evidence at all: not enforced, so the filter is the only thing under test via the unit below.
+    assert.equal(checkBinding(dir, 1, 1, gates).enforced, false);
+    const required = gates.filter((x) => x.required !== false && !(Array.isArray(x.os) && x.os.length && !x.os.includes(process.platform)));
+    assert.deepEqual(required, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

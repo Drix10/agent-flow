@@ -81,7 +81,9 @@ function lastAuditHash(path: string): string {
     for (let k = lines.length - 1; k >= 0; k--) {
       try {
         const h = JSON.parse(lines[k]).hash;
-        return typeof h === "string" ? h : AUDIT_GENESIS;
+        // An `unchained` line (written when the lock timed out) has no hash; the verifier skips it, so the chain
+        // continues from the last line that does.
+        if (typeof h === "string") return h;
       } catch {
         /* a partial first line of the tail window */
       }

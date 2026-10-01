@@ -121,3 +121,76 @@ test("read-only roles can't run gates; the orchestrator can", () => {
   assert.equal(roleMayRunCli("orchestrator", ["gates", "run"]), null);
   assert.equal(roleMayRunCli(null, ["gates", "run"]), null);
 });
+
+test("a gate whose `os` excludes this machine is skipped and says so, never run and never a silent pass", () => {
+  const other = process.platform === "linux" ? "darwin" : "linux";
+  const dir = tmp();
+  try {
+    const r = runGates(dir, [
+      { name: "here", command: node("process.exit(0)"), os: [process.platform] },
+      { name: "elsewhere", command: node("process.exit(9)"), os: [other] },
+    ]);
+    assert.equal(r.ok, true);
+    const [h, e] = r.results;
+    assert.equal(h.skipped, undefined);
+    assert.equal(e.exit_code, null, "never ran");
+    assert.match(e.skipped, new RegExp(`runs on ${other}, this is ${process.platform}`));
+    const audit = readFileSync(join(dir, ".agent-flow", "audit.jsonl"), "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assert.deepEqual(audit.map((a) => a.event), ["gate_run", "gate_skipped"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.ok(validateManifest({ version: "2", gates: [{ name: "k", command: "x", os: ["plan9"] }] }).some((p) => /os must be/.test(p)));
+});
+
+test("string gates run in a POSIX shell, and the shell failing to start the command is an environment error", () => {
+  withRepo([
+    { name: "posix", command: "for i in 1 2; do test $i -gt 0 || exit 1; done && [ -n \"$AGENT_FLOW_GATE\" ]" },
+    { name: "missing", command: "./no-such-script.sh" },
+  ], (dir) => {
+    const r = runGates(dir, gatesOf(JSON.parse(readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8"))));
+    assert.equal(r.results[0].ok, true, readFileSync(join(dir, r.results[0].log), "utf-8"));
+    assert.equal(r.results[1].ok, false);
+    assert.match(r.results[1].error ?? "", /not runnable here/);
+    assert.equal(r.environment_error, true);
+  });
+});
+
+test("dash's `not found` is an environment error too, not a failing test", () => {
+  const dir = tmp();
+  try {
+    const r = runGates(dir, [{ name: "nope", command: "definitely-not-a-real-command-xyz" }]);
+    assert.equal(r.results[0].ok, false);
+    assert.match(r.results[0].error ?? "", /not runnable here|can't run this command/);
+    assert.equal(r.environment_error, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a command that exits as expected is never an environment error, whatever it prints", () => {
+  const dir = tmp();
+  try {
+    const r = runGates(dir, [{ name: "ok", command: node("console.log('x is not recognized as an internal or external command')") }]);
+    assert.equal(r.results[0].ok, true);
+    assert.equal(r.environment_error, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a gate with cwd \".\" runs in the checkout itself", () => {
+  const dir = tmp();
+  try {
+    for (const cwd of [".", "./"]) {
+      const r = runGates(dir, [{ name: "here", command: node("process.exit(require('fs').existsSync('marker') ? 0 : 3)"), cwd }]);
+      writeFileSync(join(dir, "marker"), "x");
+      const again = runGates(dir, [{ name: "here", command: node("process.exit(require('fs').existsSync('marker') ? 0 : 3)"), cwd }]);
+      assert.equal(again.results[0].error, undefined, again.results[0].error);
+      assert.equal(again.results[0].ok, true);
+      assert.equal(r.results[0].error, undefined);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

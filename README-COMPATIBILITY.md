@@ -5,7 +5,7 @@ The skills follow the [Agent Skills](https://agentskills.io) format and work in 
 Every harness except Pi installs the same way, and the command is identical on Windows, macOS and Linux:
 
 ```bash
-npm install -D @drix10/agent-flow
+# Optional in a Node repo: npm install -D @drix10/agent-flow. Elsewhere the hook runs from a vendored .agent-flow-runtime/ (no package.json needed).
 npx @drix10/agent-flow install --harness <name>      # --dry-run to preview; never overwrites your edits without --force
 npx @drix10/agent-flow hook install                   # pre-commit gate (recommended everywhere)
 ```

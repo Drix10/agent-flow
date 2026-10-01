@@ -169,3 +169,18 @@ test("CLI: audit verify exits 1 on a broken chain or a missing anchor, head prin
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("an unchained line (lock timeout) does not break the chain for the lines after it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-audit-unchained-"));
+  try {
+    appendAudit(dir, { event: "a" });
+    // What the lock-timeout fallback writes: a line with no hash.
+    appendFileSync(join(dir, ".agent-flow", "audit.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), event: "b", unchained: true })}\n`, "utf-8");
+    appendAudit(dir, { event: "c" });
+    const v = verifyAudit(dir);
+    assert.equal(v.ok, true, JSON.stringify(v.broken));
+    assert.equal(v.unchained, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

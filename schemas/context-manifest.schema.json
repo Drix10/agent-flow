@@ -148,6 +148,18 @@
             "type": "boolean",
             "default": true
           },
+          "os": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "enum": [
+                "linux",
+                "darwin",
+                "win32"
+              ]
+            },
+            "description": "Platforms the gate can run on. Elsewhere it is skipped and reported as skipped (never as a pass); CI on a listed platform judges it. Use for builds and tests that need a Linux toolchain or a POSIX filesystem."
+          },
           "on_stop": {
             "type": "boolean",
             "default": false,

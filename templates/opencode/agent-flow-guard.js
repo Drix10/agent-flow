@@ -3,8 +3,10 @@
 // One flat file (OpenCode scans only top-level files of .opencode/plugins/) with no SDK import, so it loads on v1 and v2 alike.
 import { spawnSync } from "node:child_process";
 import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const BIN = "__AGENT_FLOW_BIN__";
+// Relative to this file (.opencode/plugins/), so the plugin works in every clone, not only on the machine that installed it.
+const BIN = fileURLToPath(new URL("../../__AGENT_FLOW_BIN__", import.meta.url));
 const NODE = process.env.AGENT_FLOW_NODE ?? (/^node(?:\.exe)?$/i.test(basename(process.execPath)) ? process.execPath : "node");
 
 function check(tool, input, cwd) {

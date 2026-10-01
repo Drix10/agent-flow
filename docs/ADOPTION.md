@@ -24,7 +24,7 @@ npx @drix10/agent-flow audit-risk        # review once, then `baseline accept --
 npx @drix10/agent-flow init              # preview a manifest; suggests protected_paths but writes none
 ```
 
-Add `doctor` and `audit-risk --fail-on-new` to CI, or use the composite action (`uses: Drix10/agent-flow@v1.1.5`), which also runs `classify --fail-on-protected --fail-on-policy` and can upload SARIF to code scanning (`--sarif` on `doctor` and `audit-risk`). In a git repo the scans read git's file list, so untracked gitignored trees (data, caches, vendored code) are not walked. Files git tracks are always scanned, even under an ignored pattern, and outside git the scans fall back to a directory walk.
+Add `doctor` and `audit-risk --fail-on-new` to CI, or use the composite action (`uses: Drix10/agent-flow@v1.1.6`), which also runs `classify --fail-on-protected --fail-on-policy` and can upload SARIF to code scanning (`--sarif` on `doctor` and `audit-risk`). In a git repo the scans read git's file list, so untracked gitignored trees (data, caches, vendored code) are not walked. Files git tracks are always scanned, even under an ignored pattern, and outside git the scans fall back to a directory walk.
 
 ## Layer 2: protect what must not change
 
@@ -59,7 +59,7 @@ Human overrides, set by whoever launches the session (an agent cannot set them f
 
 The guard reads command text. It cannot see through `x=.en; y=v; cat $x$y`, `$(echo .env)`, `base64 -d | sh`, an interpreter script run by path, a symlink made and used in one command, or a recursive `grep -r` that happens to descend into a secrets file. It also can't stop a human's own terminal. Treat it as a second layer and keep the real backstops outside the agent:
 
-- branch protection and `CODEOWNERS` on the protected paths;
+- `CODEOWNERS` on the protected paths (`agent-flow codeowners --yes` writes the lines), and, for teams, branch protection with "Require review from Code Owners". Alone it's optional: it blocks your own pull requests unless you allow admin bypass. `doctor` reports whether GitHub enforces it when a logged-in `gh` can say so;
 - a secret scanner in CI (agent-flow's own is a pre-commit check, tuned for few false alarms);
 - file permissions on append-only data (read-only mode or a separate user for the ledger);
 - a container or sandbox for anything that must be a hard guarantee, and read-only roles launched without a shell tool.
@@ -82,7 +82,8 @@ Both are optional manifest keys.
 }
 ```
 
-- `agent-flow gates run` executes the gates and records exit codes, logs and hashes under `.agent-flow/gates/`. An array command runs without a shell; a string runs through one. Exit 2 means a gate couldn't start (a missing tool), which is an environment problem rather than a failing change.
+- `agent-flow gates run` executes the gates and records exit codes, logs and hashes under `.agent-flow/gates/`. An array command runs without a shell; a string runs through one (POSIX `sh`; on Windows, Git Bash, or `AGENT_FLOW_SHELL`). Exit 2 means a gate couldn't start (a missing tool), which is an environment problem rather than a failing change. A gate with `"os": ["linux"]` is skipped on other platforms and reported as skipped, not passed, so CI judges it.
+- `agent-flow manifest sync --yes` rebuilds `context_files` after you add, move or rewrite a context file; it never touches `protected_paths`, `risk_boundaries`, `gates` or `policy`.
 - **Command policy (opt-in).** `"policy": {"deny_commands": {"presets": ["database", "infra"], "patterns": [{"pattern": "\\bshutdown\\b"}]}}` makes the guard refuse those shell commands in every agent session (`database`: DROP/TRUNCATE through psql, mysql, sqlite3; `infra`: `kubectl delete`, `terraform destroy`, `docker system prune`, `helm uninstall`, cloud-CLI deletes). It is deny, not ask: a headless pipeline has nobody to answer. A working copy can add rules but not remove committed ones; `AGENT_FLOW_ALLOW_PROTECTED=1` lets a human through. It reads the command text (each `;`/`|`/`&` segment, with quotes, backslashes, line continuations and comments removed, and the body of `sh -c '…'`, and pipes or heredocs into `psql`/`mysql`), so it can't see a variable (`K=kubectl; $K delete`), an alias, or SQL in a file (`psql -f drop.sql`).
 - **Stop gate (Claude Code, opt-in).** Mark fast gates `"on_stop": true` and run `agent-flow install --harness claude --stop-gate`. When an interactive session tries to end its turn, `agent-flow gates stop` runs those gates if the working tree changed since the last pass, and keeps the session working while they fail — at most `pipeline.max_stop_blocks` times in a row (default 2, max 5), then the turn ends and `stop_gate_exhausted` is written to the audit log. The gates come from the default branch's manifest, so a session can't edit the gate that judges it. Keep them to lint, typecheck and unit tests.
 - `agent-flow classify --fail-on-policy` (CI) and the pre-commit hook (staged content) enforce `policy`. `classify --fail-on-heuristic` fails while `risk_boundaries` is empty, for teams that don't want a path-name guess deciding review depth.
