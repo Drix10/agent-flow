@@ -126,7 +126,7 @@ Or use the composite action, which also runs `classify --fail-on-protected --fai
 ```yaml
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: Drix10/agent-flow@v1.1.6
+      - uses: Drix10/agent-flow@v1.1.7
 ```
 
 ## Use

@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.7] - 2026-10-02
 
 Found by asking how a vendored install ever learns about a newer version (it didn't).
 
