@@ -2,7 +2,7 @@
 /**
  * agent-flow CLI — the same checks as the Pi tools, for every harness and for CI.
  *
- * Zero runtime dependencies. Never touches the network. Exit codes:
+ * Zero runtime dependencies. No network except an optional, cached, opt-out update check in `doctor` (see update.ts). Exit codes:
  *   0 = ok   1 = check failed   2 = usage / environment error
  */
 
@@ -15,10 +15,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib;
+let updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners"].map(lib),
+  [updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib] = await Promise.all(
+    ["update", "fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -134,6 +134,8 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
       --harness <h> [--model m --exit n --seconds s --argv-file f --issue n --round r]
                             Also append a role_run line (argv, exit, duration, cost/tokens) to .agent-flow/audit.jsonl
   repair --yes              Refresh manifest timestamps after the prose was re-verified (Gardener)
+  update [--yes] [--check] [--force]  Bring installed skills, hooks and the vendored runtime up to this version; edited files are kept
+                            run it as: npx @drix10/agent-flow@latest update --yes   (--check exits 10 when an update is available, for scheduled CI)
   codeowners [--yes] [--owner @x]  CODEOWNERS lines covering protected_paths; --yes appends the missing ones
   manifest sync [--yes]     Rebuild context_files from the AGENTS.md/CLAUDE.md files on disk; keeps protected paths, risk boundaries and gates
   sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>] -- <cmd>
@@ -250,6 +252,7 @@ function cmdDoctor(args) {
     section("relative links resolve", rep.broken_links, (m) => [`${m.file}:${m.line}`, m.target]);
     section("cited commits exist", rep.unknown_commits, (m) => [`${m.file}:${m.line}`, m.sha]);
     reportCodeowners(rt, r.manifest, args);
+    reportUpdate(rt, args);
     if (discovered) console.log(dim(`note: ${r.manifest ? "the manifest lists no context files" : "no CONTEXT_MANIFEST.json"}, so only paths were checked — \`agent-flow init\` adds staleness tracking`));
     console.log(r.healthy ? c(32, "\nhealthy") : `\n${c(31, "unhealthy")} — ${doctorNextStep(rep, schema)}`);
   }, () => doctorSarif(rt, rep, r.manifest));
@@ -274,7 +277,7 @@ function reportCodeowners(rt, manifestPath, args = {}) {
     return;
   }
   ok("protected paths have CODEOWNERS entries");
-  if (args.offline || process.env.AGENT_FLOW_OFFLINE === "1") return;
+  if (args.offline || process.env.AGENT_FLOW_OFFLINE === "1" || process.env.CI) return;
   const remote = git.git(["remote", "get-url", "origin"], rt);
   const slug = remote.ok ? codeownersLib.githubSlug(remote.stdout) : null;
   if (!slug) return;
@@ -319,6 +322,13 @@ function cmdCodeowners(args) {
     else console.log(dim(`nothing written — re-run with --yes to ${existing ? "append these to" : "create"} ${toPosixPath(relative(rt, path))}`));
   });
   return 0;
+}
+
+/** One dim line, only for humans at a terminal: never in --json/--sarif output, CI, or when opted out. */
+function reportUpdate(rt, args) {
+  const check = updateLib.updateCheckAllowed() && !args.offline && !args.json && !!process.stdout.isTTY;
+  const n = updateLib.updateNotice(rt, VERSION, { check });
+  if (n) console.log(dim(`note: ${n.message}`));
 }
 
 function doctorSarif(rt, rep, manifestPath) {
@@ -1050,6 +1060,155 @@ function sameTree(a, b) {
   return statSync(b).isFile() && readFileSync(a).equals(readFileSync(b));
 }
 
+/** What install wrote, as hashes, so `update` can tell an older agent-flow file from one you edited. */
+function recordInstall(rt, harness, t, plan, opts = {}) {
+  const prev = updateLib.readRecord(rt, t.skills);
+  const files = {};
+  // A file is recorded only if it is exactly what this agent-flow writes. One the user edited (install refused to
+  // overwrite it, update kept it) keeps its old record or none, so a later update still sees it as edited.
+  for (const [src, dst, label] of plan) {
+    const have = updateLib.hashTree(dst);
+    if (have && have === updateLib.hashTree(src)) files[label] = have;
+    else if (prev?.files[label]) files[label] = prev.files[label];
+  }
+  for (const [label, hash] of Object.entries(opts.extra ?? {})) if (hash) files[label] = hash;
+  const plugin = ".opencode/plugins/agent-flow-guard.js";
+  if (t.plugin && !files[plugin] && prev?.files[plugin]) files[plugin] = prev.files[plugin];
+  if (opts.vendorWritten) files[VENDOR_DIR] = updateLib.hashTree(join(rt, VENDOR_DIR));
+  else if (prev?.files[VENDOR_DIR]) files[VENDOR_DIR] = prev.files[VENDOR_DIR];
+  updateLib.writeRecord(rt, t.skills, { version: VERSION, harness, files });
+}
+
+/**
+ * `update [--yes] [--check] [--force]`: bring what `install` wrote up to this agent-flow's version. A file nobody has
+ * edited since install is replaced; one you edited is kept (and listed) unless --force. Run it with the newer CLI:
+ * `npx @drix10/agent-flow@latest update --yes`.
+ */
+function cmdUpdate(args) {
+  const rt = root();
+  const vendorDir = join(rt, VENDOR_DIR);
+  const vendored = existsSync(vendorDir);
+  const selfIsVendored = vendored && resolve(pkgRoot) === resolve(vendorDir);
+  if (selfIsVendored) {
+    // The vendored copy has no newer version inside it and doesn't ship the skills: the new CLI has to do the update.
+    const latest = updateLib.updateCheckAllowed() && !args.offline ? updateLib.latestVersion() : null;
+    const available = !!latest && updateLib.isNewer(latest, VERSION);
+    out(args, { version: VERSION, self_is_vendored: true, latest, update_available: available }, () => {
+      console.log(`This is the vendored copy (${VERSION}); it can't update itself.${available ? ` ${latest} is available.` : ""}`);
+      console.log(dim(`  To update: npx ${PACKAGE}@latest update --yes`));
+    });
+    return args.check && available ? 10 : 0;
+  }
+  const installed = Object.keys(TARGETS).filter((h) => updateLib.readRecord(rt, TARGETS[h].skills) || existsSync(join(rt, TARGETS[h].skills, "bootstrap")));
+  if (!installed.length && !vendored) throw new UserError("nothing to update: run `agent-flow install --harness <name>` first");
+  const items = [];
+  const add = (harness, label, src, dst, recorded, extra = {}) => {
+    const incoming = updateLib.hashTree(src);
+    const state = updateLib.fileState(updateLib.hashTree(dst), incoming, recorded);
+    items.push({ harness, label, src, dst, state, ...extra });
+  };
+  for (const h of installed) {
+    const t = TARGETS[h];
+    const rec = updateLib.readRecord(rt, t.skills);
+    for (const name of readdirSync(join(pkgRoot, "skills")).sort()) {
+      const src = join(pkgRoot, "skills", name);
+      if (statSync(src).isDirectory()) add(h, `${t.skills}/${name}`, src, join(rt, t.skills, name), rec?.files[`${t.skills}/${name}`]);
+    }
+    for (const [from, to] of t.agents) add(h, to, join(pkgRoot, from), join(rt, to), rec?.files[to]);
+    if (t.plugin) {
+      const label = ".opencode/plugins/agent-flow-guard.js";
+      const binRel = existsSync(vendorDir) ? join(VENDOR_DIR, "bin", "agent-flow.js") : relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
+      const body = readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => binRel.replace(/\\/g, "/"));
+      const dst = join(rt, label);
+      const incoming = updateLib.hashContent(body);
+      const onDisk = updateLib.hashTree(dst);
+      items.push({ harness: h, label, dst, body, state: updateLib.fileState(onDisk, incoming, rec?.files[label]) });
+    }
+  }
+  // The vendored runtime: replaced as one unit, and never downgraded by an older CLI.
+  let runtime = null;
+  if (vendored && !selfIsVendored) {
+    const have = updateLib.vendoredVersion(rt);
+    const rec = installed.map((h) => updateLib.readRecord(rt, TARGETS[h].skills)).find(Boolean);
+    const onDisk = updateLib.hashTree(vendorDir);
+    const recorded = rec?.files[VENDOR_DIR];
+    const downgrade = have && updateLib.isNewer(have, VERSION);
+    const same = have === VERSION;
+    runtime = { have, edited: recorded !== undefined ? onDisk !== recorded : !same, downgrade, same };
+  }
+  const pending = items.filter((i) => i.state === "upgrade" || i.state === "new");
+  const kept = items.filter((i) => i.state === "edited");
+  const runtimeDue = runtime && !runtime.same && !runtime.downgrade;
+  // Hook wiring (a new matcher, a moved runtime) can be out of date on its own: ask the installers what they would change.
+  const hookDue = [];
+  const hookNotes = new Set();
+  for (const h of installed) {
+    const t = TARGETS[h];
+    const probe = (fn) => {
+      const lines = [];
+      const orig = console.log;
+      console.log = (...a) => lines.push(a.join(" "));
+      try {
+        fn({ ...args, "dry-run": true, "keep-custom": !args.force });
+      } finally {
+        console.log = orig;
+      }
+      for (const l of lines) if (/customized/.test(l)) hookNotes.add(l);
+      return lines.some((l) => /would write/.test(l));
+    };
+    if (t.hook && probe((a) => installGuardHook(rt, a, t.hook))) hookDue.push(h);
+    if (h === "claude" && probe((a) => installClaudeHook(rt, a))) hookDue.push(h);
+  }
+  const available = pending.length > 0 || !!runtimeDue || hookDue.length > 0 || (args.force && kept.length > 0);
+  const result = { version: VERSION, vendored_version: updateLib.vendoredVersion(rt), runtime: runtime && { from: runtime.have, to: VERSION, action: runtime.downgrade ? "refused_downgrade" : runtime.same ? "up_to_date" : runtime.edited && !args.force ? "edited_kept" : "upgrade" }, upgrade: pending.map((i) => i.label), edited_kept: args.force ? [] : kept.map((i) => i.label), self_is_vendored: selfIsVendored };
+  if (args.check) {
+    out(args, { ...result, update_available: available }, () => (available ? warn(`an update is available (${VERSION}): run \`npx ${PACKAGE}@latest update --yes\``) : ok("up to date")));
+    return available ? 10 : 0;
+  }
+  out(args, { ...result, applied: !!args.yes && !args["dry-run"] }, () => {
+    if (selfIsVendored) {
+      warn(`you ran the vendored copy (${VERSION}), which can't update itself. Use the new version: npx ${PACKAGE}@latest update --yes`);
+    }
+    if (runtime?.downgrade) warn(`vendored runtime is ${runtime.have}, newer than this CLI (${VERSION}): not downgrading`);
+    else if (runtime && !runtime.same) (runtime.edited && !args.force ? warn : console.log)(`${runtime.edited && !args.force ? "" : "  "}${VENDOR_DIR}/  ${runtime.have ?? "?"} -> ${VERSION}${runtime.edited && !args.force ? " (modified since install: kept; --force to replace)" : ""}`);
+    else if (runtime) console.log(dim(`= ${VENDOR_DIR}/ (up to date, ${VERSION})`));
+    for (const n of hookNotes) console.log(n);
+    for (const h of hookDue) console.log(`  ${TARGETS[h].hook ? TARGETS[h].hook : ".claude/settings.json"} (guard hook)  upgrade`);
+    for (const i of items) {
+      if (i.state === "up_to_date") console.log(dim(`= ${i.label} (up to date)`));
+      else if (i.state === "edited" && !args.force) warn(`${i.label} was edited since install: kept (--force to replace)`);
+      else console.log(`  ${i.label}  ${i.state === "new" ? "new" : "upgrade"}`);
+    }
+    if (!available) return ok(hookNotes.size ? "everything else is up to date" : "everything is up to date");
+    if (!args.yes) console.log(dim("nothing changed: re-run with --yes to apply (--dry-run to preview)"));
+  });
+  if (!args.yes || args["dry-run"] || !available) return 0;
+  // Apply.
+  if (runtimeDue && (!runtime.edited || args.force)) runtimeBinRel(rt, { ...args, vendor: true }, "update");
+  for (const i of items) {
+    if (i.state === "edited" && !args.force) continue;
+    if (i.state === "up_to_date") continue;
+    mkdirSync(dirname(i.dst), { recursive: true });
+    if (i.body !== undefined) writeFileSync(i.dst, i.body);
+    else cpSync(i.src, i.dst, { recursive: true, force: true });
+  }
+  for (const h of installed) {
+    const t = TARGETS[h];
+    if (t.hook) installGuardHook(rt, { ...args, "keep-custom": !args.force }, t.hook);
+    if (h === "claude") installClaudeHook(rt, { ...args, "keep-custom": !args.force });
+    const plan = [];
+    for (const name of readdirSync(join(pkgRoot, "skills")).sort()) {
+      if (statSync(join(pkgRoot, "skills", name)).isDirectory()) plan.push([join(pkgRoot, "skills", name), join(rt, t.skills, name), `${t.skills}/${name}`]);
+    }
+    for (const [from, to] of t.agents) plan.push([join(pkgRoot, from), join(rt, to), to]);
+    const extra = t.plugin ? { ".opencode/plugins/agent-flow-guard.js": (() => { const it = items.find((x) => x.body !== undefined); return it && (it.state !== "edited" || args.force) ? updateLib.hashTree(it.dst) : null; })() } : {};
+    recordInstall(rt, h, t, plan, { extra, vendorWritten: !!(runtimeDue && (!runtime.edited || args.force)) });
+  }
+  ok(`updated to ${VERSION}${kept.length && !args.force ? `; ${kept.length} edited file(s) kept` : ""}`);
+  console.log(dim("review with git diff, then commit"));
+  return 0;
+}
+
 function cmdInstall(args) {
   const t = Object.hasOwn(TARGETS, args.harness) ? TARGETS[args.harness] : null;
   const harnesses = Object.keys(TARGETS);
@@ -1083,20 +1242,24 @@ function cmdInstall(args) {
     wrote++;
     ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
   }
+  const pluginRecord = {};
   if (t.plugin) {
     const dst = join(rt, ".opencode/plugins/agent-flow-guard.js");
     const pluginLabel = ".opencode/plugins/agent-flow-guard.js";
     const binRel = runtimeBinRel(rt, args, pluginLabel);
     const body = binRel && readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => binRel.replace(/\\/g, "/"));
     if (!body) conflicts.push(pluginLabel);
-    else if (existsSync(dst) && readFileSync(dst, "utf-8") === body) console.log(dim("= .opencode/plugins/agent-flow-guard.js (up to date)"));
-    else if (existsSync(dst) && !args.force) {
+    else if (existsSync(dst) && readFileSync(dst, "utf-8") === body) {
+      console.log(dim("= .opencode/plugins/agent-flow-guard.js (up to date)"));
+      pluginRecord[pluginLabel] = updateLib.hashTree(dst);
+    } else if (existsSync(dst) && !args.force) {
       conflicts.push(pluginLabel);
       bad(".opencode/plugins/agent-flow-guard.js exists and differs — not overwritten (use --force)");
     } else {
       if (!args["dry-run"]) {
         mkdirSync(dirname(dst), { recursive: true });
         writeFileSync(dst, body);
+        pluginRecord[pluginLabel] = updateLib.hashTree(dst);
       }
       wrote++;
       ok(`${args["dry-run"] ? "would write" : "wrote"} .opencode/plugins/agent-flow-guard.js`);
@@ -1107,6 +1270,7 @@ function cmdInstall(args) {
     if (!installClaudeHook(rt, args)) conflicts.push(".claude/settings.json");
     importAgentsMd(rt, args);
   }
+  if (!args["dry-run"]) recordInstall(rt, args.harness, t, plan, { vendorWritten: vendoredThisRun, extra: pluginRecord });
   ignoreLocalState(rt, args);
   if (t.note) console.log(`\n${t.note}`);
   const who = args.harness === "claude" ? "Claude" : "your agent";
@@ -1147,6 +1311,7 @@ const STOP_HOOK_TIMEOUT_S = 900;
 const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|NotebookRead|Grep|Glob|Task|Agent|mcp__.*";
 
 const VENDOR_DIR = ".agent-flow-runtime";
+const PACKAGE = "@drix10/agent-flow";
 let vendoredThisRun = false;
 
 /**
@@ -1173,9 +1338,11 @@ function runtimeBinRel(rt, args, label) {
     for (const f of files) cpSync(join(pkgRoot, ...f), join(dest, ...f), { recursive: true });
     mkdirSync(join(dest, "extensions", "lib"), { recursive: true });
     for (const n of readdirSync(libDir)) if (n.endsWith(".js")) copyFileSync(join(libDir, n), join(dest, "extensions", "lib", n));
+    vendoredThisRun = true; // only a real copy counts: a dry run (or update's probe) must not stop the real one later
+    ok(`copied the runtime to ${VENDOR_DIR}/ (commit it; the hook runs from there, no npm needed)`);
+  } else if (args["dry-run"]) {
+    ok(`would copy the runtime to ${VENDOR_DIR}/ (commit it; the hook runs from there, no npm needed)`);
   }
-  if (!vendoredThisRun) ok(`${args["dry-run"] ? "would copy" : "copied"} the runtime to ${VENDOR_DIR}/ (commit it; the hook runs from there, no npm needed)`);
-  vendoredThisRun = true;
   return vendored;
 }
 
@@ -1214,7 +1381,15 @@ function installClaudeHook(rt, args) {
   const before = JSON.stringify(settings);
   settings.hooks ??= {};
   settings.hooks.PreToolUse ??= [];
-  const isOurs = (h) => /agent-flow/.test(h?.command ?? "") && /\bguard\b/.test(h?.command ?? "");
+  const looseOurs = (h) => /agent-flow/.test(h?.command ?? "") && /\bguard\b/.test(h?.command ?? "");
+  // `update` only refreshes a hook in exactly the shape install writes. One someone customized (a wrapper, an extra
+  // flag) is theirs: left as it is, with a note, unless --force.
+  const canonicalOurs = (h) => /^node\s+"[^"]*agent-flow(-runtime)?\/bin\/agent-flow\.js"\s+guard\s*$/.test(h?.command ?? "");
+  const isOurs = args["keep-custom"] ? canonicalOurs : looseOurs;
+  if (args["keep-custom"] && !settings.hooks.PreToolUse.some((e) => Array.isArray(e?.hooks) && e.hooks.some(canonicalOurs)) && settings.hooks.PreToolUse.some((e) => Array.isArray(e?.hooks) && e.hooks.some(looseOurs))) {
+    warn(`${label}: the guard hook was customized, so update left it alone (--force to replace it)`);
+    return true;
+  }
   const entry = { matcher: HOOK_MATCHER, hooks: [{ type: "command", command }] };
   // Someone else's hooks may share a matcher group with ours. Their group keeps its matcher and its
   // other hooks; ours moves to a group of its own.
@@ -1534,6 +1709,7 @@ const table = {
   report: cmdReport,
   repair: cmdRepair,
   manifest: cmdManifest,
+  update: cmdUpdate,
   codeowners: cmdCodeowners,
   guard: cmdGuard,
 };
