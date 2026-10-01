@@ -10,7 +10,6 @@ import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync,
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
@@ -1121,8 +1120,8 @@ function cmdUpdate(args) {
       const binRel = existsSync(vendorDir) ? join(VENDOR_DIR, "bin", "agent-flow.js") : relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
       const body = readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => binRel.replace(/\\/g, "/"));
       const dst = join(rt, label);
-      const incoming = createHash("sha256").update(body).digest("hex");
-      const onDisk = existsSync(dst) ? createHash("sha256").update(readFileSync(dst)).digest("hex") : null;
+      const incoming = updateLib.hashContent(body);
+      const onDisk = updateLib.hashTree(dst);
       items.push({ harness: h, label, dst, body, state: updateLib.fileState(onDisk, incoming, rec?.files[label]) });
     }
   }
@@ -1140,7 +1139,27 @@ function cmdUpdate(args) {
   const pending = items.filter((i) => i.state === "upgrade" || i.state === "new");
   const kept = items.filter((i) => i.state === "edited");
   const runtimeDue = runtime && !runtime.same && !runtime.downgrade;
-  const available = pending.length > 0 || !!runtimeDue || (args.force && kept.length > 0);
+  // Hook wiring (a new matcher, a moved runtime) can be out of date on its own: ask the installers what they would change.
+  const hookDue = [];
+  const hookNotes = new Set();
+  for (const h of installed) {
+    const t = TARGETS[h];
+    const probe = (fn) => {
+      const lines = [];
+      const orig = console.log;
+      console.log = (...a) => lines.push(a.join(" "));
+      try {
+        fn({ ...args, "dry-run": true, "keep-custom": !args.force });
+      } finally {
+        console.log = orig;
+      }
+      for (const l of lines) if (/customized/.test(l)) hookNotes.add(l);
+      return lines.some((l) => /would write/.test(l));
+    };
+    if (t.hook && probe((a) => installGuardHook(rt, a, t.hook))) hookDue.push(h);
+    if (h === "claude" && probe((a) => installClaudeHook(rt, a))) hookDue.push(h);
+  }
+  const available = pending.length > 0 || !!runtimeDue || hookDue.length > 0 || (args.force && kept.length > 0);
   const result = { version: VERSION, vendored_version: updateLib.vendoredVersion(rt), runtime: runtime && { from: runtime.have, to: VERSION, action: runtime.downgrade ? "refused_downgrade" : runtime.same ? "up_to_date" : runtime.edited && !args.force ? "edited_kept" : "upgrade" }, upgrade: pending.map((i) => i.label), edited_kept: args.force ? [] : kept.map((i) => i.label), self_is_vendored: selfIsVendored };
   if (args.check) {
     out(args, { ...result, update_available: available }, () => (available ? warn(`an update is available (${VERSION}): run \`npx ${PACKAGE}@latest update --yes\``) : ok("up to date")));
@@ -1153,12 +1172,14 @@ function cmdUpdate(args) {
     if (runtime?.downgrade) warn(`vendored runtime is ${runtime.have}, newer than this CLI (${VERSION}): not downgrading`);
     else if (runtime && !runtime.same) (runtime.edited && !args.force ? warn : console.log)(`${runtime.edited && !args.force ? "" : "  "}${VENDOR_DIR}/  ${runtime.have ?? "?"} -> ${VERSION}${runtime.edited && !args.force ? " (modified since install: kept; --force to replace)" : ""}`);
     else if (runtime) console.log(dim(`= ${VENDOR_DIR}/ (up to date, ${VERSION})`));
+    for (const n of hookNotes) console.log(n);
+    for (const h of hookDue) console.log(`  ${TARGETS[h].hook ? TARGETS[h].hook : ".claude/settings.json"} (guard hook)  upgrade`);
     for (const i of items) {
       if (i.state === "up_to_date") console.log(dim(`= ${i.label} (up to date)`));
       else if (i.state === "edited" && !args.force) warn(`${i.label} was edited since install: kept (--force to replace)`);
       else console.log(`  ${i.label}  ${i.state === "new" ? "new" : "upgrade"}`);
     }
-    if (!available) return ok("everything is up to date");
+    if (!available) return ok(hookNotes.size ? "everything else is up to date" : "everything is up to date");
     if (!args.yes) console.log(dim("nothing changed: re-run with --yes to apply (--dry-run to preview)"));
   });
   if (!args.yes || args["dry-run"] || !available) return 0;
@@ -1173,8 +1194,8 @@ function cmdUpdate(args) {
   }
   for (const h of installed) {
     const t = TARGETS[h];
-    if (t.hook) installGuardHook(rt, args, t.hook);
-    if (h === "claude") installClaudeHook(rt, args);
+    if (t.hook) installGuardHook(rt, { ...args, "keep-custom": !args.force }, t.hook);
+    if (h === "claude") installClaudeHook(rt, { ...args, "keep-custom": !args.force });
     const plan = [];
     for (const name of readdirSync(join(pkgRoot, "skills")).sort()) {
       if (statSync(join(pkgRoot, "skills", name)).isDirectory()) plan.push([join(pkgRoot, "skills", name), join(rt, t.skills, name), `${t.skills}/${name}`]);
@@ -1317,9 +1338,11 @@ function runtimeBinRel(rt, args, label) {
     for (const f of files) cpSync(join(pkgRoot, ...f), join(dest, ...f), { recursive: true });
     mkdirSync(join(dest, "extensions", "lib"), { recursive: true });
     for (const n of readdirSync(libDir)) if (n.endsWith(".js")) copyFileSync(join(libDir, n), join(dest, "extensions", "lib", n));
+    vendoredThisRun = true; // only a real copy counts: a dry run (or update's probe) must not stop the real one later
+    ok(`copied the runtime to ${VENDOR_DIR}/ (commit it; the hook runs from there, no npm needed)`);
+  } else if (args["dry-run"]) {
+    ok(`would copy the runtime to ${VENDOR_DIR}/ (commit it; the hook runs from there, no npm needed)`);
   }
-  if (!vendoredThisRun) ok(`${args["dry-run"] ? "would copy" : "copied"} the runtime to ${VENDOR_DIR}/ (commit it; the hook runs from there, no npm needed)`);
-  vendoredThisRun = true;
   return vendored;
 }
 
@@ -1358,7 +1381,15 @@ function installClaudeHook(rt, args) {
   const before = JSON.stringify(settings);
   settings.hooks ??= {};
   settings.hooks.PreToolUse ??= [];
-  const isOurs = (h) => /agent-flow/.test(h?.command ?? "") && /\bguard\b/.test(h?.command ?? "");
+  const looseOurs = (h) => /agent-flow/.test(h?.command ?? "") && /\bguard\b/.test(h?.command ?? "");
+  // `update` only refreshes a hook in exactly the shape install writes. One someone customized (a wrapper, an extra
+  // flag) is theirs: left as it is, with a note, unless --force.
+  const canonicalOurs = (h) => /^node\s+"[^"]*agent-flow(-runtime)?\/bin\/agent-flow\.js"\s+guard\s*$/.test(h?.command ?? "");
+  const isOurs = args["keep-custom"] ? canonicalOurs : looseOurs;
+  if (args["keep-custom"] && !settings.hooks.PreToolUse.some((e) => Array.isArray(e?.hooks) && e.hooks.some(canonicalOurs)) && settings.hooks.PreToolUse.some((e) => Array.isArray(e?.hooks) && e.hooks.some(looseOurs))) {
+    warn(`${label}: the guard hook was customized, so update left it alone (--force to replace it)`);
+    return true;
+  }
   const entry = { matcher: HOOK_MATCHER, hooks: [{ type: "command", command }] };
   // Someone else's hooks may share a matcher group with ours. Their group keeps its matcher and its
   // other hooks; ours moves to a group of its own.

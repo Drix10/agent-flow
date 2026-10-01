@@ -161,3 +161,8 @@ export function updateNotice(root: string, running: string, opts: { check: boole
   const how = vendored ? `npx ${PACKAGE}@latest update --yes` : `npm i -D ${PACKAGE}@latest   (npx users: npx ${PACKAGE}@latest …)`;
   return { kind: "newer_published", message: `agent-flow ${latest} is available (${vendored ? "vendored here" : "you have"} ${have}). Update: ${how}` };
 }
+
+/** The hash `hashTree` gives a single file holding `text`, so content built in memory compares with files on disk. */
+export function hashContent(text: string): string {
+  return createHash("sha256").update("\0").update(text.replace(/\r\n/g, "\n")).update("\0").digest("hex");
+}

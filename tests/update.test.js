@@ -183,3 +183,57 @@ test("hashTree ignores line endings, so a Windows checkout of an untouched file 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("update leaves a customized guard hook alone (warns), refreshes a stock one, and --force replaces it", () => {
+  withRepo((dir, repo) => {
+    run(BIN, repo, ["install", "--harness", "claude"]);
+    const file = join(repo, ".claude/settings.json");
+    const settings = JSON.parse(readFileSync(file, "utf-8"));
+    const hook = settings.hooks.PreToolUse[0].hooks[0];
+    const stock = hook.command;
+    settings.hooks.PreToolUse[0].matcher = "Bash"; // an older install's narrower matcher
+    writeFileSync(file, JSON.stringify(settings));
+    const newer = newerPackage(dir, "9.9.9");
+
+    run(newer, repo, ["update", "--yes"]);
+    assert.match(JSON.parse(readFileSync(file, "utf-8")).hooks.PreToolUse[0].matcher, /Task\|Agent/, "a stock hook gets the current matcher");
+
+    hook.command = `${stock} --my-flag`;
+    settings.hooks.PreToolUse[0].hooks[0] = hook;
+    writeFileSync(file, JSON.stringify(settings));
+    const kept = run(newer, repo, ["update", "--yes"]);
+    assert.match(kept.stdout, /guard hook was customized, so update left it alone/);
+    assert.equal(JSON.parse(readFileSync(file, "utf-8")).hooks.PreToolUse[0].hooks[0].command, `${stock} --my-flag`);
+
+    run(newer, repo, ["update", "--yes", "--force"]);
+    assert.equal(JSON.parse(readFileSync(file, "utf-8")).hooks.PreToolUse[0].hooks[0].command, stock, "--force restores the stock hook");
+  });
+});
+
+test("update treats the OpenCode plugin like any installed file: untouched is upgraded, edited is kept", () => {
+  withRepo((dir, repo) => {
+    assert.equal(run(BIN, repo, ["install", "--harness", "opencode"]).status, 0);
+    const plugin = join(repo, ".opencode/plugins/agent-flow-guard.js");
+    const newer = newerPackage(dir, "9.9.9");
+    const tpl = join(dir, "newer-pkg/templates/opencode/agent-flow-guard.js");
+    appendFileSync(tpl, "\n// new in 9.9.9\n");
+    run(newer, repo, ["update", "--yes"]);
+    assert.match(readFileSync(plugin, "utf-8"), /new in 9\.9\.9/, "an untouched plugin follows the template (same hash format on both sides)");
+
+    appendFileSync(plugin, "\n// ours\n");
+    appendFileSync(tpl, "// and more in 9.9.9\n");
+    const r = run(newer, repo, ["update", "--yes"]);
+    assert.match(r.stdout, /agent-flow-guard\.js was edited since install: kept/);
+    assert.match(readFileSync(plugin, "utf-8"), /\/\/ ours/);
+  });
+});
+
+test("update is a setup action: no pipeline role may run it, any more than install", () => {
+  for (const role of ["implementer", "reviewer", "qa", "orchestrator"]) {
+    for (const cmd of ["update --yes --force", "update --check"]) {
+      const r = spawnSync(process.execPath, [BIN, "guard"], { input: JSON.stringify({ tool_name: "Bash", tool_input: { command: `agent-flow ${cmd}` } }), encoding: "utf-8", env: { ...process.env, AGENT_FLOW_ROLE: role } });
+      assert.equal(r.status, 2, `${role}: ${cmd}`);
+      assert.match(r.stderr, /may not run `agent-flow update`/);
+    }
+  }
+});
