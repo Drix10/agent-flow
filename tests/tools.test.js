@@ -741,3 +741,20 @@ test("stale_repair types an extensionless file as a file, not a directory", asyn
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("scan: a repo with no package manifest gets its commands from CI steps and build scripts", async () => {
+  const { scanRepo } = await import("../extensions/lib/scan.js");
+  const dir = mkdtempSync(join(tmpdir(), "af-scan-ci-"));
+  try {
+    mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
+    mkdirSync(join(dir, "kernel"));
+    const block = ["      - run: |", "          make test", "          for t in a b; do", "            python3 tests/$t.py", "          done", "          FOO=1 \\", "            python3 tests/test_env.py", "          python3 tests/test_b.py", "          python3 tests/test_c.py", "          python3 tests/test_d.py"].join("\n");
+    writeFileSync(join(dir, ".github", "workflows", "ci.yml"), `jobs:\n  t:\n    steps:\n      - run: python3 -m pip install -r r.txt\n      - run: python3 tools/test_a.py\n${block}\n`);
+    writeFileSync(join(dir, "kernel", "build.sh"), "#!/bin/sh\n");
+    const cmds = scanRepo(dir).commands.map((c) => c.command);
+    // Loop bodies, `\` continuations and installs are left out; three or more siblings collapse into one line.
+    assert.deepEqual(cmds, ["python3 tools/test_a.py", "make test", "python3 tests/<name>.py (3 files: test_b, test_c, test_d…)", "./kernel/build.sh"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

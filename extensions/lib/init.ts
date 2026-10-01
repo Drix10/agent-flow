@@ -145,6 +145,37 @@ export function planInit(root: string, opts: { version: string; now?: string }):
     contents.set("AGENTS.md", content);
   }
 
+  const { context_files, missing, refCount } = buildContextFiles(root, contextFiles, contents, now);
+
+  const manifest: ContextManifest = {
+    ...schemaRef(root),
+    version: "2",
+    repo: basename(root),
+    generated_by: `agent-flow@${opts.version} init`,
+    generated_at: now,
+    last_full_scan: now,
+    ...(branch ? { default_branch: branch } : {}),
+    staleness_threshold_days: 30,
+    context_files,
+    protected_paths: [],
+    pipeline: { max_review_rounds: 2, auto_merge_low_risk: false },
+  };
+  const problems = validateManifest(manifest);
+  if (problems.length) throw new Error(`init built an invalid manifest (bug): ${problems.join("; ")}`);
+  files.push({ path: MANIFEST_FILE, content: `${JSON.stringify(manifest, null, 2)}\n`, exists: existsSync(join(root, MANIFEST_FILE)) });
+  const suggested = suggestProtectedPaths(root);
+  return { files, context_files: contextFiles, suggested_protected_paths: suggested, references: refCount, missing_references: missing, ...(existingRules.length && !existsSync(join(root, "AGENTS.md")) ? { existing_rules: existingRules } : {}) };
+}
+
+/** The `$schema` pointer for an editor: the project's npm install, else the vendored runtime, else none. */
+function schemaRef(root: string): { $schema?: string } {
+  for (const dir of ["node_modules/@drix10/agent-flow", ".agent-flow-runtime"]) {
+    if (existsSync(join(root, dir, "schemas", "context-manifest.schema.json"))) return { $schema: `./${dir}/schemas/context-manifest.schema.json` };
+  }
+  return {};
+}
+
+function buildContextFiles(root: string, contextFiles: string[], contents: Map<string, string>, now: string) {
   const missing: InitPlan["missing_references"] = [];
   let refCount = 0;
   const context_files = contextFiles.map((cf) => {
@@ -166,25 +197,54 @@ export function planInit(root: string, opts: { version: string; now?: string }):
     refCount += refs.size;
     return { path: cf, references: [...refs.values()], confidence_markers: countMarkers(content) };
   });
+  return { context_files, missing, refCount };
+}
 
-  const manifest: ContextManifest = {
-    ...(existsSync(join(root, "node_modules", "@drix10", "agent-flow", "schemas", "context-manifest.schema.json"))
-      ? { $schema: "./node_modules/@drix10/agent-flow/schemas/context-manifest.schema.json" }
-      : {}),
-    version: "2",
-    repo: basename(root),
-    generated_by: `agent-flow@${opts.version} init`,
-    generated_at: now,
-    last_full_scan: now,
-    ...(branch ? { default_branch: branch } : {}),
-    staleness_threshold_days: 30,
-    context_files,
-    protected_paths: [],
-    pipeline: { max_review_rounds: 2, auto_merge_low_risk: false },
-  };
+export interface SyncPlan {
+  manifest: ContextManifest;
+  added_files: string[];
+  removed_files: string[];
+  added_refs: number;
+  removed_refs: number;
+  missing_references: { file: string; path: string }[];
+}
+
+/**
+ * Rebuild `context_files` from the context files on disk and the paths their prose names, keeping every other key
+ * (protected_paths, risk_boundaries, gates, policy…) exactly as the human set it. A reference that is still named
+ * keeps its `last_verified`, so syncing never makes old context look fresh. A newly named path is stamped now, as
+ * `init` does: it was just read off the prose and checked to exist, which is all that stamp claims.
+ */
+export function syncManifest(root: string, existing: ContextManifest, opts: { version: string; now?: string }): SyncPlan {
+  const now = opts.now ?? isoNow();
+  const onDisk = discoverContextFiles(root);
+  const contents = new Map<string, string>();
+  for (const f of onDisk) contents.set(f, readTextFile(join(root, f)) ?? "");
+  const built = buildContextFiles(root, onDisk, contents, now);
+  const before = new Map((existing.context_files ?? []).map((c) => [c.path, c]));
+  let added_refs = 0;
+  let removed_refs = 0;
+  const context_files = built.context_files.map((cf) => {
+    const old = new Map((before.get(cf.path)?.references ?? []).map((r) => [r.path, r]));
+    const refs = cf.references.map((r) => {
+      const prev = old.get(r.path);
+      if (!prev) added_refs++;
+      return prev?.last_verified ? { ...r, last_verified: prev.last_verified } : r;
+    });
+    removed_refs += [...old.keys()].filter((p) => !cf.references.some((r) => r.path === p)).length;
+    // Keep any extra keys the human put on the entry; only the derived parts are regenerated.
+    return { ...before.get(cf.path), ...cf, references: refs };
+  });
+  const manifest: ContextManifest = { ...schemaRef(root), ...existing, context_files, last_full_scan: now, generated_by: `agent-flow@${opts.version} manifest sync` };
+  if (!existing.$schema) delete (manifest as { $schema?: string }).$schema;
   const problems = validateManifest(manifest);
-  if (problems.length) throw new Error(`init built an invalid manifest (bug): ${problems.join("; ")}`);
-  files.push({ path: MANIFEST_FILE, content: `${JSON.stringify(manifest, null, 2)}\n`, exists: existsSync(join(root, MANIFEST_FILE)) });
-  const suggested = suggestProtectedPaths(root);
-  return { files, context_files: contextFiles, suggested_protected_paths: suggested, references: refCount, missing_references: missing, ...(existingRules.length && !existsSync(join(root, "AGENTS.md")) ? { existing_rules: existingRules } : {}) };
+  if (problems.length) throw new Error(`the synced manifest is invalid: ${problems.join("; ")}`);
+  return {
+    manifest,
+    added_files: onDisk.filter((f) => !before.has(f)),
+    removed_files: [...before.keys()].filter((f) => !onDisk.includes(f)),
+    added_refs,
+    removed_refs,
+    missing_references: built.missing,
+  };
 }

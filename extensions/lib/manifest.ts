@@ -183,6 +183,7 @@ export function validateManifest(m: unknown): string[] {
         if (s.expect_exit !== undefined && (!Number.isInteger(s.expect_exit) || (s.expect_exit as number) < 0 || (s.expect_exit as number) > 255)) problems.push(`${w}.expect_exit must be an integer 0-255`);
         if (s.required !== undefined && typeof s.required !== "boolean") problems.push(`${w}.required must be true or false`);
         if (s.on_stop !== undefined && typeof s.on_stop !== "boolean") problems.push(`${w}.on_stop must be true or false`);
+        if (s.os !== undefined && (!Array.isArray(s.os) || !s.os.length || !s.os.every((o) => ["linux", "darwin", "win32"].includes(o as string)))) problems.push(`${w}.os must be a non-empty list of linux, darwin, win32`);
       });
     }
   }

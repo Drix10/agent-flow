@@ -45,6 +45,8 @@ export type DetectResult =
   | {
       ok: true;
       healthy: boolean;
+      /** Unhealthy only because files are older than the threshold: nothing is wrong, nothing was re-verified. */
+      only_stale: boolean;
       report: StaleReport;
       /** Manifest path, or null when running on auto-discovered context files only. */
       manifest: string | null;
@@ -333,20 +335,23 @@ export function detectStale(root: string, opts: DetectOptions = {}): DetectResul
     if (s) m.suggestion = s;
   }
 
-  const healthy =
-    report.stale_files.length === 0 &&
-    report.missing_context_files.length === 0 &&
-    report.missing_paths.length === 0 &&
-    report.invalid_timestamps.length === 0 &&
-    report.unfilled_placeholders.length === 0 &&
-    report.dead_commands.length === 0 &&
-    report.broken_links.length === 0 &&
-    report.unknown_commits.length === 0 &&
-    report.schema_problems.length === 0;
+  // Everything that makes the context wrong rather than merely old; `doctor --allow-stale` fails on these alone.
+  const broken =
+    report.missing_context_files.length > 0 ||
+    report.missing_paths.length > 0 ||
+    report.invalid_timestamps.length > 0 ||
+    report.unfilled_placeholders.length > 0 ||
+    report.dead_commands.length > 0 ||
+    report.broken_links.length > 0 ||
+    report.unknown_commits.length > 0 ||
+    report.schema_problems.length > 0;
+  const healthy = report.stale_files.length === 0 && !broken;
+  const only_stale = !healthy && !broken;
 
   return {
     ok: true,
     healthy,
+    only_stale,
     report,
     manifest: loaded.ok ? loaded.value.path : null,
     legacy_schema: loaded.ok ? loaded.value.legacySchema : false,

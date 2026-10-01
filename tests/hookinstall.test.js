@@ -96,3 +96,98 @@ test("install keeps user hooks that merely mention agent-flow and guard", () => 
     assert.match(s, /agent-flow\/bin\/agent-flow\.js\\" guard/);
   });
 });
+
+test("install --harness claude in a repo with no node_modules vendors the runtime and the hook runs from it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-vendor-"));
+  try {
+    spawnSync("git", ["init", "-q"], { cwd: dir });
+    writeFileSync(join(dir, "app.py"), "print(1)\n");
+    writeFileSync(join(dir, ".env"), "K=1\n");
+    const r = spawnSync(process.execPath, [BIN, "install", "--harness", "claude"], { cwd: dir, encoding: "utf-8" });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const cmd = JSON.parse(readFileSync(join(dir, ".claude/settings.json"), "utf-8")).hooks.PreToolUse[0].hooks[0].command;
+    assert.match(cmd, /\.agent-flow-runtime\/bin\/agent-flow\.js/);
+    assert.equal(spawnSync("git", ["ls-files", "--others", "package.json"], { cwd: dir, encoding: "utf-8" }).stdout.trim(), "");
+    const bin = join(dir, ".agent-flow-runtime/bin/agent-flow.js");
+    const g = spawnSync(process.execPath, [bin, "guard"], { cwd: dir, input: JSON.stringify({ tool_name: "Bash", tool_input: { command: "cat .env" } }), encoding: "utf-8" });
+    assert.equal(g.status, 2, "the vendored guard blocks an env-file read");
+    assert.equal(spawnSync(process.execPath, [bin, "guard", "--check"], { cwd: dir, encoding: "utf-8" }).status, 0);
+    assert.equal(spawnSync(process.execPath, [bin, "schema", "reviewer"], { cwd: dir, encoding: "utf-8" }).status, 0, "schemas are vendored too");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the vendored runtime is invisible to scans: no risk surfaces, no dependency-manifest bump", () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-vendor-scan-"));
+  try {
+    const git = (...a) => spawnSync("git", ["-c", "user.email=a@b", "-c", "user.name=n", ...a], { cwd: dir, encoding: "utf-8" });
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(dir, "app.py"), "print(1)\n");
+    git("add", "-A");
+    git("commit", "-qm", "base");
+    git("checkout", "-qb", "feat");
+    assert.equal(spawnSync(process.execPath, [BIN, "install", "--harness", "claude"], { cwd: dir, encoding: "utf-8" }).status, 0);
+    git("add", "-A");
+    git("commit", "-qm", "install");
+    const run = (...a) => spawnSync(process.execPath, [BIN, ...a], { cwd: dir, encoding: "utf-8" }).stdout;
+    assert.doesNotMatch(run("classify", "--base", "main"), /dependency manifest/);
+    assert.doesNotMatch(run("audit-risk"), /agent-flow-runtime/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a vendored install: local state is git-excluded, the pre-commit hook finds the runtime, and manifest sync keeps the human's keys", () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-vendor-flow-"));
+  try {
+    const git = (...a) => spawnSync("git", ["-c", "user.email=a@b", "-c", "user.name=n", ...a], { cwd: dir, encoding: "utf-8" });
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(dir, "AGENTS.md"), "# rules\nSee `src/`.\n");
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "src", "a.py"), "print(1)\n");
+    const manifest = { version: "2", repo: "x", context_files: [{ path: "AGENTS.md", references: [] }], protected_paths: ["src/secret/**"], risk_boundaries: [{ path: "src/**", risk_level: "critical" }], gates: [{ name: "t", command: "true", os: ["linux"] }] };
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify(manifest, null, 4));
+    const af = (...a) => spawnSync(process.execPath, [BIN, ...a], { cwd: dir, encoding: "utf-8" });
+    const inst = af("install", "--harness", "claude");
+    assert.equal(inst.status, 0, inst.stdout);
+    assert.match(inst.stdout, /commit what install wrote \(including \.agent-flow-runtime\//);
+    assert.equal(git("check-ignore", "-q", ".agent-flow/audit.jsonl").status, 0, ".agent-flow/ is excluded");
+    assert.notEqual(git("check-ignore", "-q", ".agent-flow-runtime/bin/agent-flow.js").status, 0, "the runtime is not");
+
+    const vend = join(dir, ".agent-flow-runtime/bin/agent-flow.js");
+    assert.equal(spawnSync(process.execPath, [vend, "hook", "install"], { cwd: dir, encoding: "utf-8" }).status, 0);
+    const hook = readFileSync(join(dir, ".git/hooks/pre-commit"), "utf-8");
+    assert.match(hook, /\.agent-flow-runtime\/bin\/agent-flow\.js/);
+
+    const dry = af("manifest", "sync", "--json");
+    const plan = JSON.parse(dry.stdout);
+    assert.deepEqual(plan.added_files, ["CLAUDE.md"], "install's CLAUDE.md is picked up");
+    assert.equal(plan.written, false, "nothing written without --yes");
+    assert.equal(af("manifest", "sync", "--yes").status, 0);
+    const after = JSON.parse(readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8"));
+    assert.deepEqual([after.protected_paths, after.risk_boundaries, after.gates], [manifest.protected_paths, manifest.risk_boundaries, manifest.gates]);
+    assert.deepEqual(after.context_files.find((c) => c.path === "AGENTS.md").references.map((r) => r.path), ["src/"]);
+    assert.match(readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8"), /^\{\n {4}"/, "indentation kept");
+    assert.match(JSON.parse(af("manifest", "sync", "--json").stdout).changed + "", /false/, "a second sync is a no-op");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("re-installing replaces the vendored runtime: a file the new version dropped does not linger", () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-vendor-replace-"));
+  try {
+    spawnSync("git", ["init", "-q"], { cwd: dir });
+    const inst = () => spawnSync(process.execPath, [BIN, "install", "--harness", "claude", "--force"], { cwd: dir, encoding: "utf-8" });
+    assert.equal(inst().status, 0);
+    const stale = join(dir, ".agent-flow-runtime/extensions/lib/removed-in-new-version.js");
+    writeFileSync(stale, "export default 1;\n");
+    assert.equal(inst().status, 0);
+    assert.equal(spawnSync("git", ["ls-files", "--others", "--exclude-standard", "--", ".agent-flow-runtime/extensions/lib/removed-in-new-version.js"], { cwd: dir, encoding: "utf-8" }).stdout.trim(), "", "ls-files lists it only if it still exists");
+    assert.throws(() => readFileSync(stale), /ENOENT/);
+    assert.equal(spawnSync(process.execPath, [join(dir, ".agent-flow-runtime/bin/agent-flow.js"), "--version"], { encoding: "utf-8" }).status, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

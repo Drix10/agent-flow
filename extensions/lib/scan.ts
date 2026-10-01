@@ -40,6 +40,39 @@ const CONTEXT_FILES = [
 const ENTRY = /(^|\/)(main|index|app|server|cli|__main__|manage|lib|mod)\.(ts|tsx|js|mjs|cjs|go|rs|py|rb|java|kt)$/;
 const CI = /^(\.github\/workflows\/[^/]+\.ya?ml|\.gitlab-ci\.yml|\.circleci\/config\.yml|azure-pipelines\.yml|Jenkinsfile|\.buildkite\/[^/]+\.ya?ml|bitbucket-pipelines\.yml|\.drone\.yml)$/;
 
+/**
+ * The single-line commands a workflow's `run:` steps execute, including each plain line of a `run: |` block.
+ * Lines that only make sense with their neighbours (loops, conditionals, continuations) are left out.
+ */
+function ciRunLines(yml: string): string[] {
+  const out: string[] = [];
+  const lines = yml.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(\s*)(?:-\s+)?run:\s*(.*?)\s*$/);
+    if (!m) continue;
+    if (m[2] && !/^[|>]/.test(m[2])) {
+      out.push(m[2].replace(/^["']|["']$/g, ""));
+      continue;
+    }
+    const indent = m[1].length;
+    let continued = false;
+    let depth = 0;
+    for (let j = i + 1; j < lines.length; j++) {
+      const l = lines[j];
+      if (l.trim() && l.search(/\S/) <= indent) break;
+      const t = l.trim();
+      const wasContinued = continued;
+      continued = /\\$/.test(t);
+      if (/^(for|while|until|if|case)\b/.test(t)) depth++;
+      if (/^(done|fi|esac)\b/.test(t)) depth = Math.max(0, depth - 1);
+      // Inside a loop, after a `\`, or using a variable, the line isn't a command anyone can copy and run alone.
+      if (!t || t.startsWith("#") || continued || wasContinued || depth > 0 || /\$/.test(t) || /^(then|else|elif|fi|do|done|esac)\b/.test(t)) continue;
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 export function scanRepo(root: string, opts: { maxFiles?: number } = {}): ScanResult {
   const { files, truncated } = listRepoFiles(root, { maxFiles: opts.maxFiles ?? 50_000, linkedFiles: true });
   const has = (f: string) => files.includes(f);
@@ -121,6 +154,35 @@ export function scanRepo(root: string, opts: { maxFiles?: number } = {}): ScanRe
     const mk = readTextFile(join(root, "Makefile")) ?? "";
     for (const m of mk.matchAll(/^([a-zA-Z][\w-]*):(?!=)/gm)) {
       if (["build", "test", "lint", "check", "fmt", "typecheck"].includes(m[1])) commands.push({ name: m[1], command: `make ${m[1]}`, source: "Makefile" });
+    }
+  }
+
+  // --- Repos with no package manifest: take the commands their own CI and build scripts run ------
+  if (!commands.length) {
+    for (const f of files.filter((x) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(x)).slice(0, 10)) {
+      for (const cmd of ciRunLines(readTextFile(join(root, f)) ?? "")) {
+        if (/\b(pytest|unittest|ctest|cargo test|go test|make\s+(test|check|lint|build)|(test|check)[\w-]*\.(py|sh)|(build|test)\.sh)\b/.test(cmd) && !/\b(install|apt-get|pip)\b/.test(cmd) && commands.length < 80 && !commands.some((c) => c.command === cmd)) {
+          commands.push({ name: /test|check/.test(cmd) ? "test" : "build", command: cmd, source: f });
+        }
+      }
+    }
+    // `python3 tests/test_a.py`, `python3 tests/test_b.py`, … read as one command with a placeholder.
+    const groups = new Map<string, typeof commands>();
+    for (const c of commands) {
+      const m = c.command.match(/^(.*?)([\w./-]+\/)([\w-]+)(\.\w+)(.*)$/);
+      const key = m ? `${m[1]}\0${m[2]}\0${m[4]}\0${m[5]}` : `\0${c.command}`;
+      groups.set(key, [...(groups.get(key) ?? []), c]);
+    }
+    commands.length = 0;
+    for (const [key, cs] of groups) {
+      if (cs.length < 3) commands.push(...cs);
+      else {
+        const [pre, dir, ext, post] = key.split("\0");
+        commands.push({ name: cs[0].name, command: `${pre}${dir}<name>${ext}${post} (${cs.length} files: ${cs.map((c) => c.command.match(/([\w-]+)\.\w+(?=\S*$|\s)/)?.[1]).filter(Boolean).slice(0, 3).join(", ")}…)`, source: cs[0].source });
+      }
+    }
+    for (const f of files.filter((x) => /(^|\/)(build|test|check|lint)\.sh$/.test(x) && x.split("/").length <= 3)) {
+      if (!commands.some((c) => c.command.includes(f))) commands.push({ name: basename(f, ".sh"), command: `./${f}`, source: f });
     }
   }
 

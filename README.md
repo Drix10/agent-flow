@@ -77,8 +77,9 @@ That is real output (trimmed). `doctor` reads every AGENTS.md, CLAUDE.md, GEMINI
 **Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf** — the primary targets — get the skills, a read-only reviewer subagent (where the harness has one), and the zero-dependency CLI:
 
 ```bash
-npm install -D @drix10/agent-flow
 npx @drix10/agent-flow install --harness claude     # or codex | gemini | cursor | copilot | windsurf | agents
+# Node projects may `npm install -D @drix10/agent-flow` first; any other repo (Python, Go, …) needs no package.json:
+# the guard hook then runs from a vendored copy in .agent-flow-runtime/ (about 0.5 MB, commit it).
 
 # — or just the skills, via the skills CLI:
 npx skills add Drix10/agent-flow
@@ -123,7 +124,7 @@ Or use the composite action, which also runs `classify --fail-on-protected --fai
 ```yaml
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: Drix10/agent-flow@v1.1.5
+      - uses: Drix10/agent-flow@v1.1.6
 ```
 
 ## Use

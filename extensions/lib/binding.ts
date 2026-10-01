@@ -82,7 +82,8 @@ export function checkBinding(root: string, issue: number, round: number, gates: 
   else if (qa.verdict !== "passed" && qa.verdict !== "passed_with_flaky") problems.push(`the round ${round} QA result is "${qa.verdict ?? "unknown"}", not passed`);
   else if (qa.head !== tip) problems.push(`QA ran on ${short(qa.head)}, but the branch tip is ${short(tip)}`);
 
-  for (const g of gates.filter((x) => x.required !== false)) {
+  // A gate whose `os` excludes this machine is skipped here (reported as skipped, never as passed): CI on its platform judges it.
+  for (const g of gates.filter((x) => x.required !== false && !(Array.isArray(x.os) && x.os.length && !x.os.includes(process.platform)))) {
     const run = latest((l) => l.event === "gate_run" && l.gate === g.name);
     if (!run) problems.push(`required gate "${g.name}" has not run for this issue`);
     else if (run.ok !== true) problems.push(`required gate "${g.name}" failed on its latest run`);

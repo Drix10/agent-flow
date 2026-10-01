@@ -24,6 +24,7 @@ Outside Pi the tools have CLI twins (`AF` = `npx @drix10/agent-flow`):
 | `risk_audit` | `AF audit-risk` |
 | `risk_baseline_update` | `AF baseline accept <keys…> --yes` |
 | `stale_repair` | `AF repair --yes` |
+| (references follow the prose) | `AF manifest sync --yes` |
 
 Never hand-edit `last_verified` timestamps in the manifest: `AF repair` is the only thing that should refresh them, and only after step 2 of /repair-docs.
 
@@ -63,7 +64,7 @@ Never hand-edit `last_verified` timestamps in the manifest: `AF repair` is the o
 
 1. Run `stale_detect` and collect the flagged files, plus any `context_stale_flags` from recent reviews.
 2. For each flagged claim, **re-read the code it describes.** Fix the prose to match the code. Remove claims you can't verify, or mark them `[NEEDS VERIFICATION]`.
-3. Update the manifest `references` so they match the paths the prose now names.
+3. Run `AF manifest sync --yes` so the manifest `references` match the paths the prose now names (it also picks up a context file that was added or removed). Don't edit the list by hand.
 4. **Only then** call `stale_repair`. It certifies that the paths exist and refreshes the timestamps. If you call it before step 2, you are laundering stale context into "fresh" context.
 5. Run `stale_detect` again. It must come back healthy, or you must explain what is left.
 

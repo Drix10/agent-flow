@@ -7,14 +7,43 @@
  * edit the gate that judges it. Each run leaves a log, its SHA-256, and an audit line.
  */
 
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { isoNow, resolveInside, toPosix } from "./fsutil.js";
 import { ContextManifest } from "./manifest.js";
 import { appendAudit } from "./state.js";
 import { branchTip } from "./binding.js";
+
+let shellCache: string | true | undefined;
+/** The gate's shell itself (not a script it started) couldn't find or execute the command. */
+const SHELL_SAID_UNRUNNABLE = /(^|\n)([A-Za-z]:)?([^\n:]*[/\x5c])?(ba|da|z)?sh(\.exe)?: (line \d+: )?[^\n]*(command not found|: not found|Permission denied|cannot execute|No such file or directory)/;
+
+/**
+ * The shell a string gate runs in. Gate commands are POSIX (they come from CI files and READMEs), so on
+ * Windows they need Git's bash, not cmd.exe, which can't run `./build.sh` or a `for` loop.
+ * AGENT_FLOW_SHELL overrides. WSL's System32 bash is never picked: it runs in another filesystem.
+ */
+export function gateShell(): string | true {
+  if (process.env.AGENT_FLOW_SHELL) return process.env.AGENT_FLOW_SHELL;
+  if (process.platform !== "win32") return true;
+  if (shellCache !== undefined) return shellCache;
+  shellCache = true;
+  try {
+    const exec = execFileSync("git", ["--exec-path"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const gitRoot = resolve(exec, "..", "..", "..");
+    for (const p of [join(gitRoot, "bin", "bash.exe"), join(gitRoot, "usr", "bin", "bash.exe")]) {
+      if (existsSync(p)) {
+        shellCache = p;
+        break;
+      }
+    }
+  } catch {
+    // no git on PATH: cmd.exe it is, and a POSIX gate will say so in its log
+  }
+  return shellCache;
+}
 
 export interface GateSpec {
   name: string;
@@ -26,6 +55,8 @@ export interface GateSpec {
   expect_exit?: number;
   /** A failing non-required gate is reported but doesn't fail the run. Default true. */
   required?: boolean;
+  /** Platforms the gate can run on (Node's process.platform: linux, darwin, win32). Elsewhere it is skipped and says so. */
+  os?: string[];
 }
 
 export interface GateResult {
@@ -37,6 +68,8 @@ export interface GateResult {
   ok: boolean;
   required: boolean;
   timed_out: boolean;
+  /** Set when the gate's `os` excludes this machine: nothing ran, so nothing passed. CI on a listed platform is the judge. */
+  skipped?: string;
   /** Set when the command could not be run at all (missing binary, bad cwd): an environment problem, not a test failure. */
   error?: string;
   duration_ms: number;
@@ -99,6 +132,12 @@ export function runGates(root: string, gates: GateSpec[], opts: RunOptions = {})
   const results: GateResult[] = [];
   for (const g of chosen) {
     const started_at = isoNow();
+    if (Array.isArray(g.os) && g.os.length && !g.os.includes(process.platform)) {
+      const r: GateResult = { name: g.name, command: describeCommand(g.command), cwd: toPosix(base), expected_exit: g.expect_exit ?? 0, exit_code: null, ok: true, required: g.required !== false, timed_out: false, skipped: `runs on ${g.os.join("/")}, this is ${process.platform}`, duration_ms: 0, started_at, log: "", log_sha256: "" };
+      results.push(r);
+      appendAudit(root, { event: "gate_skipped", issue: opts.issue, gate: r.name, reason: r.skipped });
+      continue;
+    }
     const t0 = Date.now();
     const expected = g.expect_exit ?? 0;
     const required = g.required !== false;
@@ -112,7 +151,7 @@ export function runGates(root: string, gates: GateSpec[], opts: RunOptions = {})
       cwd = g.cwd ? resolveInside(base, g.cwd) : base;
       const r = Array.isArray(g.command)
         ? spawnSync(g.command[0], g.command.slice(1), { cwd, encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_LOG, env: { ...process.env, AGENT_FLOW_GATE: g.name } })
-        : spawnSync(g.command, { cwd, shell: true, encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_LOG, env: { ...process.env, AGENT_FLOW_GATE: g.name } });
+        : spawnSync(g.command, { cwd, shell: gateShell(), encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_LOG, env: { ...process.env, AGENT_FLOW_GATE: g.name } });
       output = `${r.stdout?.toString("utf-8") ?? ""}${r.stderr?.toString("utf-8") ?? ""}`;
       if (r.error) {
         const code = (r.error as NodeJS.ErrnoException).code;
@@ -121,6 +160,10 @@ export function runGates(root: string, gates: GateSpec[], opts: RunOptions = {})
       }
       exit = r.status;
       if (r.signal && !timedOut) error = `killed by ${r.signal}`;
+      // 126/127: the shell couldn't find or execute the command. That's the environment, not the code under test.
+      // A 126/127 from inside a script the gate ran (`./build.sh: line 36: …`) is that script's own failure.
+      else if (!Array.isArray(g.command) && (exit === 126 || exit === 127) && expected !== exit && SHELL_SAID_UNRUNNABLE.test(output)) error = `command not runnable here (exit ${exit})`;
+      else if (!Array.isArray(g.command) && gateShell() === true && process.platform === "win32" && /is not recognized as an internal or external command/.test(output)) error = "cmd.exe can't run this command; install Git for Windows or set AGENT_FLOW_SHELL to a POSIX shell";
     } catch (e: any) {
       error = e.message;
     }

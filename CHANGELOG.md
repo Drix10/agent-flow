@@ -2,7 +2,22 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.6] - Unreleased
+
+Found by running bootstrap on a real C++/Python repo with no `package.json`, on Windows.
+
+- **Any language, no npm.** `install` copies a ~0.5 MB runtime to `.agent-flow-runtime/` for the guard hooks (Claude, Gemini, Codex, Cursor) when agent-flow isn't in the project's `node_modules`, or with `--vendor`. It used to refuse and tell you to `npm install -D`. Commit the folder; the pre-commit hook finds it too. The guard treats it as hook wiring, and `audit-risk`, `scan` and `classify` ignore it. The skills no longer claim a devDependency.
+- `install` keeps `.agent-flow/` (audit log, gate logs, backups) out of git through `.git/info/exclude`, and its next steps say what to commit.
+- **Behavior change on Windows: string gates run in Git Bash, not `cmd.exe`.** Gate commands come from CI files and READMEs, which are POSIX; under `cmd.exe` they failed and looked like test failures. A gate written for `cmd.exe` (`.\scripts\check.bat`, `set X=1 && …`) now needs `AGENT_FLOW_SHELL=cmd.exe`, or an `os`-specific rewrite. Details: String gates went through `cmd.exe`, so every POSIX command (`./build.sh`, a `for` loop, the commands `scan` reads from CI) failed and looked like a test failure. `AGENT_FLOW_SHELL` overrides. A command the shell itself can't start is now an environment error (exit 2); a 126/127 from inside a script is still that script's failure.
+- **`os` on a gate** (`["linux"]`): elsewhere the gate is reported as skipped, never as a pass, and CI judges it. For builds that need a Linux toolchain or a POSIX filesystem.
+- **`agent-flow manifest sync [--yes]`** rebuilds `context_files` from the context files on disk (new `AGENTS.md` files, install's `CLAUDE.md`, the paths their prose names) and keeps `protected_paths`, `risk_boundaries`, `gates` and every other key. Bootstrap and the gardener use it instead of editing references by hand. Roles without `bootstrap_write` can't run it.
+- `scan` finds commands in CI workflow steps, including each plain line of a `run: |` block (loops, continuations and lines with variables are left out), and in `build.sh`/`test.sh`, so a repo with no `package.json` or Makefile no longer reports none. Three or more sibling commands collapse into one `…/<name>.py (N files)` line.
+- **CODEOWNERS without the friction.** A missing or partial `CODEOWNERS` is now one quiet note, not a warning: the guard and pre-commit hook already protect against local agents, and CODEOWNERS only matters for pull requests pushed from elsewhere. `agent-flow codeowners [--yes] [--owner @x]` previews, then appends the lines (owner from `origin`); an existing file is appended to, never replaced. When the lines are in place and a logged-in `gh` is available, `doctor` also reports whether GitHub really requires Code Owner review (rulesets and classic protection); with no `gh`, no login or no network it says nothing, never asks for a token, and `--offline` / `AGENT_FLOW_OFFLINE=1` skips the call. Solo repos are told that requiring it blocks their own PRs.
+- `doctor --allow-stale` reports stale context without failing, and `doctor --allow-stale` reports stale context without failing (for CI on every push; broken paths, schema problems and placeholders still fail). Without it, a repo's CI went red 30 days after setup with no change.
+- The OpenCode plugin finds the CLI relative to itself (the vendored runtime or `node_modules`) instead of the absolute path of whichever copy ran `install`, so it works in every clone.
+- Bootstrap skill: the secrets gate offers fake / real / keep-flagged instead of only stopping; a new gates step (where each can run, timeouts, `on_stop`); glob and highest-level-wins rules spelled out; `manifest sync` for `context_files`; Phase 6 runs the gates and sorts every failure; CODEOWNERS and CI steps without Node in the project; the repo's own rules bind bootstrap.
+- Guard: an unquoted glob that expands to an env file or a `deny_read` path (`cat .e*`) is a secret read, like naming the file.
+- Guard: a recursive search (`grep -r`, `rg --hidden`) over a directory that holds an env file or a `deny_read` path is a secret read; `rg` without `--hidden` skips dotfiles as it does itself.
 
 ## [1.1.5] - 2026-10-01
 

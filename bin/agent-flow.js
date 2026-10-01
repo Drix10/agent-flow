@@ -6,7 +6,7 @@
  *   0 = ok   1 = check failed   2 = usage / environment error
  */
 
-import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, chmodSync } from "node:fs";
+import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -55,7 +55,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate"]);
+const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -67,7 +67,7 @@ function fixBools(args) {
   return args;
 }
 
-const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name"];
+const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner"];
 const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
 
 /** Closest candidate within edit distance 2, or null. */
@@ -106,6 +106,8 @@ Checks (CI-safe, read-only):
       --manifest <path>     Manifest path (default CONTEXT_MANIFEST.json)
       --no-prose            Skip checking \`backticked/paths\` inside context files
       --ctxlint             Also run a locally installed ctxlint (never downloads)
+      --allow-stale         Report stale context but exit 0 for it (CI on every push); broken paths still fail
+      --offline             Skip asking GitHub (via a logged-in gh) whether Code Owner review is enforced
   config get <key>          One manifest value (e.g. pipeline.models.fast) as the pipeline reads it: the default branch's copy for pipeline, gates and policy
   gates [list|run|stop]     Run the manifest's gates (tests, lint, build); records exit codes, logs and hashes
                             run [--name a,b] [--issue <n>] [--json]; exit 1 if a required gate fails, 2 if one couldn't run
@@ -132,6 +134,8 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
       --harness <h> [--model m --exit n --seconds s --argv-file f --issue n --round r]
                             Also append a role_run line (argv, exit, duration, cost/tokens) to .agent-flow/audit.jsonl
   repair --yes              Refresh manifest timestamps after the prose was re-verified (Gardener)
+  codeowners [--yes] [--owner @x]  CODEOWNERS lines covering protected_paths; --yes appends the missing ones
+  manifest sync [--yes]     Rebuild context_files from the AGENTS.md/CLAUDE.md files on disk; keeps protected paths, risk boundaries and gates
   sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>] -- <cmd>
                             Run <cmd> under bubblewrap: read-only filesystem except this worktree (Linux/WSL)
   guard                     Claude Code PreToolUse hook: reads the hook JSON on stdin, exit 2 = blocked
@@ -139,7 +143,8 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
 
 Setup (writes files; run by a human):
   baseline accept --all --yes | baseline accept <key>... --yes
-  install --harness <claude|codex|gemini|cursor|copilot|windsurf|agents> [--dry-run] [--force] [--stop-gate]
+  install --harness <claude|codex|gemini|cursor|copilot|windsurf|agents> [--dry-run] [--force] [--stop-gate] [--vendor]
+                            --vendor copies the runtime to .agent-flow-runtime/ for the hook (automatic outside an npm install; no package.json needed)
   hook install [--force]    Install the pre-commit hook (runs check-staged)
 
 Global: --json for machine output; --sarif (doctor, audit-risk) for GitHub code scanning; --help, --version
@@ -244,22 +249,75 @@ function cmdDoctor(args) {
     section("commands exist", rep.dead_commands, (m) => [`${m.file}${m.line ? `:${m.line}` : ""}`, `${m.command}${m.reason ? ` — ${m.reason}` : ""}${m.suggestion ? `  → did you mean ${c(1, m.suggestion)}?` : ""}`]);
     section("relative links resolve", rep.broken_links, (m) => [`${m.file}:${m.line}`, m.target]);
     section("cited commits exist", rep.unknown_commits, (m) => [`${m.file}:${m.line}`, m.sha]);
-    reportCodeowners(rt, r.manifest);
+    reportCodeowners(rt, r.manifest, args);
     if (discovered) console.log(dim(`note: ${r.manifest ? "the manifest lists no context files" : "no CONTEXT_MANIFEST.json"}, so only paths were checked — \`agent-flow init\` adds staleness tracking`));
     console.log(r.healthy ? c(32, "\nhealthy") : `\n${c(31, "unhealthy")} — ${doctorNextStep(rep, schema)}`);
   }, () => doctorSarif(rt, rep, r.manifest));
-  return none || r.healthy ? 0 : 1;
+  // CI that runs on every push shouldn't go red because a calendar page turned: --allow-stale reports staleness
+  // and fails only on what is actually broken (missing paths, schema, placeholders…).
+  return none || r.healthy || (args["allow-stale"] && r.only_stale) ? 0 : 1;
 }
 
-/** Advisory only: server-side review of protected paths is the host's job, so this never fails doctor. */
-function reportCodeowners(rt, manifestPath) {
+/**
+ * Advisory only, never fails doctor. The guard and the pre-commit hook already keep local agents off protected
+ * paths; CODEOWNERS plus host review only matters for a pull request pushed from elsewhere. So: one quiet note
+ * with the fix, and GitHub's real setting when a logged-in `gh` can tell us for free.
+ */
+function reportCodeowners(rt, manifestPath, args = {}) {
   const loaded = manifestLib.loadManifest(rt, typeof manifestPath === "string" ? manifestPath : undefined);
   const prot = loaded.ok ? (loaded.value.manifest.protected_paths ?? []).filter((x) => typeof x === "string") : [];
   if (!prot.length) return;
   const missing = codeownersLib.uncoveredProtected(rt, prot);
-  if (missing === null) warn("protected_paths are enforced for local agents only; add a CODEOWNERS file and require Code Owner review so a pull request can't change them either");
-  else if (missing.length) warn(`CODEOWNERS doesn't cover protected path${missing.length > 1 ? "s" : ""}: ${missing.join(", ")} (a pull request could change ${missing.length > 1 ? "them" : "it"} without that review)`);
-  else ok("protected paths have CODEOWNERS entries");
+  if (missing === null || missing.length) {
+    const what = missing === null ? "no CODEOWNERS file" : `CODEOWNERS misses ${missing.join(", ")}`;
+    console.log(dim(`note: ${what}. Local agents are already blocked from protected paths; CODEOWNERS also asks for your review when a pull request touches them. \`agent-flow codeowners --yes\` writes the lines.`));
+    return;
+  }
+  ok("protected paths have CODEOWNERS entries");
+  if (args.offline || process.env.AGENT_FLOW_OFFLINE === "1") return;
+  const remote = git.git(["remote", "get-url", "origin"], rt);
+  const slug = remote.ok ? codeownersLib.githubSlug(remote.stdout) : null;
+  if (!slug) return;
+  const branch = (loaded.ok && loaded.value.manifest.default_branch) || git.defaultBranch(rt);
+  const host = codeownersLib.hostCodeOwnerReview(slug, branch);
+  if (!host) return; // no gh, not logged in, offline: say nothing rather than nag
+  if (host.state === "enforced") ok(`GitHub requires Code Owner review on ${branch} (${host.via})`);
+  else if (host.state === "unknown") console.log(dim(`note: ${branch} is protected on GitHub; seeing whether it requires Code Owner review needs admin rights.`));
+  else console.log(dim(`note: GitHub doesn't require Code Owner review on ${branch}, so a pull request can still merge changes to protected paths. Working solo, that's fine. With a team: Settings → Branches (or Rules) → "Require review from Code Owners"; owners then need bypass to merge their own PRs.`));
+}
+
+/** `codeowners [--yes]`: the CODEOWNERS lines that cover protected_paths; --yes appends the missing ones. */
+function cmdCodeowners(args) {
+  const rt = root();
+  const loaded = manifestLib.loadManifest(rt, args.manifest);
+  const prot = loaded.ok ? (loaded.value.manifest.protected_paths ?? []).filter((x) => typeof x === "string") : [];
+  if (!prot.length) throw new UserError("no protected_paths in the manifest — nothing for CODEOWNERS to cover");
+  const missing = codeownersLib.uncoveredProtected(rt, prot) ?? prot;
+  const remote = git.git(["remote", "get-url", "origin"], rt);
+  const owner = args.owner ? (String(args.owner).startsWith("@") ? String(args.owner) : `@${args.owner}`) : (remote.ok && codeownersLib.githubOwner(remote.stdout)) || null;
+  if (!owner) throw new UserError("couldn't tell the owner from the origin remote — pass --owner @you (or @org/team)");
+  // A bare @org is not a valid CODEOWNERS owner (only users and @org/team): ask rather than write a rule that owns nothing.
+  if (!args.owner && !owner.includes("/") && !args.offline && process.env.AGENT_FLOW_OFFLINE !== "1" && codeownersLib.ownerKind(owner.slice(1)) === "Organization") {
+    throw new UserError(`${owner} is an organization, and CODEOWNERS needs a person or a team. Run again with --owner ${owner}/<team> (or --owner @your-login)`);
+  }
+  const lines = missing.map((g) => `${codeownersLib.codeownersPattern(g)}  ${owner}`);
+  const existing = codeownersLib.codeownersFile(rt);
+  const path = join(rt, existing ?? ".github/CODEOWNERS");
+  const write = !!args.yes && !args["dry-run"] && lines.length > 0;
+  if (write) {
+    const cur = existsSync(path) ? readFileSync(path, "utf-8") : "";
+    const eol = cur.includes("\r\n") ? "\r\n" : "\n";
+    const head = cur ? `${cur.endsWith("\n") ? "" : eol}${eol}` : "";
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${cur}${head}# agent-flow: protected_paths from CONTEXT_MANIFEST.json${eol}${lines.join(eol)}${eol}`);
+  }
+  out(args, { file: toPosixPath(relative(rt, path)), owner, lines, written: write }, () => {
+    if (!lines.length) return ok("CODEOWNERS already covers every protected path");
+    for (const l of lines) console.log(`  ${l}`);
+    if (write) ok(`${existing ? "appended to" : "wrote"} ${toPosixPath(relative(rt, path))}`);
+    else console.log(dim(`nothing written — re-run with --yes to ${existing ? "append these to" : "create"} ${toPosixPath(relative(rt, path))}`));
+  });
+  return 0;
 }
 
 function doctorSarif(rt, rep, manifestPath) {
@@ -416,7 +474,7 @@ function cmdGates(args) {
   if (act === "list") {
     out(args, { gates }, () => {
       if (!gates.length) return warn("no gates in CONTEXT_MANIFEST.json (add a `gates` array; see docs/ADOPTION.md)");
-      for (const g of gates) console.log(`  ${g.name}${g.required === false ? dim(" (advisory)") : ""}  ${gatesLib.describeCommand(g.command)}`);
+      for (const g of gates) console.log(`  ${g.name}${g.required === false ? dim(" (advisory)") : ""}${Array.isArray(g.os) && g.os.length ? dim(` (${g.os.join("/")} only)`) : ""}  ${gatesLib.describeCommand(g.command)}`);
     });
     return 0;
   }
@@ -439,6 +497,10 @@ function cmdGates(args) {
   }
   out(args, r, () => {
     for (const g of r.results) {
+      if (g.skipped) {
+        warn(`${g.name}: skipped, ${g.skipped} ${dim("(not a pass: CI on that platform judges it)")}`);
+        continue;
+      }
       const line = `${g.name}: ${g.timed_out ? "timed out" : g.error ? g.error : `exit ${g.exit_code}${g.ok ? "" : ` (expected ${g.expected_exit})`}`} ${dim(`${g.duration_ms}ms ${g.log}`)}`;
       if (g.ok) ok(line);
       else (g.required ? bad : warn)(g.required ? line : `${line} (advisory)`);
@@ -829,6 +891,40 @@ function cmdRepair(args) {
   return r.still_missing.length ? 1 : 0;
 }
 
+/** `manifest sync`: rebuild context_files from the context files on disk; every human-owned key is kept. */
+function cmdManifest(args) {
+  if (args._[1] !== "sync") return sub("manifest", args._[1], ["sync"], "manifest sync [--dry-run] [--yes]");
+  const rt = root();
+  const path = manifestLib.manifestPathFor(rt, args.manifest);
+  if (!existsSync(path)) throw new UserError("no CONTEXT_MANIFEST.json — `agent-flow init` creates one");
+  const raw = readFileSync(path, "utf-8");
+  let existing;
+  try {
+    existing = JSON.parse(raw.replace(/^﻿/, ""));
+  } catch (e) {
+    throw new UserError(`CONTEXT_MANIFEST.json isn't valid JSON (${e.message}); fix it first`);
+  }
+  const plan = initLib.syncManifest(rt, existing, { version: VERSION });
+  const next = `${JSON.stringify(plan.manifest, null, mergeLib.detectJsonIndent(raw))}\n`;
+  const changed = JSON.stringify({ ...existing, last_full_scan: 0, generated_by: 0 }) !== JSON.stringify({ ...plan.manifest, last_full_scan: 0, generated_by: 0 });
+  const write = changed && !!args.yes && !args["dry-run"];
+  if (write) {
+    writeFileSync(path, raw.startsWith("﻿") ? `﻿${next}` : next);
+    state.appendAudit(rt, { event: "manifest_sync", via: "cli", added_files: plan.added_files, removed_files: plan.removed_files, added_refs: plan.added_refs, removed_refs: plan.removed_refs });
+  }
+  const { manifest: _m, ...summary } = plan;
+  out(args, { ...summary, changed, written: write }, () => {
+    for (const f of plan.added_files) ok(`context file added: ${f}`);
+    for (const f of plan.removed_files) warn(`context file gone: ${f}`);
+    console.log(`${plan.added_refs} reference(s) added, ${plan.removed_refs} removed; protected paths, risk boundaries and gates untouched`);
+    for (const m of plan.missing_references) warn(`${m.file} names \`${m.path}\`, which doesn't exist (not recorded)`);
+    if (!changed) ok("manifest already matches the context files");
+    else if (write) ok(`wrote ${relative(rt, path) || "CONTEXT_MANIFEST.json"}`);
+    else console.log(dim("nothing written — re-run with --yes to write it"));
+  });
+  return 0;
+}
+
 /**
  * Claude Code PreToolUse hook. Same policy as Pi's tool_call hook. Contract:
  * JSON on stdin (tool_name, tool_input, cwd, agent_type for subagents);
@@ -989,8 +1085,10 @@ function cmdInstall(args) {
   if (t.plugin) {
     const dst = join(rt, ".opencode/plugins/agent-flow-guard.js");
     const pluginLabel = ".opencode/plugins/agent-flow-guard.js";
-    const body = readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => join(pkgRoot, "bin", "agent-flow.js").replace(/\\/g, "/"));
-    if (existsSync(dst) && readFileSync(dst, "utf-8") === body) console.log(dim("= .opencode/plugins/agent-flow-guard.js (up to date)"));
+    const binRel = runtimeBinRel(rt, args, pluginLabel);
+    const body = binRel && readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => binRel.replace(/\\/g, "/"));
+    if (!body) conflicts.push(pluginLabel);
+    else if (existsSync(dst) && readFileSync(dst, "utf-8") === body) console.log(dim("= .opencode/plugins/agent-flow-guard.js (up to date)"));
     else if (existsSync(dst) && !args.force) {
       conflicts.push(pluginLabel);
       bad(".opencode/plugins/agent-flow-guard.js exists and differs — not overwritten (use --force)");
@@ -1008,10 +1106,25 @@ function cmdInstall(args) {
     if (!installClaudeHook(rt, args)) conflicts.push(".claude/settings.json");
     importAgentsMd(rt, args);
   }
+  ignoreLocalState(rt, args);
   if (t.note) console.log(`\n${t.note}`);
   const who = args.harness === "claude" ? "Claude" : "your agent";
-  console.log(`\nNext:\n  1. npx @drix10/agent-flow doctor\n  2. ask ${who}: "use the bootstrap skill to set up this repo"\n  3. npx @drix10/agent-flow hook install`);
+  const steps = [
+    "npx @drix10/agent-flow doctor   (checks what your context files claim today)",
+    `ask ${who}: "use the bootstrap skill to set up this repo"`,
+    "npx @drix10/agent-flow hook install   (pre-commit gate)",
+    `commit what install wrote${vendoredThisRun ? ` (including ${VENDOR_DIR}/, so the hook runs for everyone who clones)` : ""}`,
+  ];
+  console.log(`\nNext:\n${steps.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}`);
   return conflicts.length ? 1 : 0;
+}
+
+/** `.agent-flow/` is this checkout's own state (audit log, gate logs, backups): never shared through git. */
+function ignoreLocalState(rt, args) {
+  if (!git.git(["rev-parse", "--is-inside-work-tree"], rt).ok) return;
+  if (git.git(["check-ignore", "-q", ".agent-flow/audit.jsonl"], rt).ok || args["dry-run"]) return;
+  // .git/info/exclude, not .gitignore: the user's committed files stay untouched (same as worktree create).
+  if (git.ensureLocalExcludes(rt, ["/.agent-flow/"]).length) ok("excluded .agent-flow/ (local state) from git via .git/info/exclude");
 }
 
 /** Claude Code reads CLAUDE.md, not AGENTS.md; an `@AGENTS.md` line imports it. */
@@ -1032,6 +1145,39 @@ function importAgentsMd(rt, args) {
 const STOP_HOOK_TIMEOUT_S = 900;
 const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|NotebookRead|Grep|Glob|mcp__.*";
 
+const VENDOR_DIR = ".agent-flow-runtime";
+let vendoredThisRun = false;
+
+/**
+ * Where a guard hook should point. A project's own node_modules copy when there is one; otherwise
+ * (a Python or Go repo, or a run from npx's throwaway cache) a vendored runtime at
+ * `.agent-flow-runtime/`: about 1 MB of plain files, no package.json, no npm. Returns the bin path
+ * relative to the repo root, or null if the vendor copy could not be written.
+ */
+function runtimeBinRel(rt, args, label) {
+  const own = relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
+  if (!args.vendor && !fsutil.escapesBase(own)) return own;
+  const dest = join(rt, VENDOR_DIR);
+  const vendored = join(VENDOR_DIR, "bin", "agent-flow.js");
+  if (resolve(pkgRoot) === resolve(dest)) return vendored;
+  const files = [["package.json"], ["bin", "agent-flow.js"], ["schemas"], ["templates"]];
+  const libDir = join(pkgRoot, "extensions", "lib");
+  if (!existsSync(libDir)) {
+    bad(`${label}: no runtime to vendor from ${pkgRoot}.`);
+    return null;
+  }
+  if (!args["dry-run"] && !vendoredThisRun) {
+    // Replace, don't overlay: a library dropped in a newer version must not linger in a folder the guard trusts.
+    rmSync(dest, { recursive: true, force: true });
+    for (const f of files) cpSync(join(pkgRoot, ...f), join(dest, ...f), { recursive: true });
+    mkdirSync(join(dest, "extensions", "lib"), { recursive: true });
+    for (const n of readdirSync(libDir)) if (n.endsWith(".js")) copyFileSync(join(libDir, n), join(dest, "extensions", "lib", n));
+  }
+  if (!vendoredThisRun) ok(`${args["dry-run"] ? "would copy" : "copied"} the runtime to ${VENDOR_DIR}/ (commit it; the hook runs from there, no npm needed)`);
+  vendoredThisRun = true;
+  return vendored;
+}
+
 /**
  * Wire the guard into Claude Code as a PreToolUse hook, merged into any
  * existing .claude/settings.json. The hook must point at a copy of agent-flow
@@ -1040,12 +1186,8 @@ const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|Not
  */
 function installClaudeHook(rt, args) {
   const label = ".claude/settings.json (PreToolUse guard hook)";
-  const binRel = relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
-  if (fsutil.escapesBase(binRel)) {
-    bad(`${label}: agent-flow isn't installed in this project, so the hook would point at a temporary copy.`);
-    console.log(dim("    Run `npm install -D @drix10/agent-flow`, then `npx @drix10/agent-flow install --harness claude` again."));
-    return false;
-  }
+  const binRel = runtimeBinRel(rt, args, label);
+  if (!binRel) return false;
   const command = `node "$CLAUDE_PROJECT_DIR/${binRel.split("\\").join("/")}" guard`;
   const path = join(rt, ".claude", "settings.json");
   let settings = {};
@@ -1119,12 +1261,8 @@ const HOOK_FILES = {
 function installGuardHook(rt, args, name) {
   const cfg = HOOK_FILES[name];
   const label = `${cfg.path} (guard hook)`;
-  const binRel = relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
-  if (fsutil.escapesBase(binRel)) {
-    bad(`${label}: agent-flow isn't installed in this project, so the hook would point at a temporary copy.`);
-    console.log(dim("    Run `npm install -D @drix10/agent-flow`, then install again."));
-    return false;
-  }
+  const binRel = runtimeBinRel(rt, args, label);
+  if (!binRel) return false;
   const command = `node "${cfg.dir}${binRel.split("\\").join("/")}" guard`;
   const path = join(rt, cfg.path);
   let settings = {};
@@ -1200,8 +1338,12 @@ main_root="$(cd "$(git rev-parse --git-common-dir)/.." 2>/dev/null && pwd)"
 for bin in "./node_modules/.bin/agent-flow" "$main_root/node_modules/.bin/agent-flow"; do
   if [ -x "$bin" ]; then exec "$bin" check-staged; fi
 done
+# The committed runtime (any language, no npm): written by \`agent-flow install\` in repos without node_modules.
+for js in "./${VENDOR_DIR}/bin/agent-flow.js" "$main_root/${VENDOR_DIR}/bin/agent-flow.js"; do
+  if [ -f "$js" ]; then exec node "$js" check-staged; fi
+done
 ${selfLine}if npx --no-install @drix10/agent-flow --version >/dev/null 2>&1; then exec npx --no-install @drix10/agent-flow check-staged; fi
-echo "agent-flow pre-commit: can't find the agent-flow CLI. Install it (npm i -D @drix10/agent-flow, or npm i -g @drix10/agent-flow in a non-Node repo) and re-run: agent-flow hook install" >&2
+echo "agent-flow pre-commit: can't find the agent-flow CLI. Run \\\`npx @drix10/agent-flow install --harness <name>\\\` (copies it to ${VENDOR_DIR}/, any language) or npm i -D @drix10/agent-flow, then: agent-flow hook install" >&2
 exit 1
 `;
   // Only a hook that carries our own header is ours to replace; one that merely mentions agent-flow is the user's.
@@ -1390,6 +1532,8 @@ const table = {
   template: cmdTemplate,
   report: cmdReport,
   repair: cmdRepair,
+  manifest: cmdManifest,
+  codeowners: cmdCodeowners,
   guard: cmdGuard,
 };
 
