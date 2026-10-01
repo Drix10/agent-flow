@@ -148,7 +148,8 @@ export function runGates(root: string, gates: GateSpec[], opts: RunOptions = {})
     let timedOut = false;
     let output = "";
     try {
-      cwd = g.cwd ? resolveInside(base, g.cwd) : base;
+      // `"cwd": "."` means the checkout itself, which resolveInside (for paths *inside* the root) refuses.
+      cwd = g.cwd && resolve(base, g.cwd) !== resolve(base) ? resolveInside(base, g.cwd) : base;
       const r = Array.isArray(g.command)
         ? spawnSync(g.command[0], g.command.slice(1), { cwd, encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_LOG, env: { ...process.env, AGENT_FLOW_GATE: g.name } })
         : spawnSync(g.command, { cwd, shell: gateShell(), encoding: "buffer", timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_LOG, env: { ...process.env, AGENT_FLOW_GATE: g.name } });

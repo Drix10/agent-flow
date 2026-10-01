@@ -693,8 +693,8 @@ function roundNumber(raw) {
 
 function cmdState(args) {
   const rt = root();
-  const sub = args._[1] ?? "show";
-  if (sub === "show") {
+  const action = args._[1] ?? "show";
+  if (action === "show") {
     const s = state.readState(rt);
     if (args.issue !== undefined) {
       // A bare `--issue` parses as `true`; Number(true) is 1, which silently
@@ -709,7 +709,7 @@ function cmdState(args) {
     out(args, s, () => process.stdout.write(state.renderMarkdown(s)));
     return 0;
   }
-  if (sub === "update") {
+  if (action === "update") {
     const p = {
       issue: issueNumber(args.issue, "state update --issue <n> --state <s>"),
       state: args.state,
@@ -1144,7 +1144,7 @@ function importAgentsMd(rt, args) {
 
 // Every tool the guard has a rule for: writes, the shell, read tools (env files, deny_read) and MCP tools (remote pushes).
 const STOP_HOOK_TIMEOUT_S = 900;
-const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|NotebookRead|Grep|Glob|mcp__.*";
+const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|NotebookRead|Grep|Glob|Task|Agent|mcp__.*";
 
 const VENDOR_DIR = ".agent-flow-runtime";
 let vendoredThisRun = false;

@@ -191,3 +191,18 @@ test("re-installing replaces the vendored runtime: a file the new version droppe
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the Claude hook matcher includes the sub-agent tools, and an unknown `state` subcommand gets usage, not a crash", () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-matcher-"));
+  try {
+    spawnSync("git", ["init", "-q"], { cwd: dir });
+    assert.equal(spawnSync(process.execPath, [BIN, "install", "--harness", "claude"], { cwd: dir, encoding: "utf-8" }).status, 0);
+    const matcher = JSON.parse(readFileSync(join(dir, ".claude/settings.json"), "utf-8")).hooks.PreToolUse[0].matcher;
+    assert.ok(matcher.split("|").includes("Task") && matcher.split("|").includes("Agent"), matcher);
+    const r = spawnSync(process.execPath, [BIN, "state", "upd"], { cwd: dir, encoding: "utf-8" });
+    assert.doesNotMatch(r.stdout + r.stderr, /is not a function|TypeError/);
+    assert.match(r.stdout + r.stderr, /state/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

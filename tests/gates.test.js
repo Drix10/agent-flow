@@ -178,3 +178,19 @@ test("a command that exits as expected is never an environment error, whatever i
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a gate with cwd \".\" runs in the checkout itself", () => {
+  const dir = tmp();
+  try {
+    for (const cwd of [".", "./"]) {
+      const r = runGates(dir, [{ name: "here", command: node("process.exit(require('fs').existsSync('marker') ? 0 : 3)"), cwd }]);
+      writeFileSync(join(dir, "marker"), "x");
+      const again = runGates(dir, [{ name: "here", command: node("process.exit(require('fs').existsSync('marker') ? 0 : 3)"), cwd }]);
+      assert.equal(again.results[0].error, undefined, again.results[0].error);
+      assert.equal(again.results[0].ok, true);
+      assert.equal(r.results[0].error, undefined);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
