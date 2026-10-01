@@ -76,7 +76,7 @@ export interface AuditSummary {
   guard_blocks: { total: number; by_role: Record<string, number>; by_rule: Record<string, number> };
   escalations: { issue: number; at: string; reason: string }[];
   issues: { issue: number; state: string; round: number }[];
-  role_runs: { total: number; ok: number; failed: number; cost_usd: number; by_role: Record<string, { runs: number; failed: number; cost_usd: number }> };
+  role_runs: { total: number; ok: number; failed: number; cost_usd: number; cost_unreported: number; by_role: Record<string, { runs: number; failed: number; cost_usd: number }> };
 }
 
 const bump = (m: Record<string, number>, k: string, n = 1) => {
@@ -94,7 +94,7 @@ export function summarizeAudit(root: string): AuditSummary {
     guard_blocks: { total: 0, by_role: {}, by_rule: {} },
     escalations: [],
     issues: [],
-    role_runs: { total: 0, ok: 0, failed: 0, cost_usd: 0, by_role: {} },
+    role_runs: { total: 0, ok: 0, failed: 0, cost_usd: 0, cost_unreported: 0, by_role: {} },
   };
   if (!existsSync(path)) return s;
   const latest = new Map<number, { state: string; round: number }>();
@@ -132,7 +132,7 @@ export function summarizeAudit(root: string): AuditSummary {
       if (typeof e.cost_usd === "number") {
         s.role_runs.cost_usd += e.cost_usd;
         r.cost_usd += e.cost_usd;
-      }
+      } else s.role_runs.cost_unreported++;
     }
   }
   s.issues = [...latest.entries()].map(([issue, v]) => ({ issue, ...v })).sort((a, b) => a.issue - b.issue);

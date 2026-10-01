@@ -73,11 +73,11 @@ Run /sync-context → /audit-risk → /doctor → /repair-docs, in that order. E
 
 ## Turning mistakes into mechanisms
 
-Look through recent `Needs Me` reasons (`AGENT_STATE.md`), guard blocks (`.agent-flow/audit.jsonl`), and review findings. For each pattern that repeats, fix it at the highest level that works:
+Start from `AF audit summary --json`: guard blocks per role and rule (a rule that keeps firing on the same path is a candidate for `protected_paths` or a `policy.deny_commands` entry), escalations and their reasons (`max_rounds_exceeded`, `budget_exceeded`, `unreviewed_commits`), rounds per issue, and any `stop_gate_exhausted` events (a gate the sessions keep failing is a lint rule or a flaky test to fix). Then look through recent `Needs Me` reasons (`AGENT_STATE.md`) and review findings. For each pattern that repeats, fix it at the highest level that works:
 
 1. **Architecture.** Make the mistake impossible. → Open an issue.
 2. **Static analysis.** A lint rule or type check. → Open an issue with the exact rule.
-3. **Hooks and guard.** Add the path to `protected_paths`, or add a check to the pre-commit hook. → Propose the manifest change.
+3. **Hooks and guard.** Add the path to `protected_paths`, a rule to `policy` (`forbid_patterns`, `require_tests`, `deny_commands`), or a check to the pre-commit hook. → Propose the manifest change.
 4. **Skills and context.** A trap in the module `AGENTS.md`. → Edit it yourself.
 5. **Style guide.** The weakest option. Use it only when nothing above fits.
 

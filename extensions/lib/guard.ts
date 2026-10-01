@@ -26,6 +26,7 @@ import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, parse as parsePath, relative, resolve } from "node:path";
 import { CASE_INSENSITIVE_FS, escapesBase, landingPath, toPosix, walk } from "./fsutil.js";
+import { denyCommandsOf, matchDenyCommand } from "./denycmd.js";
 import { ContextManifest, MANIFEST_FILE, contextFilePaths, denyReadPathsOf, matchAny, matchesPattern, protectedPathsOf } from "./manifest.js";
 import { isEnvFile } from "./risk.js";
 
@@ -69,7 +70,7 @@ export function parseRole(raw: string | undefined): { role: Role | null; warning
   return { role: "reviewer", warning: `unknown AGENT_FLOW_ROLE "${raw}" — failing closed as read-only reviewer` };
 }
 
-const FILE_WRITE_TOOLS = new Set(["write", "edit"]);
+const FILE_WRITE_TOOLS = new Set(["write", "edit", "replace", "save_memory", "delete", "multiedit", "multi_edit"]);
 const MUTATING_CUSTOM = /(^|_)(write|edit|multi_?edit|notebook_?edit|patch|apply_?patch|str_?replace|create_?file|create_or_update_file|update_?file|push_?files|delete|remove|rename|move|mkdir|append)(_|$)/;
 /** Tools whose names look mutating but only touch the harness's own UI state. */
 const HARMLESS = new Set(["todo_write", "todowrite", "todo_read"]);
@@ -86,12 +87,12 @@ const ROLE_TOOL_ALLOW: Record<Role, Set<string>> = {
 };
 
 /** Files only agent-flow's own tools may write — trust signals must not be forgeable. */
-const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/state.lock", ".risk-baseline.json", ".git/"];
+const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/state.lock", ".agent-flow/stop-gate.json", ".agent-flow/gates/", ".risk-baseline.json", ".git/"];
 /**
  * The wiring that makes the guard run: the hook registration and the installed copy of agent-flow itself.
  * While protection is configured, no session edits these; a human does (AGENT_FLOW_ALLOW_PROTECTED=1).
  */
-const GUARD_WIRING = [".claude/settings.json", ".claude/settings.local.json", "node_modules/@drix10/agent-flow/"];
+const GUARD_WIRING = [".claude/settings.json", ".claude/settings.local.json", ".gemini/settings.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".opencode/plugins/agent-flow-guard.js", "node_modules/@drix10/agent-flow/"];
 
 /** The tamper-proof pattern `rel` falls under, if any. */
 export const tamperProofMatch = (rel: string): string | null => underAny(rel, TAMPER_PROOF);
@@ -111,8 +112,37 @@ function toolWords(name: string): string {
     .toLowerCase();
 }
 
-const PATH_KEYS = ["path", "file_path", "filePath", "file", "target", "destination", "notebook_path", "notebookPath", "new_path", "newPath", "old_path", "oldPath", "source", "from", "to"];
-const PATCH_KEYS = ["input", "patch", "diff", "content"];
+
+const SHELL_WORDS = /(^|_)(shell|exec|bash|terminal|powershell)(_|$)/;
+const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "cmd"]);
+/** Shell tools under any harness's name: `bash`, `run_shell_command`, `exec_command`, `local_shell`, `unified_exec`, `run_terminal_cmd`… */
+export const isShellTool = (tool: string, words: string) => tool === "cmd" || SHELL_WORDS.test(words);
+
+/** The command line a shell tool was given: a string, or an argv array (Codex `["bash","-lc","rm -rf x"]`). */
+function commandText(input: Record<string, unknown>): string {
+  const raw = rawCommandText(input);
+  // PowerShell has no backslash escapes (its escape is the backtick) and Windows paths use `\`: read them as `/`, or `secrets\\k.txt` lexes as `secretsk.txt`.
+  return PS_CMDLET.test(raw) ? raw.replace(/\\/g, "/") : raw;
+}
+
+function rawCommandText(input: Record<string, unknown>): string {
+  for (const c of [input.command, input.cmd, input.script]) if (typeof c === "string" && c.length > 0) return c;
+  const argv = [input.command, input.cmd].find((c): c is string[] => Array.isArray(c) && c.length > 0 && c.every((x) => typeof x === "string"));
+  if (!argv) return "";
+  const first = basename(toPosix(argv[0])).toLowerCase().replace(/\.exe$/, "");
+  const flag = argv.findIndex((a, i) => i > 0 && /^-[a-z]*c[a-z]*$/i.test(a));
+  if (SHELLS.has(first) && flag > 0 && argv[flag + 1] !== undefined) return argv.slice(flag + 1).join(" ");
+  return argv.map((a) => (/[^\w@%+=:,./-]/.test(a) ? `'${a.replace(/'/g, "'\\''")}'` : a)).join(" ");
+}
+
+/** The directory a shell tool was told to run in (`workdir`, `dir_path`), resolved against the session cwd. */
+export function workdirOf(input: Record<string, unknown>, cwd: string): string {
+  const d = [input.workdir, input.dir_path, input.working_directory].find((x): x is string => typeof x === "string" && x.length > 0);
+  return d ? resolve(cwd, d) : cwd;
+}
+
+const PATH_KEYS = ["path", "file_path", "filePath", "file", "target", "destination", "notebook_path", "notebookPath", "target_file", "target_notebook", "new_path", "newPath", "old_path", "oldPath", "source", "from", "to"];
+const PATCH_KEYS = ["input", "patch", "diff", "content", "command", "cmd", "patchText", "patch_text"];
 
 /** Every path a file-writing call would touch: plain keys, edit batches, and patch headers. */
 export function targetPaths(input: Record<string, unknown>, isPatchTool = false): string[] {
@@ -175,7 +205,7 @@ const GIT_MUTATING_SUB = /^(commit|push|add|rm|mv|reset|checkout|switch|restore|
 const PKG_MUTATING = /^(npm|pnpm|yarn|bun)\s+(add|remove|rm|uninstall|un|publish|link|unlink|version|pkg|dedupe|prune|update|up|upgrade)\b|^(npm|pnpm|bun)\s+(install|i)\b|^yarn(\s+install)?\s*$|^yarn\s+add\b|^pip3?\s+(install|uninstall)\b|^(uv|poetry)\s+(add|remove|pip|lock)\b|^go\s+(get|mod\s+tidy)\b|^cargo\s+(add|remove|install|update)\b|^gem\s+install\b|^bundle\s+(add|update|install)\b/i;
 const CLEAN_INSTALL = /^(npm\s+ci|pnpm\s+install\s+--frozen-lockfile|yarn\s+install\s+--(frozen-lockfile|immutable)|bun\s+install\s+--frozen-lockfile|pip3?\s+install\s+-r\s+\S+|uv\s+sync\s+--(locked|frozen)|poetry\s+install\s+--no-root|bundle\s+install\s+--frozen)(\s|$)/i;
 const GH_MUTATING = /^gh\s+(pr\s+(create|merge|edit|close|comment|review|ready|reopen)|issue\s+(create|edit|close|comment|reopen|delete)|release\s+(create|delete|edit|upload)|repo\s+(create|delete|edit)|api\s+.*(-X|--method)[\s=]*(POST|PUT|PATCH|DELETE)|api\b(?!.*(-X|--method)[\s=]*GET\b).*\s(-f|-F|--field|--raw-field|--input)(\s|=|$))/i;
-const INLINE_WRITE = /\b(node|deno|bun)\s+(-e|--eval|-p)\b.*\b(writeFile|appendFile|rmSync|unlink|rename|mkdir|createWriteStream|copyFile)|\bpython3?\s+-c\b.*(open\([^)]*['"][wa+]|\.write\(|os\.remove|os\.unlink|shutil\.|os\.rename|pathlib)|\b(perl|ruby)\b[^|;&\n]*\s-(?!-)[a-zA-Z]*[ei]|\bsed\b[^|;&\n]*\s(-(?!-)[a-zA-Z]*i|--in-place)|\bawk\s+-i\s+inplace|\bg?awk\b[^|;&\n]*(?:>|\bsystem\s*\(|\|\s*getline\s*\w*\s*\|)|\bphp\s+-r\b.*\b(file_put_contents|fopen|fwrite|unlink|rename|mkdir|copy|system|exec|shell_exec|passthru)\b|\bpython3?\s+-c\b.*\b(os\.system|os\.popen|subprocess|exec\(|eval\()|\bsqlite3\b[^|;&\n]*\b(create|insert|update|delete|drop|alter|replace|vacuum|attach)\b/i;
+const INLINE_WRITE = /\[(?:System\.)?IO\.(?:File|Directory)\]::(?:Write|Append|Create|Delete|Move|Copy|Replace|Set)\w*|\b(node|deno|bun)\s+(-e|--eval|-p)\b.*\b(writeFile|appendFile|rmSync|unlink|rename|mkdir|createWriteStream|copyFile)|\bpython3?\s+-c\b.*(open\([^)]*['"][wa+]|\.write\(|os\.remove|os\.unlink|shutil\.|os\.rename|pathlib)|\b(perl|ruby)\b[^|;&\n]*\s-(?!-)[a-zA-Z]*[ei]|\bsed\b[^|;&\n]*\s(-(?!-)[a-zA-Z]*i|--in-place)|\bawk\s+-i\s+inplace|\bg?awk\b[^|;&\n]*(?:>|\bsystem\s*\(|\|\s*getline\s*\w*\s*\|)|\bphp\s+-r\b.*\b(file_put_contents|fopen|fwrite|unlink|rename|mkdir|copy|system|exec|shell_exec|passthru)\b|\bpython3?\s+-c\b.*\b(os\.system|os\.popen|subprocess|exec\(|eval\()|\bsqlite3\b[^|;&\n]*\b(create|insert|update|delete|drop|alter|replace|vacuum|attach)\b/i;
 /** Unpacking an archive writes every file in it. */
 const EXTRACT = /(^|[\s;&|(])((?:bsd)?tar\s+(?:-?[a-zA-Z]*x[a-zA-Z]*\b|[^|;&\n]*\s(?:-[a-zA-Z]*x[a-zA-Z]*|--extract|--get)\b)|unzip\b(?![^|;&\n]*\s-[a-zA-Z]*[ltpvz]\b)|7z[a-z]?\s+[xe]|unrar\s+[xe]|gunzip|gzip\s+(-[a-zA-Z]*d|--decompress)|bunzip2|unxz|xz\s+(-[a-zA-Z]*d|--decompress))\b/i;
 /** A script fed on stdin can do anything; its text isn't in `command` to analyse. */
@@ -759,6 +789,45 @@ function splitArgs(args: readonly ShWord[], vals: RegExp): { pos: ShWord[]; opts
   return { pos, opts };
 }
 
+const PS_CMDLET = /\b(?:set|add|out|clear|new|remove|rename|move|copy)-(?:content|file|item)\b|(?:^|[;&|(]\s*)(?:sc|ac|ri|ni|del|erase|rd|ren|mi|cpi|rni|clc)\s/i;
+/** PowerShell cmdlets (and aliases) that write, and which positionals they write: `first` = the path, `all` = every path, `both` = source and destination. */
+const PS_WRITES: Record<string, "first" | "all" | "both" | "dest"> = {
+  "set-content": "first", "add-content": "first", "out-file": "first", "clear-content": "first", "new-item": "first", "remove-item": "all", "rename-item": "first",
+  "move-item": "both", "copy-item": "dest", sc: "first", ac: "first", ni: "first", ri: "all", del: "all", erase: "all", rd: "all", ren: "first", mi: "both", move: "both", copy: "dest", cpi: "dest", rni: "first", clc: "first",
+};
+/** Named parameters that hold a path (PowerShell accepts any unambiguous prefix, so `-Lit` works). */
+const PS_PATH_PARAM = /^-(p(a(t(h)?)?)?|lit(e(r(a(l(p(a(t(h)?)?)?)?)?)?)?)?|pspath|filepath|destination|dest?|de(s(t(i(n(a(t(i(o(n)?)?)?)?)?)?)?)?)?)$/i;
+/** Named parameters that take a non-path value we must not mistake for a positional. */
+const PS_VALUE_PARAM = /^-(value|v(a(l(u(e)?)?)?)?|encoding|itemtype|type|inputobject|filter|include|exclude|stream|newname|credential|width|delimiter|totalcount|attributes|force:\$?\w+)$/i;
+
+/** Targets of a PowerShell write cmdlet: named path parameters plus positionals, backslashes read as separators. */
+function psTargets(v: string, args: readonly ShWord[]): ShWord[] {
+  const kind = PS_WRITES[v];
+  const named: ShWord[] = [];
+  const destNamed: ShWord[] = [];
+  const pos: ShWord[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i].text;
+    if (t.startsWith("-") && t.length > 1 && !args[i].dynamic) {
+      const colon = t.indexOf(":");
+      const name = colon > 0 ? t.slice(0, colon) : t;
+      if (PS_PATH_PARAM.test(name)) {
+        const val = colon > 0 ? { ...args[i], text: t.slice(colon + 1) } : args[++i];
+        if (val) for (const piece of val.text.split(",")) (/^-de/i.test(name) ? destNamed : named).push({ ...val, text: piece.trim() });
+      } else if (PS_VALUE_PARAM.test(name) && colon < 0) i++;
+    } else pos.push(args[i]);
+  }
+  let out: ShWord[] = kind === "dest" ? [] : [...named, ...destNamed];
+  if (kind === "dest") out = destNamed.length ? destNamed : named.length ? pos.slice(0, 1) : pos.slice(1, 2);
+  else if (kind === "all") out.push(...pos);
+  else if (kind === "first") {
+    if (!named.length && pos.length) out.push(pos[0]);
+  } else if (!named.length) out.push(...pos.slice(0, 2));
+  else if (named.length === 1 && pos.length) out.push(pos[0]);
+  out = out.filter((w) => w.text !== "");
+  return out.map((w) => ({ ...w, text: w.text.replace(/\\/g, "/") }));
+}
+
 /** Paths a simple command writes through its arguments (redirections are in `ShCmd.writes`). */
 export function writeTargets(argv: readonly ShWord[]): ShWord[] {
   const v = cmdName(argv[0]);
@@ -777,6 +846,7 @@ export function writeTargets(argv: readonly ShWord[]): ShWord[] {
     const rest = args.filter((a) => !known.test(a.text));
     return rest.some((a) => a.text.startsWith("--reference=")) ? rest.filter((a) => !a.text.startsWith("--reference=")) : rest.slice(1);
   }
+  if (Object.hasOwn(PS_WRITES, v)) return psTargets(v, args);
   const spec = Object.hasOwn(WRITE_ARGS, v) ? WRITE_ARGS[v] : undefined;
   if (!spec) return [];
   const { pos, opts } = splitArgs(args, spec.vals);
@@ -1125,9 +1195,11 @@ function extractRoots(v: string, argv: readonly ShWord[]): ShWord[] {
   return [];
 }
 
-type ShellWrite = { word: ShWord; cwd: string | null; destructive?: boolean };
+type ShellWrite = { word: ShWord; cwd: string | null; destructive?: boolean; /** The place a `mv` puts things: written to, not removed. */ dest?: boolean };
 
 function shellWrites(src: string, cwd: string | null, depth = 0): ShellWrite[] {
+  // PowerShell has no backslash escapes (its escape is the backtick) and Windows paths use `\`: read them as `/`, or `secrets\\k.txt` lexes as `secretsk.txt`.
+  if (PS_CMDLET.test(src)) src = src.replace(/\\/g, "/");
   const out: ShellWrite[] = [];
   for (const sc of lexShell(src)) {
     for (const w of sc.writes) for (const x of braceVariants(w)) out.push({ word: x, cwd });
@@ -1148,7 +1220,8 @@ function shellWrites(src: string, cwd: string | null, depth = 0): ShellWrite[] {
       if (!script.some((x) => x.dynamic)) out.push(...shellWrites(script.map((x) => x.text).join(" "), cwd, depth + 1));
     }
     const destructive = DESTRUCTIVE_VERBS.has(v);
-    for (const w of writeTargets(argv)) for (const x of braceVariants(w)) out.push({ word: x, cwd, destructive });
+    const mvDest = v === "mv" ? [...argv].reverse().find((x) => !x.text.startsWith("-"))?.text : undefined;
+    for (const w of writeTargets(argv)) for (const x of braceVariants(w)) out.push({ word: x, cwd, destructive, dest: mvDest !== undefined && x.text === mvDest });
     if (v === "find") for (const w of findDeleteRoots(argv)) for (const x of braceVariants(w)) out.push({ word: x, cwd, destructive: true });
     for (const w of extractRoots(v, argv)) for (const x of braceVariants(w)) out.push({ word: x, cwd });
   }
@@ -1264,7 +1337,7 @@ function decideGitBulk(g: GuardInput, gc: GitCall, protectedPaths: string[]): Gu
 
 /** Commands that name a file without reading its contents. */
 const NAME_ONLY_VERBS = new Set(["ls", "dir", "stat", "test", "[", "[[", "cd", "pushd", "echo", "printf", "which", "dirname", "basename", "realpath", "readlink", "file", "mkdir", "touch", "rm", "rmdir", "unlink", "chmod", "chown", "chgrp", "find", "wslpath", "true", "false"]);
-const READ_TOOL = /^(read|notebook_?read|view|read_file|read_many_files|grep|search_file_content|glob|cat|open_file)$/;
+const READ_TOOL = /^(read|notebook_?read|view|read_file|read_many_files|grep|grep_search|search_file_content|glob|cat|open_file)$/;
 
 /** The deny-read pattern (or "env file") that a repo-relative path falls under, or null. */
 function deniedRead(g: GuardInput, abs: string): string | null {
@@ -1327,7 +1400,12 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
   const confined = role === "implementer" && !!g.worktree;
   const wtShown = g.worktree ? toPosix(relative(g.root, g.worktree)) || g.worktree : "";
   if (DEVICE.test(w.text)) return null;
+  // Deleting the home directory, the filesystem root or a system directory is never part of a task, wherever the repo is.
   const abs = w.dynamic ? null : resolveShellPath(t.cwd, w.text);
+  if (t.destructive && !t.dest && !g.allowProtected) {
+    const hit = catastrophicTarget(w.text, abs, !!w.glob);
+    if (hit) return block("catastrophic-delete", `command removes or moves ${w.text}, ${hit}. A human does that.`);
+  }
   if (!abs) {
     return confined ? block("worktree-confinement", `can't tell where \`${w.text || "(empty)"}\` points (a variable, substitution or unknown cwd), so it can't be confined to ${wtShown}. Write to a literal path inside the worktree.`) : null;
   }
@@ -1342,7 +1420,7 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
       }
     }
     // `rm -rf .` (or a parent of the repo): everything protected goes with it.
-    if (t.destructive && !g.allowProtected && protectedPaths.length && !escapesBase(toPosix(relative(landingPath(p), landingPath(g.root))))) {
+    if (t.destructive && !t.dest && !g.allowProtected && protectedPaths.length && !escapesBase(toPosix(relative(landingPath(p), landingPath(g.root))))) {
       return block("protected-path", `command removes or moves ${toPosix(p)}, which contains the whole repository including protected paths (${MANIFEST_FILE}). Escalate to Needs Me instead.`);
     }
     for (const rel of shellRels(g, p)) {
@@ -1366,6 +1444,31 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
       }
       if (role === "implementer" && ctxFiles.some((f) => fold(f) === fold(rel))) return block("context-file", `command writes context file ${rel} — only the Gardener edits context.`);
     }
+  }
+  return null;
+}
+
+const SYSTEM_DIRS = new Set(["/", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/opt", "/proc", "/root", "/sbin", "/sys", "/usr", "/var", "/home", "/Users", "/System", "/Library"]);
+
+/** What a `rm`-like target is, when it is the home directory, the filesystem root, a system directory or a drive root. */
+function catastrophicTarget(text: string, abs: string | null, glob: boolean): string | null {
+  const home = toPosix(homedir()).replace(/\/+$/, "");
+  let t = text.replace(/^["']|["']$/g, "").replace(/\$\{HOME(?::[?=+-][^}]*)?\}/g, "$HOME").replace(/%USERPROFILE%|\$env:USERPROFILE/gi, "$HOME").replace(/\\/g, "/");
+  // `/*`, `~/.*`, `$HOME/.[!.]*`, `/.`: the same directory said another way.
+  t = t.replace(/\/(?:\.?\[!?\.\]\*|\.\*|\*|\.)$/, "/").replace(/(.)\/+$/, "$1");
+  if (t === "/" || t === "~" || t === "$HOME" || t === "$HOME/.." || t === "~/..") return t === "/" ? "the filesystem root" : "the home directory or its parent";
+  if (/^[A-Za-z]:\/?$/.test(t)) return "a drive root";
+  const cands = [t];
+  if (abs) {
+    let a = toPosix(abs);
+    if (glob) a = a.replace(/\/[^/]*[*?[][^/]*$/, "") || "/";
+    cands.push(a.replace(/(.)\/+$/, "$1"));
+  }
+  for (const c of cands) {
+    if (/^[A-Za-z]:\/?$/.test(c)) return "a drive root"; // `cd / && rm -rf *` on Windows resolves to the drive
+    if (/^[A-Za-z]:\/(?:windows|program files(?: \(x86\))?|programdata|users)$/i.test(c)) return "a system directory";
+    if (c === home) return "the home directory";
+    if (SYSTEM_DIRS.has(c)) return c === "/" ? "the filesystem root" : "a system directory";
   }
   return null;
 }
@@ -1475,8 +1578,8 @@ export function decide(g: GuardInput): GuardDecision | null {
   const { toolName, input } = g;
   const words = toolWords(toolName);
   const tool = toolName.toLowerCase();
-  const cmd = [input.command, input.cmd, input.script].find((c): c is string => typeof c === "string" && c.length > 0);
-  const isShell = tool === "bash" || tool === "powershell" || tool === "shell" || words === "run_shell_command" || words === "exec_command";
+  const cmd = commandText(input) || undefined;
+  const isShell = isShellTool(tool, words);
   const isFileWrite = !HARMLESS.has(words) && (FILE_WRITE_TOOLS.has(tool) || (!AGENT_FLOW_MUTATORS.has(tool) && MUTATING_CUSTOM.test(words)));
   let writes = false;
   if (isShell && cmd) writes = expandCommand(cmd).some((c) => analyzeShell(c).mutating || shellWrites(c, g.cwd).some((t) => !DEVICE.test(t.word.text)));
@@ -1502,9 +1605,24 @@ function decideKnown(g: GuardInput): GuardDecision | null {
   }
 
   // ---- shell tools ----------------------------------------------------------------
-  if (tool === "bash" || tool === "powershell" || tool === "shell" || words === "run_shell_command" || words === "exec_command") {
-    const cmd = [input.command, input.cmd, input.script].find((c): c is string => typeof c === "string" && c.length > 0) ?? (Array.isArray(input.command) ? input.command.join(" ") : "");
+  if (isShellTool(tool, words)) {
+    const cmd = commandText(input);
     if (!cmd) return null;
+    // `rm -rf ${HOME}`: the parser reads a braced expansion as "unknown", so the home directory is caught on the text.
+    if (!g.allowProtected && /(?:^|[\s;&|(])(?:sudo\s+)?(?:rm|rmdir|shred|unlink)\b[^;&|\n]*?\s"?\$\{HOME[^}]*\}"?\/?(?:\*|\.\*|\.\.)?"?(?=\s|$|[;&|)])/.test(cmd)) {
+      return block("catastrophic-delete", "command removes ${HOME}, the home directory. A human does that.");
+    }
+    // `rm${IFS}-rf${IFS}x` builds a command word out of a variable, which no static rule can read.
+    if (!g.allowProtected && /[\w./-](?:\$\{IFS\}|\$IFS(?!\w))/.test(cmd.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""'))) {
+      return block("obfuscated-command", "the command splits words with $IFS, which hides what it runs from every check. Write it plainly.");
+    }
+    const deny = g.allowProtected ? null : denyCommandsOf(g.manifest);
+    if (deny) {
+      for (const c of expandCommand(cmd)) {
+        const why = matchDenyCommand(deny, c);
+        if (why) return block("deny-command", `this command ${why}. A human runs it, or lifts the rule in CONTEXT_MANIFEST.json (AGENT_FLOW_ALLOW_PROTECTED=1 for one session).`);
+      }
+    }
     for (const [i, c] of expandCommand(cmd).entries()) {
       const d = decideShell(g, c, protectedPaths, ctxFiles, i === 0);
       if (d) return d;
@@ -1536,7 +1654,7 @@ function decideKnown(g: GuardInput): GuardDecision | null {
 
   // ---- read tools: env files and deny_read paths ---------------------------------
   if (READ_TOOL.test(words) && !g.allowSecretRead) {
-    const listed = Array.isArray(input.paths) ? input.paths.filter((p): p is string => typeof p === "string") : [];
+    const listed = [input.paths, input.include].flatMap((a) => (Array.isArray(a) ? a.filter((p): p is string => typeof p === "string") : typeof a === "string" ? [a] : []));
     for (const p of [...targetPaths(input), ...listed]) {
       const hit = deniedRead(g, resolve(g.cwd, p));
       if (hit) return secretReadBlock(toolName, `${p} (${hit})`);

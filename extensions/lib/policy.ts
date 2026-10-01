@@ -7,12 +7,15 @@
  */
 
 import { ContextManifest, matchAny } from "./manifest.js";
+import { validateDenyCommands } from "./denycmd.js";
 
 export interface PolicySpec {
   max_changed_files?: number;
   max_diff_lines?: number;
   forbid_patterns?: { paths?: string[]; pattern: string; message?: string }[];
   require_tests?: { paths: string[]; tests: string[]; message?: string }[];
+  /** Enforced by the guard, not by evaluatePolicy (see denycmd.ts). */
+  deny_commands?: { presets?: string[]; patterns?: { pattern: string; message?: string }[] };
 }
 
 export interface PolicyViolation {
@@ -66,6 +69,7 @@ export function validatePolicy(p: unknown): string[] {
         if (r && r.message !== undefined && typeof r.message !== "string") problems.push(`${w}.message must be a string`);
       });
   }
+  problems.push(...validateDenyCommands(s.deny_commands));
   return problems;
 }
 

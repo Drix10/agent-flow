@@ -10,7 +10,7 @@ import { resolve } from "node:path";
 import { Type } from "typebox";
 import { classifyDiff } from "./lib/classify.js";
 import { resolveInside } from "./lib/fsutil.js";
-import { tryLoadManifest } from "./lib/manifest.js";
+import { trustedManifest } from "./lib/manifest.js";
 import { worktreeRel } from "./lib/worktree.js";
 import { repoRoot, text } from "./result.js";
 
@@ -30,7 +30,7 @@ export default function (pi: ExtensionAPI) {
     execute: async (_id, params, _signal, _onUpdate, ctx) => {
       const root = repoRoot(ctx);
       const cwd = params.issue ? resolveInside(root, worktreeRel(params.issue)) : resolve(ctx?.cwd ?? root);
-      return text(classifyDiff(cwd, root, tryLoadManifest(root), params.base, params.head));
+      return text(classifyDiff(cwd, root, trustedManifest(root).manifest, params.base, params.head));
     },
   });
 }

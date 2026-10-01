@@ -9,15 +9,16 @@
 import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib;
+let fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib;
 try {
-  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib] = await Promise.all(
-    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif"].map(lib),
+  [fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib] = await Promise.all(
+    ["fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -54,7 +55,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict"]);
+const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -105,7 +106,8 @@ Checks (CI-safe, read-only):
       --manifest <path>     Manifest path (default CONTEXT_MANIFEST.json)
       --no-prose            Skip checking \`backticked/paths\` inside context files
       --ctxlint             Also run a locally installed ctxlint (never downloads)
-  gates [list|run]          Run the manifest's gates (tests, lint, build); records exit codes, logs and hashes
+  config get <key>          One manifest value (e.g. pipeline.models.fast) as the pipeline reads it: the default branch's copy for pipeline, gates and policy
+  gates [list|run|stop]     Run the manifest's gates (tests, lint, build); records exit codes, logs and hashes
                             run [--name a,b] [--issue <n>] [--json]; exit 1 if a required gate fails, 2 if one couldn't run
   audit-risk                Diff risk surfaces against .risk-baseline.json
       --baseline <path>  --include-tests  --fail-on-new
@@ -130,12 +132,14 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
       --harness <h> [--model m --exit n --seconds s --argv-file f --issue n --round r]
                             Also append a role_run line (argv, exit, duration, cost/tokens) to .agent-flow/audit.jsonl
   repair --yes              Refresh manifest timestamps after the prose was re-verified (Gardener)
+  sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>] -- <cmd>
+                            Run <cmd> under bubblewrap: read-only filesystem except this worktree (Linux/WSL)
   guard                     Claude Code PreToolUse hook: reads the hook JSON on stdin, exit 2 = blocked
   guard --check             Exit 1 unless the Claude Code hook is installed and its target exists
 
 Setup (writes files; run by a human):
   baseline accept --all --yes | baseline accept <key>... --yes
-  install --harness <claude|codex|gemini|cursor|copilot|windsurf|agents> [--dry-run] [--force]
+  install --harness <claude|codex|gemini|cursor|copilot|windsurf|agents> [--dry-run] [--force] [--stop-gate]
   hook install [--force]    Install the pre-commit hook (runs check-staged)
 
 Global: --json for machine output; --sarif (doctor, audit-risk) for GitHub code scanning; --help, --version
@@ -237,11 +241,25 @@ function cmdDoctor(args) {
     }
     section("no unfilled placeholders", rep.unfilled_placeholders, (m) => [`${m.file}:${m.line}`, m.text]);
     if (rep.ctxlint !== "not_requested") (rep.ctxlint === "ran" ? ok : warn)(`ctxlint: ${rep.ctxlint}`);
-    if (rep.ctxlint === "ran") section("no dead commands", rep.dead_commands, (m) => `${m.file}: ${m.command}`);
+    section("commands exist", rep.dead_commands, (m) => [`${m.file}${m.line ? `:${m.line}` : ""}`, `${m.command}${m.reason ? ` — ${m.reason}` : ""}${m.suggestion ? `  → did you mean ${c(1, m.suggestion)}?` : ""}`]);
+    section("relative links resolve", rep.broken_links, (m) => [`${m.file}:${m.line}`, m.target]);
+    section("cited commits exist", rep.unknown_commits, (m) => [`${m.file}:${m.line}`, m.sha]);
+    reportCodeowners(rt, r.manifest);
     if (discovered) console.log(dim(`note: ${r.manifest ? "the manifest lists no context files" : "no CONTEXT_MANIFEST.json"}, so only paths were checked — \`agent-flow init\` adds staleness tracking`));
     console.log(r.healthy ? c(32, "\nhealthy") : `\n${c(31, "unhealthy")} — ${doctorNextStep(rep, schema)}`);
   }, () => doctorSarif(rt, rep, r.manifest));
   return none || r.healthy ? 0 : 1;
+}
+
+/** Advisory only: server-side review of protected paths is the host's job, so this never fails doctor. */
+function reportCodeowners(rt, manifestPath) {
+  const loaded = manifestLib.loadManifest(rt, typeof manifestPath === "string" ? manifestPath : undefined);
+  const prot = loaded.ok ? (loaded.value.manifest.protected_paths ?? []).filter((x) => typeof x === "string") : [];
+  if (!prot.length) return;
+  const missing = codeownersLib.uncoveredProtected(rt, prot);
+  if (missing === null) warn("protected_paths are enforced for local agents only; add a CODEOWNERS file and require Code Owner review so a pull request can't change them either");
+  else if (missing.length) warn(`CODEOWNERS doesn't cover protected path${missing.length > 1 ? "s" : ""}: ${missing.join(", ")} (a pull request could change ${missing.length > 1 ? "them" : "it"} without that review)`);
+  else ok("protected paths have CODEOWNERS entries");
 }
 
 function doctorSarif(rt, rep, manifestPath) {
@@ -254,7 +272,9 @@ function doctorSarif(rt, rep, manifestPath) {
   for (const m of rep.invalid_timestamps) f.push({ ruleId: "agent-flow/invalid-timestamp", level: "error", message: `${m.path}: ${JSON.stringify(m.value)} is not a valid ISO timestamp`, path: m.file });
   for (const p of rep.stale_files) f.push({ ruleId: "agent-flow/stale-context", level: "warning", message: `${p} has not been verified within the staleness threshold`, path: p });
   for (const m of rep.unfilled_placeholders) f.push({ ruleId: "agent-flow/unfilled-placeholder", level: "warning", message: m.text, path: m.file, line: m.line });
-  for (const m of rep.dead_commands ?? []) f.push({ ruleId: "agent-flow/dead-command", level: "warning", message: m.command, path: m.file });
+  for (const m of rep.dead_commands ?? []) f.push({ ruleId: "agent-flow/dead-command", level: "warning", message: `${m.command}${m.reason ? ` — ${m.reason}` : ""}${m.suggestion ? ` (did you mean ${m.suggestion}?)` : ""}`, path: m.file, line: m.line });
+  for (const m of rep.broken_links ?? []) f.push({ ruleId: "agent-flow/broken-link", level: "error", message: `link target does not exist: ${m.target}`, path: m.file, line: m.line });
+  for (const m of rep.unknown_commits ?? []) f.push({ ruleId: "agent-flow/unknown-commit", level: "warning", message: `no such commit: ${m.sha}`, path: m.file, line: m.line });
   return sarifLib.toSarif(VERSION, sarifLib.DOCTOR_RULES, f);
 }
 
@@ -374,7 +394,7 @@ function cmdAuditLog(args) {
       console.log(`${s.entries} entries, ${s.from} → ${s.to}`);
       const list = (m) => Object.entries(m).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
       console.log(`guard blocks: ${s.guard_blocks.total} (by role: ${list(s.guard_blocks.by_role)}; by rule: ${list(s.guard_blocks.by_rule)})`);
-      console.log(`role runs: ${s.role_runs.total} (${s.role_runs.ok} ok, ${s.role_runs.failed} failed, $${s.role_runs.cost_usd})`);
+      console.log(`role runs: ${s.role_runs.total} (${s.role_runs.ok} ok, ${s.role_runs.failed} failed, $${s.role_runs.cost_usd}${s.role_runs.cost_unreported ? `; cost not reported for ${s.role_runs.cost_unreported}` : ""})`);
       for (const i of s.issues) console.log(`  issue #${i.issue}: ${i.state}, round ${i.round}`);
       for (const e of s.escalations.slice(-10)) console.log(`  needs me: issue #${e.issue} — ${e.reason.slice(0, 120)}`);
       if (s.guard_blocks.total) console.log(dim("  A rule that blocks the same thing again and again belongs in protected_paths or a lint rule, not a prompt."));
@@ -386,7 +406,12 @@ function cmdAuditLog(args) {
 
 function cmdGates(args) {
   const rt = root();
-  const gates = gatesLib.gatesOf(manifestLib.tryLoadManifest(rt));
+  const trusted = manifestLib.trustedManifest(rt);
+  const gates = gatesLib.gatesOf(trusted.manifest);
+  if (args._[1] === "stop") return gatesStop(rt, trusted.manifest);
+  if (trusted.ignoredEdits.includes("gates") && !args.json) {
+    warn(`the working copy's gates differ from the default branch's, and the default branch's count. Merge the change, or set ${manifestLib.TRUST_WORKING_MANIFEST_ENV}=1 to try yours locally.`);
+  }
   const act = args._[1] ?? "list";
   if (act === "list") {
     out(args, { gates }, () => {
@@ -395,7 +420,7 @@ function cmdGates(args) {
     });
     return 0;
   }
-  if (act !== "run") return sub("gates", act, ["list", "run"], "gates list | gates run [--name a,b] [--issue <n>] [--json]");
+  if (act !== "run") return sub("gates", act, ["list", "run", "stop"], "gates list | gates run [--name a,b] [--issue <n>] [--json] | gates stop (Claude Code Stop hook)");
   if (!gates.length) throw new UserError("no gates defined in CONTEXT_MANIFEST.json, so there is nothing to run");
   let cwd = rt;
   if (args.issue !== undefined) {
@@ -421,6 +446,44 @@ function cmdGates(args) {
     if (r.environment_error) console.log(dim("  A gate could not run at all: fix the environment (missing tool, bad cwd) before spending a review round."));
   });
   return r.ok ? 0 : r.environment_error ? 2 : 1;
+}
+
+/**
+ * Claude Code Stop hook: exit 2 + reason on stderr keeps the session working, exit 0 lets it stop. Never traps a
+ * session: bounded per turn (see stopgate.ts), and an error in the hook itself lets the stop through.
+ */
+function gatesStop(rt, man) {
+  let ev = {};
+  try {
+    ev = JSON.parse(readFileSync(0, "utf-8").replace(/^\uFEFF/, "") || "{}"); // Cursor on Windows prefixes stdin with a BOM
+  } catch {
+    /* no hook input: treat as a fresh stop */
+  }
+  // A pipeline role has its own gates (the orchestrator runs them); this is for interactive sessions.
+  if (process.env.AGENT_FLOW_ROLE) return 0;
+  try {
+    const cwd = typeof ev.cwd === "string" && ev.cwd ? fsutil.findRepoRoot(ev.cwd) : rt;
+    const d = stopGateLib.evaluateStop(cwd, gatesLib.gatesOf(man), stopGateLib.maxStopBlocks(man), ev.stop_hook_active === true);
+    // Exit 2 shows the reason to the model; on a pass-through only `systemMessage` reaches anyone (the user).
+    if (d.block) console.error(d.message);
+    else if (d.message) console.log(JSON.stringify({ systemMessage: d.message }));
+    return d.block ? 2 : 0;
+  } catch (e) {
+    console.error(`[agent-flow stop gate] not run: ${e.message}`);
+    return 0;
+  }
+}
+
+function cmdConfig(args) {
+  if (args._[1] !== "get" || typeof args._[2] !== "string") return sub("config", args._[1], ["get"], "config get <dotted.key>   e.g. config get pipeline.harness_by_role.reviewer");
+  let v = manifestLib.trustedManifest(root()).manifest;
+  if (!v) {
+    console.error("agent-flow: no readable CONTEXT_MANIFEST.json here");
+    return 1;
+  }
+  for (const k of args._[2].split(".")) v = v && typeof v === "object" && Object.hasOwn(v, k) ? v[k] : undefined;
+  if (v !== undefined) console.log(typeof v === "string" ? v : JSON.stringify(v));
+  return 0;
 }
 
 function cmdBaseline(args) {
@@ -454,7 +517,7 @@ function cmdClassify(args) {
   }
   let r;
   try {
-    r = classify.classifyDiff(cwd, rt, manifestLib.tryLoadManifest(rt), args.base, args.head);
+    r = classify.classifyDiff(cwd, rt, manifestLib.trustedManifest(rt).manifest, args.base, args.head);
   } catch (e) {
     if (/cannot determine a default branch/.test(e.message)) throw new UserError("can't tell which branch to diff against — pass --base <branch>");
     throw e;
@@ -507,13 +570,15 @@ function cmdCheckStaged(args) {
       problems.push(`environment file staged: ${f} — keep secrets out of git (commit a .env.example instead)`);
     }
   }
-  const secretIgnore = manifestLib.secretIgnorePaths(man);
+  const secretIgnore = manifestLib.secretIgnorePaths(manifestLib.trustedManifest(rt).manifest);
   const blobs = git.stagedBlobs(rt, files.filter((f) => !manifestLib.matchAny(secretIgnore, f)));
   for (const [f, blob] of blobs) {
     if (!blob || blob.subarray(0, 8000).includes(0)) continue; // deleted, huge or binary
     for (const s of risk.findSecrets(blob.toString("utf-8"))) problems.push(`possible ${s.kind} in ${f} line(s) ${s.lines.join(", ")} (value not shown; if it is a fake, put \`${risk.ALLOW_SECRET_MARKER}\` on or above the line, or list the file in secret_scan.ignore_paths)`);
   }
-  const policy = policyLib.policyOf(man);
+  const trustedMan = manifestLib.trustedManifest(rt);
+  const policy = policyLib.policyOf(trustedMan.manifest);
+  if (trustedMan.ignoredEdits.includes("policy")) console.error(dim(`  note: policy edits in the working copy are ignored until merged to the default branch (${manifestLib.TRUST_WORKING_MANIFEST_ENV}=1 to try them).`));
   if (policy) {
     const stats = new Map();
     const num = git.git(["-c", "core.quotepath=off", "diff", "--cached", "--numstat", "-z", "--no-renames"], rt);
@@ -573,7 +638,7 @@ function cmdState(args) {
       // showed issue #1. Validate like every other issue-taking command.
       const n = issueNumber(args.issue, "state show --issue <n>");
       const one = s.sessions.find((x) => x.issue === n) ?? null;
-      const limit = manifestLib.maxReviewRounds(manifestLib.tryLoadManifest(rt));
+      const limit = manifestLib.maxReviewRounds(manifestLib.trustedManifest(rt).manifest);
       const view = { issue: n, state: one?.state ?? null, phase: one?.phase ?? null, round: one?.round ?? 0, max_review_rounds: limit, reason: one?.reason ?? null };
       out(args, view, () => console.log(one ? `issue #${n}: ${one.state}${one.phase ? ` / ${one.phase}` : ""} (round ${one.round ?? 0} of ${limit})${one.reason ? ` — ${one.reason}` : ""}` : `issue #${n}: no state yet (round limit ${limit})`));
       return 0;
@@ -590,7 +655,18 @@ function cmdState(args) {
       reason: typeof args.reason === "string" ? args.reason : undefined,
       reopen: !!args.reopen,
     };
-    const r = state.updateState(rt, p, manifestLib.maxReviewRounds(manifestLib.tryLoadManifest(rt)));
+    const trustedMan = manifestLib.trustedManifest(rt).manifest;
+    const session = state.readState(rt).sessions.find((s) => s.issue === p.issue);
+    const esc = bindingLib.bindingEscalation(rt, p, session, gatesLib.gatesOf(trustedMan));
+    if (esc) {
+      const e = state.updateState(rt, esc.params, manifestLib.maxReviewRounds(trustedMan), manifestLib.maxCostUsd(trustedMan));
+      out(args, { ...e, binding: esc.binding }, () => {
+        warn(`issue #${e.updated} can't be Completed: ${esc.binding.problems.join("; ")}`);
+        warn(`recorded as Needs Me (unreviewed_commits)`);
+      });
+      return 3;
+    }
+    const r = state.updateState(rt, p, manifestLib.maxReviewRounds(trustedMan), manifestLib.maxCostUsd(trustedMan));
     out(args, r, () => (r.escalated ? warn : ok)(`issue #${r.updated}: ${r.from ?? "(new)"} → ${r.state} (round ${r.round})${r.reason ? ` — ${r.reason}` : ""}`));
     // Distinct exit code so a script can't miss the escalation by only checking for failure.
     return r.escalated ? 3 : 0;
@@ -721,6 +797,8 @@ function auditRoleRun(role, file, args, r) {
     role,
     issue: intOr(args.issue),
     round: intOr(args.round),
+    head: intOr(args.issue) ? bindingLib.branchTip(root(), intOr(args.issue)) : undefined,
+    verdict: r.ok && typeof r.report?.status === "string" ? r.report.status : undefined,
     harness: args.harness,
     model: typeof args.model === "string" ? args.model : null,
     argv,
@@ -789,15 +867,22 @@ function cmdGuard(args) {
   const env = guardLib.parseRole(process.env.AGENT_FLOW_ROLE);
   let ev;
   try {
-    ev = JSON.parse(readFileSync(0, "utf-8") || "{}");
+    ev = JSON.parse(readFileSync(0, "utf-8").replace(/^\uFEFF/, "") || "{}"); // Cursor on Windows prefixes stdin with a BOM
   } catch (e) {
     return fail(env.role, `unreadable hook input: ${e.message}`);
   }
+  // Cursor's beforeShellExecution / beforeReadFile carry no tool_name: a `command` is a shell call, a bare `file_path` a read.
+  if (!ev.tool_name && typeof ev.command === "string") ev = { ...ev, tool_name: "Bash", tool_input: { command: ev.command } };
+  else if (!ev.tool_name && typeof ev.file_path === "string") ev = { ...ev, tool_name: "Read", tool_input: { file_path: ev.file_path } };
+  if (!ev.cwd && Array.isArray(ev.workspace_roots) && typeof ev.workspace_roots[0] === "string") ev.cwd = ev.workspace_roots[0];
   // A subagent launched as one of our roles (e.g. the orchestrator's `reviewer`) runs under that role.
+  if (typeof ev.tool_input === "string") ev.tool_input = { command: ev.tool_input };
   const role = guardLib.ROLES.includes(ev.agent_type) ? ev.agent_type : env.role;
   try {
-    const cwd = typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd();
-    const rt = fsutil.findRepoRoot(cwd);
+    const baseCwd = typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd();
+    const rt = fsutil.findRepoRoot(baseCwd);
+    // `workdir` / `dir_path` move a shell call to another directory: judge it from there.
+    const cwd = ev.tool_input && typeof ev.tool_input === "object" && guardLib.isShellTool(String(ev.tool_name ?? "").toLowerCase(), String(ev.tool_name ?? "").replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[-\s]+/g, "_").toLowerCase()) ? guardLib.workdirOf(ev.tool_input, baseCwd) : baseCwd;
     const loaded = manifestLib.loadManifestForGuard(rt);
     const decision = guardLib.decide({
       role,
@@ -818,7 +903,11 @@ function cmdGuard(args) {
       /* the block matters more than the log line */
     }
     console.error(decision.reason);
-    return 2;
+    // Exit 2 + stderr blocks on Claude Code, Gemini, Cursor and (per its docs) Codex. Also say it as JSON on
+    // stdout, which Codex documents as a second deny channel; the other harnesses ignore stdout on exit 2.
+    // AGENT_FLOW_GUARD_JSON_ONLY=1 (experiment): deny via JSON and exit 0, for a harness that ignores exit 2.
+    console.log(JSON.stringify({ decision: "block", reason: decision.reason, permission: "deny", user_message: decision.reason, agent_message: decision.reason, hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: decision.reason } }));
+    return process.env.AGENT_FLOW_GUARD_JSON_ONLY === "1" ? 0 : 2;
   } catch (e) {
     return fail(role, `guard error: ${e.message}`, typeof ev.cwd === "string" && ev.cwd ? ev.cwd : process.cwd());
   }
@@ -831,16 +920,24 @@ const TARGETS = {
   codex: {
     skills: ".agents/skills",
     agents: [[".codex/agents/reviewer.toml", ".codex/agents/reviewer.toml"]],
+    hook: "codex",
     note: "The pipeline launches the Reviewer with `codex exec --sandbox read-only` (Codex's OS-level sandbox); .codex/agents/reviewer.toml is for delegating a review from an interactive Codex session.",
   },
   gemini: {
     skills: ".gemini/skills",
     agents: [[".gemini/agents/reviewer.md", ".gemini/agents/reviewer.md"]],
+    hook: "gemini",
     note: 'Trust the workspace (/trust) and set `"context": {"fileName": ["AGENTS.md", "GEMINI.md"]}` in .gemini/settings.json so Gemini loads AGENTS.md. The pipeline runs the Reviewer as `gemini --approval-mode plan` (read-only); .gemini/agents/reviewer.md is for `@reviewer` in interactive sessions.',
   },
-  cursor: { skills: ".cursor/skills", agents: [], note: "Cursor reads AGENTS.md natively." },
+  cursor: { skills: ".cursor/skills", agents: [], hook: "cursor", note: "Cursor reads AGENTS.md natively." },
   copilot: { skills: ".github/skills", agents: [], note: "VS Code / Copilot also reads .claude/skills and .agents/skills." },
   windsurf: { skills: ".agents/skills", agents: [], note: "Windsurf (Cascade) reads AGENTS.md natively, including per-directory AGENTS.md in monorepos. No skill-folder or read-only-subagent mechanism is documented for it, so enforcement here is the pre-commit hook." },
+  opencode: {
+    skills: ".agents/skills",
+    agents: [],
+    plugin: true,
+    note: "Wrote .opencode/plugins/agent-flow-guard.js: a tool.execute.before plugin that runs agent-flow's guard before every tool call and denies the call on a block. Restart opencode to load it. Live verification pending: run the probe in docs/HARNESS-MATRIX.md.",
+  },
   agents: { skills: ".agents/skills", agents: [], note: ".agents/skills is the cross-client convention — also the right target for Aider, Zed, Warp, Amp, opencode, goose, JetBrains Junie, RooCode, and anything else that reads AGENTS.md but has no harness-specific integration below." },
 };
 
@@ -889,6 +986,24 @@ function cmdInstall(args) {
     wrote++;
     ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
   }
+  if (t.plugin) {
+    const dst = join(rt, ".opencode/plugins/agent-flow-guard.js");
+    const pluginLabel = ".opencode/plugins/agent-flow-guard.js";
+    const body = readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => join(pkgRoot, "bin", "agent-flow.js").replace(/\\/g, "/"));
+    if (existsSync(dst) && readFileSync(dst, "utf-8") === body) console.log(dim("= .opencode/plugins/agent-flow-guard.js (up to date)"));
+    else if (existsSync(dst) && !args.force) {
+      conflicts.push(pluginLabel);
+      bad(".opencode/plugins/agent-flow-guard.js exists and differs — not overwritten (use --force)");
+    } else {
+      if (!args["dry-run"]) {
+        mkdirSync(dirname(dst), { recursive: true });
+        writeFileSync(dst, body);
+      }
+      wrote++;
+      ok(`${args["dry-run"] ? "would write" : "wrote"} .opencode/plugins/agent-flow-guard.js`);
+    }
+  }
+  if (t.hook) installGuardHook(rt, args, t.hook); // best effort: skills alone are still a valid install
   if (args.harness === "claude") {
     if (!installClaudeHook(rt, args)) conflicts.push(".claude/settings.json");
     importAgentsMd(rt, args);
@@ -914,6 +1029,7 @@ function importAgentsMd(rt, args) {
 }
 
 // Every tool the guard has a rule for: writes, the shell, read tools (env files, deny_read) and MCP tools (remote pushes).
+const STOP_HOOK_TIMEOUT_S = 900;
 const HOOK_MATCHER = "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Read|NotebookRead|Grep|Glob|mcp__.*";
 
 /**
@@ -966,6 +1082,90 @@ function installClaudeHook(rt, args) {
   } else {
     if (group) group.hooks = group.hooks.filter((h) => !isOurs(h));
     settings.hooks.PreToolUse.push(entry);
+  }
+  if (args["stop-gate"]) {
+    if (settings.hooks.Stop !== undefined && !Array.isArray(settings.hooks.Stop)) {
+      bad(`${label}: existing "hooks.Stop" has an unexpected shape — not touched. Fix it and re-run.`);
+      return false;
+    }
+    settings.hooks.Stop ??= [];
+    const stopCmd = `node "$CLAUDE_PROJECT_DIR/${binRel.split("\\").join("/")}" gates stop`;
+    const isStop = (h) => /agent-flow/.test(h?.command ?? "") && /\bgates stop\b/.test(h?.command ?? "");
+    // Claude Code kills a hook after its timeout (60 s by default) and then doesn't block: give the gates room.
+    const g = settings.hooks.Stop.find((e) => Array.isArray(e?.hooks) && e.hooks.some(isStop));
+    if (g) g.hooks = g.hooks.map((h) => (isStop(h) ? { ...h, type: "command", command: stopCmd, timeout: STOP_HOOK_TIMEOUT_S } : h));
+    else settings.hooks.Stop.push({ hooks: [{ type: "command", command: stopCmd, timeout: STOP_HOOK_TIMEOUT_S }] });
+  }
+  if (JSON.stringify(settings) === before) {
+    console.log(dim(`= ${label} (up to date)`));
+    return true;
+  }
+  if (!args["dry-run"]) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(settings, null, indent)}\n`);
+  }
+  ok(`${args["dry-run"] ? "would write" : "wrote"} ${label}`);
+  return true;
+}
+
+// Harnesses whose hooks speak (nearly) Claude Code's protocol: JSON on stdin, exit 2 blocks.
+const HOOK_FILES = {
+  gemini: { path: ".gemini/settings.json", event: "BeforeTool", matcher: "", wrap: true, dir: "$GEMINI_PROJECT_DIR/" },
+  codex: { path: ".codex/hooks.json", event: "PreToolUse", matcher: "", wrap: true, dir: "./" },
+  cursor: { path: ".cursor/hooks.json", event: ["beforeShellExecution", "beforeReadFile", "preToolUse"], wrap: false, dir: "./" },
+};
+
+/** Wire `agent-flow guard` into Gemini CLI, Codex or Cursor without touching anyone else's hooks. Unverified live: see docs/HARNESS-MATRIX.md. */
+function installGuardHook(rt, args, name) {
+  const cfg = HOOK_FILES[name];
+  const label = `${cfg.path} (guard hook)`;
+  const binRel = relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
+  if (fsutil.escapesBase(binRel)) {
+    bad(`${label}: agent-flow isn't installed in this project, so the hook would point at a temporary copy.`);
+    console.log(dim("    Run `npm install -D @drix10/agent-flow`, then install again."));
+    return false;
+  }
+  const command = `node "${cfg.dir}${binRel.split("\\").join("/")}" guard`;
+  const path = join(rt, cfg.path);
+  let settings = {};
+  let indent = 2;
+  if (existsSync(path)) {
+    try {
+      const raw = readFileSync(path, "utf-8");
+      settings = JSON.parse(raw.replace(/^\uFEFF/, ""));
+      indent = mergeLib.detectJsonIndent(raw);
+    } catch (e) {
+      bad(`${label}: existing file isn't valid JSON (${e.message}) — not touched. Fix it and re-run.`);
+      return false;
+    }
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+      bad(`${label}: existing file isn't a JSON object — not touched.`);
+      return false;
+    }
+  }
+  const events = [].concat(cfg.event);
+  if (settings.hooks !== undefined && (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks))) {
+    bad(`${label}: existing "hooks" has an unexpected shape — not touched. Fix it and re-run.`);
+    return false;
+  }
+  if (events.some((e) => settings.hooks?.[e] !== undefined && !Array.isArray(settings.hooks[e]))) {
+    bad(`${label}: an existing hook event has an unexpected shape — not touched. Fix it and re-run.`);
+    return false;
+  }
+  const before = JSON.stringify(settings);
+  settings.hooks ??= {};
+  if (!cfg.wrap) settings.version ??= 1;
+  const isOurs = (h) => /node\s+"[^"]*agent-flow\/bin\/agent-flow\.js"\s+guard\s*$/.test(h?.command ?? "");
+  for (const ev of events) {
+    const list = (settings.hooks[ev] ??= []);
+    const flat = (e) => (cfg.wrap ? (Array.isArray(e?.hooks) ? e.hooks : []) : [e]);
+    for (let i = list.length - 1; i >= 0; i--) {
+      const kept = flat(list[i]).filter((h) => !isOurs(h));
+      if (kept.length === flat(list[i]).length) continue;
+      if (cfg.wrap && kept.length) list[i] = { ...list[i], hooks: kept };
+      else list.splice(i, 1);
+    }
+    list.push(cfg.wrap ? { ...(cfg.matcher ? { matcher: cfg.matcher } : {}), hooks: [{ type: "command", command }] } : { command, failClosed: true });
   }
   if (JSON.stringify(settings) === before) {
     console.log(dim(`= ${label} (up to date)`));
@@ -1092,6 +1292,46 @@ async function cmdInit(args) {
   return 0;
 }
 
+/**
+ * `agent-flow sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>]... -- <cmd...>`
+ * Runs a command (typically an agent harness) under bubblewrap: the whole filesystem is
+ * read-only except the worktree (and --allow dirs), /tmp is private, and the process can't
+ * see other processes. Unlike the guard hook this is an OS boundary, so interpreters and
+ * scripts can't write outside it either. Linux/WSL only; needs `bwrap`.
+ */
+function sandboxArgv(av, cwd, home) {
+  const i = av.indexOf("--");
+  const opts = i === -1 ? av : av.slice(0, i);
+  const cmdv = i === -1 ? [] : av.slice(i + 1);
+  const o = { ro: false, net: true, hideHome: false, allow: [] };
+  for (let k = 0; k < opts.length; k++) {
+    const f = opts[k];
+    if (f === "--ro") o.ro = true;
+    else if (f === "--no-net") o.net = false;
+    else if (f === "--hide-home") o.hideHome = true;
+    else if (f === "--allow" && opts[k + 1]) o.allow.push(resolve(cwd, opts[++k]));
+    else throw new UserError(`sandbox: unknown option ${f}`);
+  }
+  if (!cmdv.length) throw new UserError("usage: agent-flow sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>]... -- <command...>");
+  const b = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session"];
+  if (!o.net) b.push("--unshare-net");
+  if (o.hideHome && home) {
+    b.push("--tmpfs", home); // credentials, dotfiles and other repos disappear
+    if (cwd === home || cwd.startsWith(home + "/")) b.push("--ro-bind", cwd, cwd);
+  }
+  if (!o.ro) b.push("--bind", cwd, cwd);
+  for (const d of o.allow) b.push("--bind", d, d);
+  b.push("--chdir", cwd, "--", ...cmdv);
+  return b;
+}
+
+function cmdSandbox(av) {
+  const bw = spawnSync("bwrap", ["--version"], { encoding: "utf8" });
+  if (bw.error || bw.status !== 0) throw new UserError("sandbox needs bubblewrap (`bwrap`) — Linux/WSL only: apt install bubblewrap");
+  const r = spawnSync("bwrap", sandboxArgv(av, realpathSync(process.cwd()), process.env.HOME), { stdio: "inherit" });
+  return r.status ?? 1;
+}
+
 function usage(msg) {
   console.error(`usage: agent-flow ${msg}`);
   return 2;
@@ -1119,6 +1359,14 @@ function roleRefusal() {
 
 // ---------------------------------------------------------------------------
 
+if (process.argv[2] === "sandbox") {
+  try {
+    process.exit(roleRefusal() || cmdSandbox(process.argv.slice(3)));
+  } catch (e) {
+    console.error(`${c(31, "agent-flow:")} ${String(e.message ?? e).split("\n")[0]}`);
+    process.exit(2);
+  }
+}
 const args = fixBools(parseArgs(process.argv.slice(2)));
 if (args._[0] === "-h") args.help = true;
 if (args._[0] === "-v" || args._[0] === "-V") args.version = true;
@@ -1129,6 +1377,7 @@ const table = {
   "audit-risk": cmdAudit,
   audit: cmdAuditLog,
   gates: cmdGates,
+  config: cmdConfig,
   baseline: cmdBaseline,
   classify: cmdClassify,
   "check-staged": cmdCheckStaged,

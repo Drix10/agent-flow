@@ -7,6 +7,7 @@
  * and bootstrap_write refuses to write an invalid manifest in the first place.
  */
 
+import { unionDenyCommands } from "./denycmd.js";
 import { isAbsolute, join } from "node:path";
 import { existsSync } from "node:fs";
 import { defaultBase, git } from "./git.js";
@@ -61,7 +62,7 @@ export interface ContextManifest {
   gates?: unknown[];
   /** Change-size and content rules (see policy.ts). */
   policy?: unknown;
-  pipeline?: { max_review_rounds?: number; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
+  pipeline?: { max_review_rounds?: number; max_cost_usd?: number; max_stop_blocks?: number; harness_by_role?: Partial<Record<"implementer" | "reviewer" | "qa", string>>; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -181,6 +182,7 @@ export function validateManifest(m: unknown): string[] {
         if (s.timeout_seconds !== undefined && (typeof s.timeout_seconds !== "number" || !Number.isFinite(s.timeout_seconds) || s.timeout_seconds <= 0 || s.timeout_seconds > 86_400)) problems.push(`${w}.timeout_seconds must be a number between 1 and 86400`);
         if (s.expect_exit !== undefined && (!Number.isInteger(s.expect_exit) || (s.expect_exit as number) < 0 || (s.expect_exit as number) > 255)) problems.push(`${w}.expect_exit must be an integer 0-255`);
         if (s.required !== undefined && typeof s.required !== "boolean") problems.push(`${w}.required must be true or false`);
+        if (s.on_stop !== undefined && typeof s.on_stop !== "boolean") problems.push(`${w}.on_stop must be true or false`);
       });
     }
   }
@@ -195,6 +197,23 @@ export function validateManifest(m: unknown): string[] {
   // 0 would escalate round 1 before the Implementer writes anything.
   if (rounds !== undefined && (!Number.isInteger(rounds) || rounds < 1 || rounds > 5)) {
     problems.push("pipeline.max_review_rounds must be an integer 1–5");
+  }
+  const hbr = man.pipeline?.harness_by_role as unknown;
+  if (hbr !== undefined) {
+    if (!hbr || typeof hbr !== "object" || Array.isArray(hbr)) problems.push('pipeline.harness_by_role must be an object like {"implementer": "claude", "reviewer": "codex"}');
+    else
+      for (const [role, h] of Object.entries(hbr as Record<string, unknown>)) {
+        if (!["implementer", "reviewer", "qa"].includes(role)) problems.push(`pipeline.harness_by_role.${role}: only implementer, reviewer and qa can be assigned a harness`);
+        else if (typeof h !== "string" || !["claude", "codex", "gemini", "pi"].includes(h)) problems.push(`pipeline.harness_by_role.${role} must be one of claude, codex, gemini, pi`);
+      }
+  }
+  const stopBlocks = man.pipeline?.max_stop_blocks;
+  if (stopBlocks !== undefined && (!Number.isInteger(stopBlocks) || stopBlocks < 1 || stopBlocks > 5)) {
+    problems.push("pipeline.max_stop_blocks must be an integer 1–5");
+  }
+  const cost = man.pipeline?.max_cost_usd;
+  if (cost !== undefined && (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0)) {
+    problems.push("pipeline.max_cost_usd must be a positive number");
   }
   const models = man.pipeline?.models as Record<string, unknown> | undefined;
   if (models !== undefined) {
@@ -277,13 +296,72 @@ export function loadManifestForGuard(root: string): { manifest: ContextManifest 
     const floors = [head, base];
     const extra = [...new Set(floors.flatMap((f) => protectedPathsOf(f)))].filter((p) => !protectedPathsOf(disk).includes(p));
     const extraDeny = [...new Set(floors.flatMap((f) => denyReadPathsOf(f)))].filter((p) => !denyReadPathsOf(disk).includes(p));
-    if (!extra.length && !extraDeny.length) return { manifest: disk };
-    return { manifest: { ...disk, protected_paths: [...protectedPathsOf(disk), ...extra], deny_read: [...denyReadPathsOf(disk), ...extraDeny] } };
+    // `policy.deny_commands` gets the same additive floor: a session can't drop a command rule the repo committed.
+    const denyCmds = unionDenyCommands(disk, head, base);
+    const withCmds = (m: ContextManifest): ContextManifest => (denyCmds ? { ...m, policy: { ...((m as { policy?: object }).policy ?? {}), deny_commands: denyCmds } } as ContextManifest : m);
+    if (!extra.length && !extraDeny.length) return { manifest: withCmds(disk) };
+    return { manifest: withCmds({ ...disk, protected_paths: [...protectedPathsOf(disk), ...extra], deny_read: [...denyReadPathsOf(disk), ...extraDeny] }) };
   }
   if (r.error !== "manifest_not_found") return { manifest: null, error: r.error };
   // A manifest that was committed and then deleted still governs: absence is not permission.
   const held = head ?? base;
-  return held ? { manifest: head && base ? { ...head, protected_paths: [...new Set([...protectedPathsOf(head), ...protectedPathsOf(base)])], deny_read: [...new Set([...denyReadPathsOf(head), ...denyReadPathsOf(base)])] } : held, fromHead: true } : { manifest: null };
+  return held ? { manifest: head && base ? { ...head, protected_paths: [...new Set([...protectedPathsOf(head), ...protectedPathsOf(base)])], deny_read: [...new Set([...denyReadPathsOf(head), ...denyReadPathsOf(base)])], ...(unionDenyCommands(head, base) ? { policy: { ...((head as { policy?: object }).policy ?? {}), deny_commands: unionDenyCommands(head, base) } } : {}) } as ContextManifest : held, fromHead: true } : { manifest: null };
+}
+
+/**
+ * Manifest keys that decide what the orchestrator RUNS or how strictly a change is judged. An agent that can
+ * edit the working copy must not be able to change them for the session that is judging its own work:
+ * `gates` are commands the orchestrator executes outside the guard, and loosening `policy`, `secret_scan`
+ * or `pipeline` lowers the bar. They take effect once merged to the default branch (or committed at HEAD
+ * when the repository has no default-branch copy).
+ */
+const FLOORED_KEYS = ["gates", "policy", "secret_scan", "pipeline"] as const;
+
+/** Set to 1 by a human who is editing gates/policy locally and wants the working copy to count right now. */
+export const TRUST_WORKING_MANIFEST_ENV = "AGENT_FLOW_TRUST_WORKING_MANIFEST";
+
+/**
+ * The manifest as code that JUDGES a change should read it. `protected_paths`, `deny_read` and
+ * `risk_boundaries` keep the additive floor (the working copy may add, never remove); the keys in
+ * FLOORED_KEYS come from the default branch's copy, else HEAD's, and the working copy's version is ignored.
+ * With no committed copy anywhere (a repo that is only starting to adopt agent-flow) the working copy is used.
+ */
+export function trustedManifest(root: string): { manifest: ContextManifest | null; ignoredEdits: string[] } {
+  const disk = tryLoadManifest(root);
+  if (process.env[TRUST_WORKING_MANIFEST_ENV] === "1") return { manifest: disk, ignoredEdits: [] };
+  const base = defaultBranchManifest(root);
+  const head = committedManifest(root);
+  const floor = base ?? head;
+  if (!floor) return { manifest: disk, ignoredEdits: [] };
+  if (!disk) return { manifest: floor, ignoredEdits: [] };
+  const out: Record<string, unknown> = { ...disk };
+  const ignored: string[] = [];
+  for (const k of FLOORED_KEYS) {
+    const want = (floor as Record<string, unknown>)[k];
+    const have = (disk as Record<string, unknown>)[k];
+    if (stableJson(want ?? null) !== stableJson(have ?? null)) ignored.push(k);
+    if (want === undefined) delete out[k];
+    else out[k] = want;
+  }
+  const floorBoundaries = Array.isArray(floor.risk_boundaries) ? floor.risk_boundaries : [];
+  if (floorBoundaries.length) {
+    const seen = new Set(floorBoundaries.map((b) => JSON.stringify(b)));
+    const extra = (Array.isArray(disk.risk_boundaries) ? disk.risk_boundaries : []).filter((b) => !seen.has(JSON.stringify(b)));
+    out.risk_boundaries = [...floorBoundaries, ...extra];
+  }
+  // Like the guard: what the default branch or HEAD protects or denies to read, the working copy may add to but not remove.
+  for (const key of ["protected_paths", "deny_read"] as const) {
+    const of = key === "protected_paths" ? protectedPathsOf : denyReadPathsOf;
+    const have = of(disk);
+    const extra = [...new Set([...of(head), ...of(base)])].filter((x) => !have.includes(x));
+    if (extra.length) out[key] = [...have, ...extra];
+  }
+  return { manifest: out as ContextManifest, ignoredEdits: ignored };
+}
+
+/** JSON with sorted keys, so reordering a manifest's keys doesn't look like an edit. */
+function stableJson(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 }
 
 /** CONTEXT_MANIFEST.json as the default branch has it (a feature branch can't weaken what main already committed). */
@@ -402,4 +480,10 @@ export function secretIgnorePaths(man: ContextManifest | null | undefined): stri
 export function maxReviewRounds(man: ContextManifest | null): number {
   const r = man?.pipeline?.max_review_rounds;
   return Number.isInteger(r) && (r as number) >= 1 && (r as number) <= 5 ? (r as number) : DEFAULT_MAX_REVIEW_ROUNDS;
+}
+
+/** The per-issue cost cap in USD, or undefined when none is set. */
+export function maxCostUsd(man: ContextManifest | null): number | undefined {
+  const c = man?.pipeline?.max_cost_usd;
+  return typeof c === "number" && Number.isFinite(c) && c > 0 ? c : undefined;
 }

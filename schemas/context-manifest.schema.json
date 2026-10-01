@@ -147,6 +147,11 @@
           "required": {
             "type": "boolean",
             "default": true
+          },
+          "on_stop": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also run this gate when an interactive Claude Code session tries to end its turn (needs `install --harness claude --stop-gate`). Keep these fast: lint, typecheck, unit tests."
           }
         }
       }
@@ -210,6 +215,28 @@
           "minimum": 1,
           "maximum": 5
         },
+        "harness_by_role": {
+          "type": "object",
+          "description": "Run a role on a different harness than the orchestrator's, e.g. the Reviewer on another vendor so it doesn't share the Implementer's blind spots. The verdict still goes through the schema, the round cap and the audit chain.",
+          "additionalProperties": false,
+          "properties": {
+            "implementer": { "enum": ["claude", "codex", "gemini", "pi"] },
+            "reviewer": { "enum": ["claude", "codex", "gemini", "pi"] },
+            "qa": { "enum": ["claude", "codex", "gemini", "pi"] }
+          }
+        },
+        "max_stop_blocks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 2,
+          "description": "How many consecutive times the stop gate may hold a session back in one turn before it lets the turn end (and records stop_gate_exhausted)."
+        },
+        "max_cost_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Per-issue cost cap. Once an issue's role runs have cost this much, a new phase or round escalates to Needs Me (budget_exceeded). Only harnesses that report cost count."
+        },
         "auto_merge_low_risk": {
           "type": "boolean"
         },
@@ -235,6 +262,31 @@
       "description": "Change-size and content rules checked by `classify --fail-on-policy` and the pre-commit hook.",
       "additionalProperties": false,
       "properties": {
+        "deny_commands": {
+          "type": ["object", "array"],
+          "items": { "enum": ["database", "infra"] },
+          "description": "Shell commands the guard refuses in every agent session (a human overrides with AGENT_FLOW_ALLOW_PROTECTED=1). Working copies may add to what the default branch committed, never remove.",
+          "additionalProperties": false,
+          "properties": {
+            "presets": {
+              "type": "array",
+              "items": { "enum": ["database", "infra"] },
+              "description": "database: DROP/TRUNCATE through psql, mysql, sqlite3 and friends. infra: kubectl delete, terraform destroy, docker prune, helm uninstall, cloud CLI deletes."
+            },
+            "patterns": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["pattern"],
+                "additionalProperties": false,
+                "properties": {
+                  "pattern": { "type": "string", "minLength": 1, "maxLength": 500 },
+                  "message": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
         "max_changed_files": {
           "type": "integer",
           "minimum": 1

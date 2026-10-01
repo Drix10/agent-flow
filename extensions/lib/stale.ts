@@ -15,6 +15,7 @@ import { statSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { IGNORED_DIRS, atomicWrite, existsExact, isoNow, readJson, readTextFile, toPosix, withLock } from "./fsutil.js";
 import { listRepoFiles } from "./repofiles.js";
+import { checkClaims } from "./claims.js";
 import { detectJsonIndent, matchExistingFormat } from "./merge.js";
 import { ContextManifest, DEFAULT_STALENESS_DAYS, ManifestContextFile, loadManifest, normalizeManifest } from "./manifest.js";
 
@@ -33,7 +34,9 @@ export interface StaleReport {
   invalid_timestamps: { file: string; path: string; value: unknown }[];
   unfilled_placeholders: { file: string; line: number; text: string }[];
   schema_problems: string[];
-  dead_commands: { file: string; command: string }[];
+  dead_commands: { file: string; command: string; line?: number; reason?: string; suggestion?: string }[];
+  broken_links: { file: string; line: number; target: string }[];
+  unknown_commits: { file: string; line: number; sha: string }[];
   token_waste: { file: string; estimated_tokens: number }[];
   ctxlint: "not_requested" | "not_installed" | "ran" | "failed";
 }
@@ -219,7 +222,7 @@ function runLocalCtxlint(root: string, report: StaleReport): void {
   try {
     const parsed = JSON.parse(stdout);
     for (const issue of parsed.issues ?? []) {
-      if (issue.type === "stale-command") report.dead_commands.push({ file: issue.file, command: issue.command });
+      if (issue.type === "stale-command") if (!report.dead_commands.some((d) => d.file === issue.file && d.command === issue.command)) report.dead_commands.push({ file: issue.file, command: issue.command });
       if (issue.type === "token-waste") report.token_waste.push({ file: issue.file, estimated_tokens: issue.estimated_tokens || 0 });
       if (issue.type === "stale-file-ref" && issue.path) report.missing_paths.push({ file: issue.file, path: issue.path, source: "prose" });
     }
@@ -264,6 +267,8 @@ export function detectStale(root: string, opts: DetectOptions = {}): DetectResul
     unfilled_placeholders: [],
     schema_problems: loaded.ok ? loaded.value.problems : [],
     dead_commands: [],
+    broken_links: [],
+    unknown_commits: [],
     token_waste: [],
     ctxlint: "not_requested",
   };
@@ -292,6 +297,11 @@ export function detectStale(root: string, opts: DetectOptions = {}): DetectResul
     } else if (opts.prose !== false) {
       const content = readTextFile(join(root, cfPath)) ?? "";
       report.unfilled_placeholders.push(...findPlaceholders(cfPath, content));
+      for (const c of checkClaims(root, cfPath, content)) {
+        if (c.kind === "command") report.dead_commands.push({ file: cfPath, command: c.text, line: c.line, reason: c.reason, suggestion: c.suggestion });
+        else if (c.kind === "link") report.broken_links.push({ file: cfPath, line: c.line, target: c.text });
+        else report.unknown_commits.push({ file: cfPath, line: c.line, sha: c.text });
+      }
       const cfDir = toPosix(dirname(cfPath));
       for (const ref of extractProseRefs(content)) {
         const key = `${cfPath}\0${ref.path}`;
@@ -330,6 +340,8 @@ export function detectStale(root: string, opts: DetectOptions = {}): DetectResul
     report.invalid_timestamps.length === 0 &&
     report.unfilled_placeholders.length === 0 &&
     report.dead_commands.length === 0 &&
+    report.broken_links.length === 0 &&
+    report.unknown_commits.length === 0 &&
     report.schema_problems.length === 0;
 
   return {

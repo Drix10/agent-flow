@@ -1,0 +1,30 @@
+name: Harness flags
+
+# Installs each harness CLI and checks that the flags launch.md relies on still appear in its --help.
+# No API keys, no model calls. Weekly, because these CLIs change without notice.
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths: ["skills/invoking-agents/**", "scripts/check-harness-flags.mjs", ".github/workflows/harness-flags.yml"]
+
+jobs:
+  flags:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install harness CLIs (best effort)
+        shell: bash
+        run: |
+          for p in @anthropic-ai/claude-code @openai/codex @google/gemini-cli @earendil-works/pi-coding-agent; do
+            npm install -g "$p" || echo "::warning::could not install $p"
+          done
+      - run: node scripts/check-harness-flags.mjs

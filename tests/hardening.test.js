@@ -746,7 +746,7 @@ for (let i = 0; i < Number(iters); i++) {
 `,
     );
     const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
-    const workers = 12;
+    const workers = process.platform === "win32" ? 4 : 12; // 12 busy-waiting processes starve a 2-core Windows runner
     const iters = 3;
     // Both lock formats: current (pid@host) and a pre-upgrade bare PID.
     for (const seed of [`${deadPid}@${hostname()}`, String(deadPid), `${deadPid}@${hostname()}`]) {

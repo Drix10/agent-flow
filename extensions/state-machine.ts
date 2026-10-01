@@ -8,8 +8,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { maxReviewRounds, tryLoadManifest } from "./lib/manifest.js";
+import { maxCostUsd, maxReviewRounds, trustedManifest } from "./lib/manifest.js";
 import { readState, updateState } from "./lib/state.js";
+import { bindingEscalation } from "./lib/binding.js";
+import { gatesOf } from "./lib/gates.js";
 import { repoRoot, text } from "./result.js";
 
 export default function (pi: ExtensionAPI) {
@@ -31,8 +33,10 @@ export default function (pi: ExtensionAPI) {
     }),
     execute: async (_id, params, _signal, _onUpdate, ctx) => {
       const root = repoRoot(ctx);
-      const limit = maxReviewRounds(tryLoadManifest(root));
-      return text(updateState(root, params, limit));
+      const man = trustedManifest(root).manifest;
+      const esc = bindingEscalation(root, params, readState(root).sessions.find((x) => x.issue === params.issue), gatesOf(man));
+      const result = updateState(root, esc ? (esc.params as typeof params) : params, maxReviewRounds(man), maxCostUsd(man));
+      return text(esc ? { ...result, escalated: true, binding: esc.binding } : result);
     },
   });
 

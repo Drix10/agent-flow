@@ -4,7 +4,37 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-10-01
+
+- Read each vendor's hook docs and source and fixed what they contradicted: Gemini's hook now matches every tool (the allow-list named a tool that doesn't exist and missed others); Cursor's Windows BOM on stdin no longer makes the guard fail open, and Cursor's Delete tool counts as a write; the OpenCode plugin is one flat file with no SDK import (v1 and v2 load it; it no longer writes `.opencode/package.json` or depends on `@opencode/plugin`). `docs/HARNESS-MATRIX.md` says, per harness, what is live-verified and what is docs-verified only, with the caveats each vendor's docs give (untrusted folders, fail-open exits, headless modes).
+
+- Codex guard hook live-verified on Linux/WSL (protected write, `--no-verify` commit and hook-config write all blocked); docs note that Codex's bypass-hook-trust / full-access options disable enforcement.
+- Guard: PowerShell writes are judged like their POSIX twins — named parameters in any order (`-LiteralPath`, `-Destination`, …), Windows `\` paths, `Copy-Item` writes only its destination, and .NET `[IO.File]::Write*` calls count as writes. A live Codex-on-Windows probe found `Set-Content -LiteralPath .codex/hooks.json …` slipped through.
+- Guard blocks also print a JSON deny (`permissionDecision`) on stdout besides exit 2 + stderr; set `AGENT_FLOW_GUARD_JSON_ONLY=1` to deny by JSON with exit 0 (experiment for a harness that ignores exit 2).
+- `agent-flow sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>] -- <cmd>` runs a command under bubblewrap (read-only filesystem except the worktree), an OS-level boundary the hook cannot give. Linux/WSL only.
+
+- `doctor` warns (never fails) when `protected_paths` have no CODEOWNERS entry, since only the host can stop a pull request editing them.
+- Guard: recognises Codex/OpenCode patch payloads, Gemini `replace`, argv-form shells, `workdir`/`dir_path`, and protects the Gemini/Codex/Cursor/OpenCode hook wiring from edits.
+
+- `install --harness gemini|codex|cursor` also installs the guard as a pre-tool hook; the guard understands Cursor's tool-less `beforeShellExecution`/`beforeReadFile` payloads. Live verification pending.
+- `policy.deny_commands: ["infra"]` shorthand accepted (it used to load no rule at all).
+
+- `install --harness opencode`: OpenCode guard plugin (`tool.execute.before`), fails closed. Live verification pending.
+- Guard: `mv x ~/` no longer flagged when the repo lives under the home directory (found by a live OpenCode run).
+
+### Added
+- **Cross-vendor roles.** `pipeline.harness_by_role` (`{"reviewer": "codex"}`) runs a role on another harness than the orchestrator's; the orchestrator skill reads it into `env.sh`, the verdict still goes through the schema, round cap and audit chain, and a missing CLI is Needs Me, not a silent fallback. On the last allowed round the Implementer uses `pipeline.models.high_reasoning`.
+- **`policy.deny_commands`** (opt-in): presets `database` and `infra` plus custom regexes that the guard refuses in every agent session, with an additive floor from the default branch and the usual human override.
+- **Bounded stop gate for interactive Claude Code sessions.** Gates marked `on_stop: true` run from a Stop hook (`agent-flow gates stop`, installed with `install --harness claude --stop-gate`) when the tree changed since the last pass. It holds a session back at most `pipeline.max_stop_blocks` (default 2, max 5) times per turn, then lets it stop and records `stop_gate_exhausted`. Gates come from the default branch's manifest; `.agent-flow/stop-gate.json` and `.agent-flow/gates/` are tamper-proof.
+- **Per-issue cost cap.** `pipeline.max_cost_usd`: once an issue's role runs have cost that much, `state update` (and the Pi `state_update` tool) escalates the next new phase or round to Needs Me `budget_exceeded` with the cost per round (exit 3 in the CLI). Counts only harnesses that report cost; `audit summary` now shows how many runs reported none.
+- **`doctor` checks commands, links and commits, not just paths.** `npm|pnpm run <script>` and `npm test` against the nearest `package.json`, `make <target>` against the Makefile, `just <recipe>` against the justfile (each with a did-you-mean), relative markdown links (case-exact) and commits cited as `commit <sha>`. Skips what it can't resolve: workspace/`-C` flags, `cd`, variables, yarn/bun binaries, shallow clones, fixture directories. New SARIF rules `broken-link` and `unknown-commit`.
+- **Verdicts are bound to the commit they judged.** `role_run` and `gate_run` audit lines record the tip of `agent/issue-N`. `state update --state Completed` exits 3 and records Needs Me `unreviewed_commits` unless the round's approved review, passed QA and every required gate name the current tip. No skip flag. Runs recorded before this version carry no `head` and aren't compared.
+
+### Changed
+- **`gates`, `policy`, `secret_scan` and `pipeline` are read from the default branch's manifest** (falling back to the last committed copy), not the working copy an agent can edit; `risk_boundaries` may be added to but not removed. `gates list` and `check-staged` say when the working copy differs. A human iterating locally can set `AGENT_FLOW_TRUST_WORKING_MANIFEST=1`. This corrects 1.1.4's "a branch can't edit the gate that judges it", which held for gates only on the main checkout.
+
 ### Security
+- **The guard now refuses `rm -rf ~`, `$HOME`, `/` wherever the repository is** (`catastrophic-delete`) and commands that build words from `${IFS}` (`obfuscated-command`). The red-team corpus grew by 30 cases drawn from gstack's `careful`, block-dangerous-git and the new presets, and a test asserts blocks exit 2 through the real hook, never 1.
 - **`git push origin HEAD` reached the default branch.** `HEAD`, `@`, an empty target and dynamic targets (`HEAD:$(…)`, `HEAD:refs/heads/$B`, globs) now get the same `explicit-refspec` block as a bare `git push`, because the guard can't see which branch is checked out. Name the branch: `git push origin agent/issue-N`.
 - **Roles could spawn agents through the harness's own tool.** `Task`, `Agent`, `subagent` and similar tools are refused for every role except the orchestrator, matching the shell rule for `claude -p`.
 - **Read-only roles: more write paths recognised.** Archive extraction (`tar x`, `unzip`, `7z x`, `gunzip`…), `awk` redirects and `system()`, `php -r` writes, `sqlite3` mutations and `python -c` with `os.system`/`subprocess`. Listing an archive (`tar t`, `unzip -l`) stays allowed.

@@ -24,7 +24,7 @@ npx @drix10/agent-flow audit-risk        # review once, then `baseline accept --
 npx @drix10/agent-flow init              # preview a manifest; suggests protected_paths but writes none
 ```
 
-Add `doctor` and `audit-risk --fail-on-new` to CI, or use the composite action (`uses: Drix10/agent-flow@v1.1.4`), which also runs `classify --fail-on-protected --fail-on-policy` and can upload SARIF to code scanning (`--sarif` on `doctor` and `audit-risk`). In a git repo the scans read git's file list, so untracked gitignored trees (data, caches, vendored code) are not walked. Files git tracks are always scanned, even under an ignored pattern, and outside git the scans fall back to a directory walk.
+Add `doctor` and `audit-risk --fail-on-new` to CI, or use the composite action (`uses: Drix10/agent-flow@v1.1.5`), which also runs `classify --fail-on-protected --fail-on-policy` and can upload SARIF to code scanning (`--sarif` on `doctor` and `audit-risk`). In a git repo the scans read git's file list, so untracked gitignored trees (data, caches, vendored code) are not walked. Files git tracks are always scanned, even under an ignored pattern, and outside git the scans fall back to a directory walk.
 
 ## Layer 2: protect what must not change
 
@@ -83,8 +83,14 @@ Both are optional manifest keys.
 ```
 
 - `agent-flow gates run` executes the gates and records exit codes, logs and hashes under `.agent-flow/gates/`. An array command runs without a shell; a string runs through one. Exit 2 means a gate couldn't start (a missing tool), which is an environment problem rather than a failing change.
+- **Command policy (opt-in).** `"policy": {"deny_commands": {"presets": ["database", "infra"], "patterns": [{"pattern": "\\bshutdown\\b"}]}}` makes the guard refuse those shell commands in every agent session (`database`: DROP/TRUNCATE through psql, mysql, sqlite3; `infra`: `kubectl delete`, `terraform destroy`, `docker system prune`, `helm uninstall`, cloud-CLI deletes). It is deny, not ask: a headless pipeline has nobody to answer. A working copy can add rules but not remove committed ones; `AGENT_FLOW_ALLOW_PROTECTED=1` lets a human through. It reads the command text (each `;`/`|`/`&` segment, with quotes, backslashes, line continuations and comments removed, and the body of `sh -c '…'`, and pipes or heredocs into `psql`/`mysql`), so it can't see a variable (`K=kubectl; $K delete`), an alias, or SQL in a file (`psql -f drop.sql`).
+- **Stop gate (Claude Code, opt-in).** Mark fast gates `"on_stop": true` and run `agent-flow install --harness claude --stop-gate`. When an interactive session tries to end its turn, `agent-flow gates stop` runs those gates if the working tree changed since the last pass, and keeps the session working while they fail — at most `pipeline.max_stop_blocks` times in a row (default 2, max 5), then the turn ends and `stop_gate_exhausted` is written to the audit log. The gates come from the default branch's manifest, so a session can't edit the gate that judges it. Keep them to lint, typecheck and unit tests.
 - `agent-flow classify --fail-on-policy` (CI) and the pre-commit hook (staged content) enforce `policy`. `classify --fail-on-heuristic` fails while `risk_boundaries` is empty, for teams that don't want a path-name guess deciding review depth.
 - `agent-flow audit verify` checks the audit log's hash chain; record `audit head` somewhere the agent can't write to anchor it. `audit summary` shows which rules block agents most often, which is a list of candidates for `protected_paths` or a lint rule.
+
+## Running alongside other workflow packs
+
+Most teams already run one of superpowers, GSD, gstack, spec-kit or openspec. Those are prompts and slash commands; agent-flow is the layer that enforces. Tests (`tests/coexist.test.js`) cover: `install` merges its guard and Stop hooks next to yours and keeps every hook and permission you have (running it twice changes nothing); the guard doesn't touch `.planning/`, `docs/superpowers/`, `.gstack/`, `.specify/`, `specs/` or `openspec/changes/`; and `doctor` reads only real context files (`AGENTS.md`, `CLAUDE.md`, …), so a pack's generated docs never raise drift findings unless a context file links to them. Two things to know: both hook sets run on each tool call, and a pack hook that exits 1 doesn't block in Claude Code (only exit 2 does), so a pack's "BLOCKED" message isn't protection. Put anything that must hold in `protected_paths`, `policy` or `gates`.
 
 ## Layer 3: the pipeline (optional)
 
