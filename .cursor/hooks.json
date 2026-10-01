@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "node \"./bin/agent-flow.js\" guard",
+        "failClosed": true
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "node \"./bin/agent-flow.js\" guard",
+        "failClosed": true
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "node \"./bin/agent-flow.js\" guard",
+        "failClosed": true
+      }
+    ]
+  },
+  "version": 1
+}

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "read_file|read_many_files|write_file|replace|edit_file|run_shell_command|search_file_content|grep_search|save_memory|glob|list_directory|web_fetch|mcp_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$GEMINI_PROJECT_DIR/bin/agent-flow.js\" guard"
+          }
+        ]
+      }
+    ]
+  }
+}
