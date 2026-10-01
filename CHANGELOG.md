@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Found by asking how a vendored install ever learns about a newer version (it didn't).
+
+- **`agent-flow update [--yes] [--check] [--force]`.** Brings the skills, reviewer agents, hook wiring and the vendored runtime up to the running version. `install` now records what it wrote (`<harness dir>/agent-flow-install.json`); `update` replaces only files that still match that record, keeps and lists anything you edited, never downgrades, and previews unless given `--yes`. `--check` exits 10 when an update is available, for a scheduled CI job (a ready workflow is in `docs/ADOPTION.md`). The vendored copy can't update itself and prints the `npx @drix10/agent-flow@latest update --yes` command. A repo installed before this release has no record, so its first update needs `--force` once.
+- **`doctor` tells you when agent-flow is behind**, as one dim line for humans at a terminal: when a newer CLI finds an older vendored runtime (no network), or when the npm registry has a newer version (one GET, 2.2 s cap, cached for a day in `~/.agent-flow/`). Never in `--json`/SARIF output, CI, the guard or the pre-commit hook; `NO_UPDATE_NOTIFIER=1`, `AGENT_FLOW_NO_UPDATE_CHECK=1`, `AGENT_FLOW_OFFLINE=1` and `--offline` turn it off. The GitHub Code Owner lookup added in 1.1.6 now also skips itself in CI.
+- **Docs now say what the network does.** `README.md` and `SECURITY.md` claimed "no network calls"; both are corrected to name the two optional, read-only lookups in `doctor` (npm registry version, `gh` branch-protection).
+- Install-style table in `docs/ADOPTION.md` ("Keeping it current"): npm, npx and vendored, and how each is told about and applies an update.
+
 ## [1.1.6] - 2026-10-02
 
 Found by running bootstrap on a real C++/Python repo with no `package.json`, on Windows.

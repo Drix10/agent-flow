@@ -37,7 +37,7 @@ Agent Flow is a small, auditable layer that catches these:
 | 🚦 **Gates and policy** | Tests and lint the *orchestrator* runs (exit code, log and hash recorded, not a model's summary), plus repo rules: size caps, forbidden added lines, source-needs-tests. | `agent-flow gates run`, `classify --fail-on-policy`, pre-commit |
 | 🧾 **Audit trail** | Every guard block, transition and gate run is a line in a hash chain; editing or deleting one is detectable. | `agent-flow audit verify` / `summary` |
 
-Zero runtime dependencies. No network calls. No telemetry. Every check is plain TypeScript you can read in an afternoon.
+Zero runtime dependencies. No telemetry. The checks and both hooks (guard, pre-commit) never touch the network. The only network use is two optional read-only lookups in `doctor` — the npm registry's latest version number (cached for a day) and, through your already logged-in `gh`, whether GitHub enforces Code Owner review — both skipped in CI, with `--offline`, `AGENT_FLOW_OFFLINE=1` or `NO_UPDATE_NOTIFIER=1`. Every check is plain TypeScript you can read in an afternoon.
 
 ---
 
@@ -86,6 +86,8 @@ npx skills add Drix10/agent-flow
 ```
 
 Any other tool that reads [AGENTS.md](https://agents.md) — Aider, Zed, Warp, JetBrains Junie, RooCode, Amp, opencode, goose, and more — already gets drift detection and risk classification from the CLI with no install step at all; `--harness agents` just adds a conventional `.agents/skills/` folder on top.
+
+**Staying current.** `npx @drix10/agent-flow@latest update --yes` brings the skills, hook wiring and the vendored runtime up to the newest version, keeping any skill you edited. `doctor` prints one line when a newer version exists, and `update --check` exits 10 for a scheduled CI job; [docs/ADOPTION.md](docs/ADOPTION.md#keeping-it-current) has the details per install style.
 
 `install` works on Windows, macOS and Linux, is idempotent, and never overwrites a skill you've edited (`--force` to override). Every command it needs — `doctor`, `audit-risk`, `classify`, `state`, `worktree` — ships in the CLI, so nothing here depends on a harness-specific extension API.
 

@@ -16,6 +16,42 @@ Nothing is written until you run a command that says so. Every file it can creat
 
 If you already track work in your own file (a `TODO.md`, an issues tracker), don't run the pipeline commands: `AGENT_STATE.md` would become a second source of truth. Layers 1 and 2 don't touch it.
 
+## Keeping it current
+
+How an install learns about a newer version depends on how it got there:
+
+| Installed with | How you find out | How you update |
+|---|---|---|
+| `npm i -D @drix10/agent-flow` | `npm outdated`, Dependabot or Renovate; `doctor` prints one note when the registry has a newer version | `npm i -D @drix10/agent-flow@latest`, then `npx agent-flow update --yes` to refresh the skills and hook wiring |
+| `npx @drix10/agent-flow …` | npx may reuse a cached copy; `@latest` always asks the registry | run `npx @drix10/agent-flow@latest …` |
+| the vendored runtime (`.agent-flow-runtime/`, no npm) | `doctor` run by a newer CLI says the vendored copy is behind (no network needed); `update --check` exits 10 | `npx @drix10/agent-flow@latest update --yes`, review the diff, commit |
+
+`update` is safe to run: without `--yes` it only shows what would change. It replaces a skill, a reviewer agent or the vendored runtime only if it still matches what `install` wrote (`.claude/agent-flow-install.json` records that), so a skill you edited is kept and listed; `--force` replaces it. It never downgrades. A repo installed before 1.1.7 has no record yet, so its first update asks for `--force` once (check the diff); every later one is automatic. The vendored copy cannot update itself; it prints the command above.
+
+The version note is one dim line in `doctor`'s terminal output. It never appears in `--json` or SARIF output, in CI, in the guard or pre-commit hook, or with `NO_UPDATE_NOTIFIER=1`, `AGENT_FLOW_NO_UPDATE_CHECK=1` or `--offline`. The registry's answer is cached in `~/.agent-flow/` for a day.
+
+To get a pull request when a new version ships, run `update --yes` on a schedule and let a pull-request action open one (it opens nothing when no file changed):
+
+```yaml
+# .github/workflows/agent-flow-update.yml
+name: agent-flow update
+on:
+  schedule: [{ cron: "17 6 * * 1" }]
+  workflow_dispatch:
+permissions: { contents: write, pull-requests: write }
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npx --yes @drix10/agent-flow@latest update --yes
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          title: "chore: update agent-flow"
+          branch: chore/agent-flow-update
+          commit-message: "chore: update agent-flow"
+```
+
 ## Layer 1: read-only checks (no risk)
 
 ```bash

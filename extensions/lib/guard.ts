@@ -926,7 +926,7 @@ const DEVICE = /^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/;
 // The CLI twins of agent-flow's own mutating tools
 // ---------------------------------------------------------------------------
 
-const CLI_COMMANDS = new Set(["doctor", "init", "audit-risk", "baseline", "classify", "check-staged", "state", "worktree", "scan", "install", "hook", "schema", "template", "report", "repair", "guard", "audit", "gates", "manifest", "codeowners"]);
+const CLI_COMMANDS = new Set(["doctor", "init", "audit-risk", "baseline", "classify", "check-staged", "state", "worktree", "scan", "install", "hook", "schema", "template", "report", "repair", "guard", "audit", "gates", "manifest", "codeowners", "update"]);
 
 /**
  * May `role` run `agent-flow <argv…>`? Returns a block reason, or null if allowed.

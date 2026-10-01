@@ -52,7 +52,11 @@ The guard can only read a shell command's text. It lexes it (quotes, redirection
 ## Audit this package in 10 minutes
 
 1. **Dependencies:** `npm ls --omit=dev --all` shows nothing. There are zero runtime dependencies.
-2. **Network:** `grep -rnE "fetch\(|https?\.request|net\.connect|npx " extensions/lib/*.ts bin` finds no network call. The only hits are the "never npx" comment in `extensions/lib/stale.ts` and `npx --no-install` in the pre-commit hook text, and `--no-install` forbids downloading.
+2. **Network:** nothing that gates a change touches it (the guard, the pre-commit hook, `classify`, `audit-risk`, `gates`). Two optional, read-only lookups exist, both in `doctor` and both skipped in CI and with `--offline` / `AGENT_FLOW_OFFLINE=1`:
+   - `extensions/lib/update.ts` asks the npm registry for this package's latest version number (one GET, 2.2 s cap, cached 24 h in `~/.agent-flow/`). It is also skipped with `NO_UPDATE_NOTIFIER=1` or `AGENT_FLOW_NO_UPDATE_CHECK=1`.
+   - `extensions/lib/codeowners.ts` runs your own logged-in `gh api` to read whether the default branch requires Code Owner review. It names the repo you are in to GitHub, as `gh` always does.
+
+   Neither sends anything about your code. `grep -rnE "fetch\(|spawnSync\(gh|npx " extensions/lib/*.ts bin` finds those plus the "never npx" comment in `extensions/lib/stale.ts` and `npx --no-install` in the pre-commit hook text; `--no-install` forbids downloading.
 3. **Process execution:** `grep -rn "execFileSync\|execSync\|spawn" extensions/lib/*.ts bin`. The real calls are `execFileSync("git", [...])` and a locally installed ctxlint run through `process.execPath` (opt-in). Every other hit is a comment, a detection regex, or guard text.
 4. **Tests:** `npm test`. They run against real git repositories in temp directories.
 5. **Package contents:** `npm pack --dry-run` lists exactly what ships (`bin/`, `extensions/`, `skills/`, `templates/`, `schemas/`, `prompts/`, `docs/`, the harness reviewer definitions, and the Markdown docs).
