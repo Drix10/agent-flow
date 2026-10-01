@@ -66,7 +66,12 @@ export function uncoveredProtected(root: string, protectedPaths: string[]): stri
 // A CODEOWNERS pattern for a protected glob: `kernel/exec/**` → `/kernel/exec/`, `STAGE` → `/STAGE`, `**/*.pem` → `*.pem`.
 export function codeownersPattern(g: string): string {
   const p = g.replace(/\\/g, "/").replace(/^\.?\//, "");
-  if (p.startsWith("**/")) return p.slice(3);
+  // `**/x.pem` is any depth, which a bare `x.pem` already means; `**/config/*.pem` must keep its prefix or it would
+  // match only a root-level `config/`.
+  if (p.startsWith("**/")) {
+    const rest = p.slice(3);
+    return rest.includes("/") ? p : rest;
+  }
   // No slash and a wildcard (`*.pem`): CODEOWNERS, like gitignore, then matches at any depth, as matchesPattern does here.
   if (!p.includes("/") && /[*?[]/.test(p)) return p;
   return `/${p.replace(/\/\*\*$/, "/")}`;
@@ -108,19 +113,26 @@ export type HostReview =
  * seconds at most. Returns null whenever it can't tell for free (no gh, not logged in, no network, not GitHub):
  * this is a courtesy, never a reason for doctor to fail or to ask for a token.
  */
-export type GhApi = (path: string) => { ok: true; json: unknown } | { ok: false; status: number | null };
+/** `gh api --paginate --slurp` gives `[[…page 1…], […page 2…]]`; one page or a plain object passes through unchanged. */
+export function flattenPages(json: unknown): unknown {
+  return Array.isArray(json) && json.length > 0 && json.every(Array.isArray) ? (json as unknown[][]).flat() : json;
+}
+
+export type GhApi =(path: string) => { ok: true; json: unknown } | { ok: false; status: number | null };
 
 export function hostCodeOwnerReview(slug: string, branch: string, opts: { gh?: string; timeoutMs?: number; api?: GhApi } = {}): HostReview | null {
   const gh = opts.gh ?? process.env.AGENT_FLOW_GH ?? "gh";
   const timeout = opts.timeoutMs ?? 4000;
   const api: GhApi = opts.api ?? ((path) => {
     try {
-      const r = spawnSync(gh, ["api", path], { encoding: "utf-8", timeout, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GH_PROMPT_DISABLED: "1" } });
+      // Lists (the branch rules) come in pages of 30 by default; --paginate --slurp returns every page as one array of arrays.
+      const paged = path.includes("/rules/branches/");
+      const r = spawnSync(gh, ["api", ...(paged ? ["--paginate", "--slurp"] : []), path], { encoding: "utf-8", timeout, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GH_PROMPT_DISABLED: "1" } });
       if (r.error || r.status !== 0) {
         const http = /HTTP (\d{3})/.exec(r.stderr ?? "");
         return { ok: false, status: http ? Number(http[1]) : null };
       }
-      return { ok: true, json: JSON.parse(r.stdout) };
+      return { ok: true, json: flattenPages(JSON.parse(r.stdout)) };
     } catch {
       return { ok: false, status: null };
     }

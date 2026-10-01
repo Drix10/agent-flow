@@ -141,3 +141,22 @@ test("doctor --allow-stale tracks the report's own notion of broken, not a copie
     }
   });
 });
+
+test("review findings: nested ** keeps its prefix, --owner needs a value, and paginated rules flatten", async () => {
+  const { flattenPages } = await import("../extensions/lib/codeowners.js");
+  assert.equal(codeownersPattern("**/config/*.pem"), "**/config/*.pem", "a nested path is not rooted by dropping **/");
+  assert.equal(codeownersPattern("**/*.pem"), "*.pem");
+  assert.deepEqual(flattenPages([[1, 2], [3]]), [1, 2, 3]);
+  assert.deepEqual(flattenPages([[]]), []);
+  assert.deepEqual(flattenPages({ a: 1 }), { a: 1 });
+  const dir = mkdtempSync(join(tmpdir(), "af-owner-"));
+  try {
+    spawnSync("git", ["init", "-q"], { cwd: dir });
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", protected_paths: ["STAGE"] }));
+    const r = spawnSync(process.execPath, [BIN, "codeowners", "--yes", "--owner"], { cwd: dir, encoding: "utf-8", env: { ...process.env, AGENT_FLOW_OFFLINE: "1" } });
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stdout + r.stderr, /--owner needs a value/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

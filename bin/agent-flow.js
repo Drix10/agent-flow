@@ -293,8 +293,9 @@ function cmdCodeowners(args) {
   const prot = loaded.ok ? (loaded.value.manifest.protected_paths ?? []).filter((x) => typeof x === "string") : [];
   if (!prot.length) throw new UserError("no protected_paths in the manifest — nothing for CODEOWNERS to cover");
   const missing = codeownersLib.uncoveredProtected(rt, prot) ?? prot;
+  if (args.owner === true) throw new UserError("--owner needs a value, e.g. --owner @you or --owner @org/team");
   const remote = git.git(["remote", "get-url", "origin"], rt);
-  const owner = args.owner ? (String(args.owner).startsWith("@") ? String(args.owner) : `@${args.owner}`) : (remote.ok && codeownersLib.githubOwner(remote.stdout)) || null;
+  const owner = args.owner ?(String(args.owner).startsWith("@") ? String(args.owner) : `@${args.owner}`) : (remote.ok && codeownersLib.githubOwner(remote.stdout)) || null;
   if (!owner) throw new UserError("couldn't tell the owner from the origin remote — pass --owner @you (or @org/team)");
   // A bare @org is not a valid CODEOWNERS owner (only users and @org/team): ask rather than write a rule that owns nothing.
   if (!args.owner && !owner.includes("/") && !args.offline && process.env.AGENT_FLOW_OFFLINE !== "1" && codeownersLib.ownerKind(owner.slice(1)) === "Organization") {

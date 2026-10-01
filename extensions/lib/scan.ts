@@ -50,23 +50,29 @@ function ciRunLines(yml: string): string[] {
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(/^(\s*)(?:-\s+)?run:\s*(.*?)\s*$/);
     if (!m) continue;
-    if (m[2] && !/^[|>]/.test(m[2])) {
-      out.push(m[2].replace(/^["']|["']$/g, ""));
+    const indent = m[1].length;
+    const block: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim() && lines[j].search(/\S/) <= indent) break;
+      block.push(lines[j].trim());
+    }
+    const head = m[2];
+    // YAML folds a plain or `>` scalar's lines into one command (`go test` + `./...` is `go test ./...`).
+    if (!/^[|]/.test(head)) {
+      const joined = (/^>/.test(head) ? block : [head, ...block]).filter(Boolean).join(" ").replace(/^["']|["']$/g, "");
+      if (joined) out.push(joined);
       continue;
     }
-    const indent = m[1].length;
     let continued = false;
     let depth = 0;
-    for (let j = i + 1; j < lines.length; j++) {
-      const l = lines[j];
-      if (l.trim() && l.search(/\S/) <= indent) break;
-      const t = l.trim();
+    for (const t of block) {
       const wasContinued = continued;
       continued = /\\$/.test(t);
-      if (/^(for|while|until|if|case)\b/.test(t)) depth++;
-      if (/^(done|fi|esac)\b/.test(t)) depth = Math.max(0, depth - 1);
+      // Count every compound-statement opener and closer on the line, so `if x; then y; fi` nets to zero.
+      depth += (t.match(/(^|[;&|]\s*|\b(?:then|do|else)\s+)(?:for|while|until|if|case)\b/g) ?? []).length;
+      depth = Math.max(0, depth - (t.match(/(^|[;&|(]\s*|\s)(?:done|fi|esac)\b/g) ?? []).length);
       // Inside a loop, after a `\`, or using a variable, the line isn't a command anyone can copy and run alone.
-      if (!t || t.startsWith("#") || continued || wasContinued || depth > 0 || /\$/.test(t) || /^(then|else|elif|fi|do|done|esac)\b/.test(t)) continue;
+      if (!t || t.startsWith("#") || continued || wasContinued || depth > 0 || /\$/.test(t) || /^(then|else|elif|fi|do|done|esac)\b/.test(t) || /^(for|while|until|if|case)\b/.test(t)) continue;
       out.push(t);
     }
   }

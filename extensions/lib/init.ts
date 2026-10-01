@@ -76,12 +76,16 @@ export function agentsSkeleton(root: string, scan: ScanResult, branch: string | 
     L.push("| Task | Command | Source |", "|---|---|---|");
     const seen = new Set<string>();
     for (const c of scan.commands) {
-      if (seen.has(c.name)) continue;
-      seen.add(c.name);
-      const cmd = c.source === "Makefile" ? c.command : runner(scan, c.name);
-      L.push(`| ${c.name} | \`${cmd}\` | ${c.source === "Makefile" ? "Makefile" : "package.json scripts"} [HIGH CONFIDENCE] |`);
+      // package.json scripts and Makefile targets are one per name; CI and build-script commands are several per name.
+      const fromPackage = c.source.startsWith("package.json");
+      const key = fromPackage || c.source === "Makefile" ? c.name : c.command;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const cmd = fromPackage ? runner(scan, c.name) : c.command;
+      const label = fromPackage ? "package.json scripts" : c.source === "Makefile" ? "Makefile" : c.source;
+      L.push(`| ${c.name} | \`${cmd.replace(/\|/g, "\\|")}\` | ${label} [HIGH CONFIDENCE] |`);
     }
-  } else L.push("[NEEDS VERIFICATION] No package.json scripts or Makefile targets found. How do you build, test and lint?");
+  } else L.push("[NEEDS VERIFICATION] No package.json scripts, Makefile targets, CI steps or build scripts found. How do you build, test and lint?");
   L.push(
     "",
     "## Paved paths",

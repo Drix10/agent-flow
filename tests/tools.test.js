@@ -758,3 +758,22 @@ test("scan: a repo with no package manifest gets its commands from CI steps and 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("scan: CI parsing folds `run: >` scalars, survives inline if/for, and init renders CI commands as themselves", async () => {
+  const { scanRepo } = await import("../extensions/lib/scan.js");
+  const { planInit } = await import("../extensions/lib/init.js");
+  const dir = mkdtempSync(join(tmpdir(), "af-scan-fold-"));
+  try {
+    mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
+    const yml = ["jobs:", "  t:", "    steps:", "      - run: >", "          go test", "          ./...", "      - run: |", "          if true; then echo ready; fi", "          go vet ./...", "          for t in a b; do echo $t; done", "          pytest -q", "          for x in 1 2", "          do", "            echo $x", "          done", "          make test"].join("\n");
+    writeFileSync(join(dir, ".github", "workflows", "ci.yml"), `${yml}\n`);
+    writeFileSync(join(dir, "go.mod"), "module x\n");
+    const cmds = scanRepo(dir).commands.map((c) => c.command);
+    assert.deepEqual(cmds, ["go test ./...", "pytest -q", "make test"], "lines after an inline if/for survive; go vet is not a test or build command");
+    const agents = planInit(dir, { version: "x" }).files.find((f) => f.path === "AGENTS.md").content;
+    assert.match(agents, /`go test \.\/\.\.\.`/);
+    assert.doesNotMatch(agents, /npm test|package\.json scripts/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

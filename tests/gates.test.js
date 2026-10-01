@@ -167,3 +167,14 @@ test("dash's `not found` is an environment error too, not a failing test", () =>
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a command that exits as expected is never an environment error, whatever it prints", () => {
+  const dir = tmp();
+  try {
+    const r = runGates(dir, [{ name: "ok", command: node("console.log('x is not recognized as an internal or external command')") }]);
+    assert.equal(r.results[0].ok, true);
+    assert.equal(r.environment_error, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

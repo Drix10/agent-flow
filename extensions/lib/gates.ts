@@ -163,7 +163,7 @@ export function runGates(root: string, gates: GateSpec[], opts: RunOptions = {})
       // 126/127: the shell couldn't find or execute the command. That's the environment, not the code under test.
       // A 126/127 from inside a script the gate ran (`./build.sh: line 36: …`) is that script's own failure.
       else if (!Array.isArray(g.command) && (exit === 126 || exit === 127) && expected !== exit && SHELL_SAID_UNRUNNABLE.test(output)) error = `command not runnable here (exit ${exit})`;
-      else if (!Array.isArray(g.command) && gateShell() === true && process.platform === "win32" && /is not recognized as an internal or external command/.test(output)) error = "cmd.exe can't run this command; install Git for Windows or set AGENT_FLOW_SHELL to a POSIX shell";
+      else if (!Array.isArray(g.command) && exit !== expected && gateShell() === true && process.platform === "win32" && /is not recognized as an internal or external command/.test(output)) error = "cmd.exe can't run this command; install Git for Windows or set AGENT_FLOW_SHELL to a POSIX shell";
     } catch (e: any) {
       error = e.message;
     }
