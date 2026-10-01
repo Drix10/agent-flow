@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.6] - Unreleased
+## [1.1.6] - 2026-10-02
 
 Found by running bootstrap on a real C++/Python repo with no `package.json`, on Windows.
 
