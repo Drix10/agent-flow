@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.1] - 2026-10-02
 
 - **`run` roles can read their issue folder and worktree.** An Implementer that `cd`s into its worktree lost Claude Code's permission to read `issue.md` (3 of 4 live runs on a real repository stopped with a permission error). `run` now passes `--add-dir` for the issue folder and the worktree to every role.
 
