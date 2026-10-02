@@ -963,6 +963,9 @@ export function roleMayRunCli(role: Role | null, argv: readonly string[]): strin
             : sub === "worktree" && (act === "create" || act === "remove")
               ? `worktree_${act}`
               : null;
+    // Dropping an issue from the list is a person's decision, for every role: an agent must not be able to make its own
+    // escalation disappear from `status`.
+    if (sub === "state" && act === "dismiss") return `role "${role}" may not run \`agent-flow state dismiss\`: dropping an issue from the list is a person's decision.`;
     if (tool && !ROLE_TOOL_ALLOW[role].has(tool)) return `role "${role}" may not run \`agent-flow ${sub}${tool === "stale_repair" || tool === "bootstrap_write" ? "" : ` ${act}`}\` (the CLI twin of ${tool}).`;
     if (sub === "gates" && act === "run" && READ_ONLY_ROLES.includes(role)) {
       return `role "${role}" may not run \`agent-flow gates run\` — the orchestrator runs gates and hands the report over.`;
@@ -1656,7 +1659,7 @@ function decideShellCore(g: GuardInput, cmd: string, protectedPaths: string[], c
     if (cfg) return block("agent-config", `mutating command references agent/CI configuration (${cfg}). Escalate to a human.`);
   }
   const prot = mentions(hay, protectedPaths);
-  if (prot && !g.allowProtected) return block("protected-path", `mutating command references protected path ${prot}. Escalate to Needs Me instead.`);
+  if (prot && !g.allowProtected) return block("protected-path", `this command changes files and also names the protected path ${prot}, and it can't be told which part touches what. If you only need to read or run ${prot}, do that in a separate command from the edit. If the task needs to change ${prot}, escalate to Needs Me instead.`);
   if (role === "implementer") {
     const ctx = mentions(hay, ctxFiles.filter((f) => f.length >= 3));
     if (ctx) return block("context-file", `mutating command references context file ${ctx} — only the Gardener edits context.`);

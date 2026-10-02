@@ -123,6 +123,8 @@ Checks (CI-safe, read-only):
 Pipeline (the CLI twin of the Pi tools — same rules, any harness):
   state [show] [--issue <n>]  Print pipeline state
   state update --issue <n> --state "Working|Needs Me|Completed" [--phase p] [--round r] [--reason t] [--reopen]
+  state dismiss --issue <n> --reason <why>
+                            Drop an issue from the list (you handled it by hand, or no longer want it); its files are kept
                             Exit 3 when the round cap escalated the issue to Needs Me
   worktree create <n> [--base <branch>] | remove <n> [--force] [--delete-branch] | list
   schema <implementer|reviewer|qa|manifest> [--strict]
@@ -747,7 +749,25 @@ function cmdState(args) {
     // Distinct exit code so a script can't miss the escalation by only checking for failure.
     return r.escalated ? 3 : 0;
   }
-  return sub("state", args._[1], ["show", "update"], "state [show] | state update --issue <n> --state <s> …");
+  if (action === "dismiss") {
+    const issue = issueNumber(args.issue, "state dismiss --issue <n> --reason <why>");
+    const reason = typeof args.reason === "string" ? args.reason : "";
+    if (!reason.trim()) throw new UserError('say why it is being dropped: state dismiss --issue <n> --reason "<why>"');
+    // A run that is still working on it would go on writing: refuse while one is alive.
+    const artifacts = join(rt, ".agent-flow", "artifacts", `issue-${issue}`);
+    if (existsSync(artifacts)) {
+      const held = orchestrateLib.acquireRunLock(artifacts);
+      if ("heldBy" in held) throw new UserError(`#${issue} is being worked on right now${held.heldBy ? ` (process ${held.heldBy})` : ""}. Stop that run first (Ctrl-C), then dismiss it.`);
+      held.release();
+    }
+    const r = state.dismissSession(rt, issue, reason);
+    out(args, { issue, ...r }, () => {
+      if (!r.dismissed) return warn(`#${issue} is not in the list, so there is nothing to drop`);
+      ok(`#${issue} dropped from the list (it was ${r.from}). Its files stay in ${relative(rt, artifacts) || artifacts}; remove its worktree with: agent-flow worktree remove ${issue}`);
+    });
+    return r.dismissed ? 0 : 1;
+  }
+  return sub("state", args._[1], ["show", "update", "dismiss"], "state [show] | state update --issue <n> --state <s> … | state dismiss --issue <n> --reason <why>");
 }
 
 function cmdWorktree(args) {
@@ -1114,11 +1134,17 @@ function runPreflight(rt, af, harness, { pr = false } = {}) {
     if (loaded.error === "manifest_not_found") problems.push("this repo isn't set up yet — run `npx @drix10/agent-flow install --harness claude`, then ask Claude to use the bootstrap skill");
     else problems.push(`CONTEXT_MANIFEST.json can't be read (${loaded.error}); run \`npx @drix10/agent-flow doctor\` before starting work`);
   } else if (loaded.value.problems.length) {
-    problems.push(`CONTEXT_MANIFEST.json has ${loaded.value.problems.length} problem(s); run \`npx @drix10/agent-flow doctor\` before starting work`);
+    const found = loaded.value.problems;
+    problems.push(`CONTEXT_MANIFEST.json has ${found.length} problem${found.length === 1 ? "" : "s"}: ${found.slice(0, 2).join("; ")}${found.length > 2 ? "; …" : ""}. Fix it (\`npx @drix10/agent-flow doctor\` lists them all) before starting work`);
   }
   if (harness !== "claude") problems.push(`\`run\` drives Claude Code for now (you asked for ${harness}); Codex and Gemini still work through the invoking-agents skill`);
   else {
-    const probe = spawnSync(launchLib.resolveExecutable("claude"), ["--version"], { encoding: "utf-8", timeout: 20000, shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(launchLib.resolveExecutable("claude")) });
+    // An npm .cmd shim must go through cmd.exe. Node prints a deprecation warning when arguments are passed alongside
+    // `shell: true`, so in that case the whole command is one quoted string (as the role launcher does).
+    const claudeExe = launchLib.resolveExecutable("claude");
+    const probe = process.platform === "win32" && /\.(cmd|bat)$/i.test(claudeExe)
+      ? spawnSync(`${launchLib.quoteForCmd(claudeExe)} --version`, { encoding: "utf-8", timeout: 20000, shell: true })
+      : spawnSync(claudeExe, ["--version"], { encoding: "utf-8", timeout: 20000 });
     if (probe.error || probe.status !== 0) problems.push("the `claude` command isn't available on PATH — install Claude Code and log in (`claude` once), then retry");
     if (af(["guard", "--check"]).status !== 0) problems.push("the guard hook isn't wired — run `npx @drix10/agent-flow install --harness claude` (it's what confines the Implementer to its worktree)");
   }
@@ -1257,14 +1283,23 @@ ${signal}: stopped ${stopped} running role${stopped === 1 ? "" : "s"}. Progress 
     if (r.status === "pr") ok(`Pull request ready: ${r.pr}${cost}`);
     else if (r.status === "ready") {
       ok(`Done and checked, not pushed. Branch ${r.branch}${cost}`);
+      console.log(dim(`  risk:     ${r.risk ?? "unknown"}`));
+      if (r.risk === "critical") warn(`This touches a critical area. Read the diff yourself before publishing: \`run ${r.issue} --pr\` opens a draft pull request that waits for your review`);
       console.log(dim(`  look:     git -C ${relative(rt, r.worktree) || r.worktree} log --oneline -5 && git -C ${relative(rt, r.worktree) || r.worktree} diff --stat`));
       console.log(dim(`  publish:  agent-flow run ${r.issue} --pr`));
     } else if (r.status === "completed") ok(`Already finished: ${r.reason ?? ""}`);
     else if (r.status === "needs_me") {
       warn(`This needs you — ${r.reason}${cost}`);
       console.log(dim(`  details:  ${relative(rt, r.artifacts) || r.artifacts}/`));
-      const raise = r.category === "max_rounds_exceeded" ? "raise pipeline.max_review_rounds in CONTEXT_MANIFEST.json, then " : r.category === "budget_exceeded" ? "raise pipeline.max_cost_usd in CONTEXT_MANIFEST.json, then " : r.category === "SPEC_ERROR" ? `fix the criteria in ${relative(rt, r.artifacts)}/issue.md, then ` : "";
-      console.log(dim(`  then:     ${raise}to go on: agent-flow state update --issue ${r.issue} --state Working --phase implement --round ${Math.max(1, r.round || 1)}; agent-flow run ${r.issue}`));
+      const sendBack = `agent-flow state update --issue ${r.issue} --state Working --phase implement --round ${Math.max(1, r.round || 1)}`;
+      if (r.category === "protected_path") {
+        // A protected path is a person's to change; the Implementer is told to stop, with or without the guard override.
+        console.log(dim("  then:     change it yourself: agents may not edit protected paths"));
+      } else {
+        const raise = r.category === "max_rounds_exceeded" ? "raise pipeline.max_review_rounds in CONTEXT_MANIFEST.json, then " : r.category === "budget_exceeded" ? "raise pipeline.max_cost_usd in CONTEXT_MANIFEST.json, then " : r.category === "SPEC_ERROR" ? `fix the criteria in ${relative(rt, r.artifacts)}/issue.md, then ` : "";
+        console.log(dim(`  then:     ${raise}to go on: ${sendBack}; agent-flow run ${r.issue}`));
+      }
+      console.log(dim(`  or drop:  agent-flow state dismiss --issue ${r.issue} --reason "<why>"`));
     } else bad(`Stopped before starting work: ${r.reason}`);
   });
   return result.status === "needs_me" ? 3 : result.status === "error" ? 1 : 0;
@@ -1302,6 +1337,9 @@ function cmdStatus(args) {
     const crit = (man.risk_boundaries ?? []).filter((b) => b.risk_level === "critical").length;
     if (prot) add("Protection", "ok", `${prot} protected path${prot === 1 ? "" : "s"}, ${crit} critical area${crit === 1 ? "" : "s"}`);
     else add("Protection", "warn", "no protected paths set: only secrets and git internals are guarded", "ask Claude to use the bootstrap skill and answer the risk questions");
+    if (crit && !man.pipeline?.models?.high_reasoning) {
+      add("Protection", "warn", `${crit} critical area${crit === 1 ? "" : "s"}, but no stronger model is set for reviewing them, so a critical change is reviewed by the same model as any other`, 'add "models": { "high_reasoning": "<model>" } under "pipeline" in CONTEXT_MANIFEST.json');
+    }
     gates = gatesLib.gatesOf(man);
     if (man.pipeline?.auto_merge_low_risk === true) add("Protection", "warn", "auto-merge is allowed: `run --pr --auto-merge` queues low-risk pull requests that pass QA (pipeline.auto_merge_low_risk)", "set it to false in CONTEXT_MANIFEST.json until you trust the pipeline here");
   }
@@ -1337,7 +1375,11 @@ function cmdStatus(args) {
   const working = sessions.filter((s) => s.state === "Working");
   if (waiting.length) for (const s of waiting) add("Work", "warn", `#${s.issue} needs you: ${String(s.reason ?? "").slice(0, 160)}`, `decide, then: agent-flow state update --issue ${s.issue} --state Working --phase implement --round ${Math.max(1, Number(s.round) || 1)}; agent-flow run ${s.issue}`);
   else add("Work", "ok", "nothing is waiting on you");
-  for (const s of working) add("Work", "info", `#${s.issue} in progress (round ${s.round ?? 1}, ${s.phase ?? "?"})`, `agent-flow run ${s.issue}  to resume`);
+  for (const s of working) {
+    // The publish checkpoint is recorded once review, gates and QA have passed: finished, waiting for a person to publish.
+    if (s.phase === "publish") add("Work", "info", `#${s.issue} is ready: reviewed, checked, not pushed`, `agent-flow run ${s.issue} --pr  to open the pull request`);
+    else add("Work", "info", `#${s.issue} in progress (round ${s.round ?? 1}, ${s.phase ?? "?"})`, `agent-flow run ${s.issue}  to resume`);
+  }
 
   // Updates
   const n = updateLib.updateNotice(rt, VERSION, { check: updateLib.updateCheckAllowed() && !args.offline && !args.json && !!process.stdout.isTTY });

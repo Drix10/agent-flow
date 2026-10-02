@@ -272,11 +272,16 @@ export function findingsFor(dir: string, r: number): string {
   return "none";
 }
 
+/**
+ * The tool lists per role. Windows offers Claude a separate `PowerShell` tool beside `Bash`: if only Bash is allowed, the
+ * model's first instinct (`cd <worktree>; git status` in PowerShell) is denied and a turn is wasted; and a Reviewer whose
+ * deny-list names only Bash would still have a shell. The guard hook judges PowerShell writes like Bash ones.
+ */
 export function claudeArgs(role: Role, p: { prompt: string; model?: string }): string[] {
   const base = ["claude", "-p", ...(p.model ? ["--model", p.model] : [])];
-  if (role === "implementer") return [...base, "--permission-mode", "acceptEdits", "--allowedTools", "Bash,Skill", "--output-format", "json", p.prompt];
-  if (role === "reviewer") return [...base, "--permission-mode", "plan", "--disallowedTools", "Write,Edit,MultiEdit,NotebookEdit,Bash,Skill", "--output-format", "json", p.prompt];
-  return [...base, "--allowedTools", "Bash,Skill", "--output-format", "json", p.prompt];
+  if (role === "implementer") return [...base, "--permission-mode", "acceptEdits", "--allowedTools", "Bash,PowerShell,Skill", "--output-format", "json", p.prompt];
+  if (role === "reviewer") return [...base, "--permission-mode", "plan", "--disallowedTools", "Write,Edit,MultiEdit,NotebookEdit,Bash,PowerShell,Skill", "--output-format", "json", p.prompt];
+  return [...base, "--allowedTools", "Bash,PowerShell,Skill", "--output-format", "json", p.prompt];
 }
 
 /** The same command resumed in the same Claude session, asked to fix its report; without a session, the prompt gets the sentence appended. */
@@ -398,8 +403,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       if (at("implement")) updatePhase("implement", R);
 
       // 1b. Implementer
-      log({ kind: "step", text: `${roundTag}: implementing` });
-      const impl = await runRole("implementer", R, { findings, model: R === LIMIT && HIGH ? HIGH : FAST });
+      const impl = await runRole("implementer", R, { findings, model: R === LIMIT && HIGH ? HIGH : FAST, announce: `${roundTag}: implementing` });
       if (impl.status === "needs_me") {
         escalate(String(impl.category ?? "IMPL_ERROR"), `${impl.what_failed ?? "the Implementer stopped"}. Decide: ${impl.suggested_next_step ?? "how to proceed"}`);
       }
@@ -439,8 +443,12 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
 
       // 1d. Reviewer
       if (at("review")) updatePhase("review", R);
-      log({ kind: "step", text: `${roundTag}: reviewing (${cls.reviewer_tier})` });
-      const rev = await runRole("reviewer", R, { model: cls.reviewer_tier === "high-reasoning" ? HIGH || FAST : FAST, limit: LIMIT });
+      const rev = await runRole("reviewer", R, {
+        model: cls.reviewer_tier === "high-reasoning" ? HIGH || FAST : FAST,
+        limit: LIMIT,
+        announce: `${roundTag}: reviewing (${cls.reviewer_tier})`,
+        warn: cls.reviewer_tier === "high-reasoning" && !HIGH ? "this change is critical, but pipeline.models.high_reasoning is not set, so the review runs on the same model as everything else" : undefined,
+      });
       const f: any[] = Array.isArray(rev.findings) ? rev.findings : [];
       if ((rev.permission_violations ?? []).length) escalate("permission_violation", `the Reviewer reported: ${rev.permission_violations.join("; ")}. Decide: whether a role overstepped.`);
       if (f.some((x) => x.category === "SPEC_ERROR")) escalate("SPEC_ERROR", `${f.find((x) => x.category === "SPEC_ERROR").issue}. Decide: clarify the acceptance criteria.`);
@@ -464,7 +472,9 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       }
 
       // 1e. gates, then QA
-      if (gatesDefined) {
+      // Reaching the qa phase means the gates already passed this round; the binding at completion re-checks that
+      // they were run on the commit being published, so a resume does not pay for them a second time.
+      if (gatesDefined && phaseNow < 2) {
         log({ kind: "step", text: `${roundTag}: running gates` });
         const g = af(["gates", "run", "--issue", String(N), "--json"]);
         writeFileSync(join(A, `gates-r${R}.json`), g.stdout);
@@ -478,9 +488,8 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         }
       }
       if (at("qa")) updatePhase("qa", R);
-      log({ kind: "step", text: `${roundTag}: QA` });
       const pre = snapshot();
-      const qa = await runRole("qa", R, { model: FAST });
+      const qa = await runRole("qa", R, { model: FAST, announce: `${roundTag}: QA` });
       if (snapshot() !== pre) escalate("qa_mutated_tree", "QA changed the files it was testing, so its result is invalid. Decide: re-run QA.");
       if (qa.status === "failed" && !qa.reason) {
         findings = join(A, `qa-r${R}.json`);
@@ -517,7 +526,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
     }
 
     // ---- role launch + validation ------------------------------------------------------
-    async function runRole(role: Role, rr: number, o: { findings?: string; model?: string; limit?: number }): Promise<any> {
+    async function runRole(role: Role, rr: number, o: { findings?: string; model?: string; limit?: number; announce?: string; warn?: string }): Promise<any> {
       const stem = join(A, `${fileFor(role)}-r${rr}`);
       if (existsSync(`${stem}.json`) && PHASE_ORDER.indexOf(ROLE_PHASE[role]) < phaseReached(rr)) {
         log({ kind: "info", text: `${role}: using the report from the earlier run` });
@@ -527,6 +536,8 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
           log({ kind: "warn", text: `${role}: the saved report is unreadable; running it again` });
         }
       }
+      if (o.announce) log({ kind: "step", text: o.announce });
+      if (o.warn) log({ kind: "warn", text: o.warn });
       let commands = i.commands;
       if (commands.length > INLINE_COMMANDS_MAX || /[%"\r\n]/.test(commands)) {
         writeFileSync(join(A, "commands.txt"), `${commands}\n`);

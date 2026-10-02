@@ -26,7 +26,7 @@ function makeRepo(manifest = {}) {
   git(repo, "config", "user.email", "t@example.test");
   git(repo, "config", "user.name", "t");
   writeFileSync(join(repo, "AGENTS.md"), "# rules\n");
-  writeFileSync(join(repo, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", default_branch: "main", protected_paths: ["secret/**"], risk_boundaries: [{ path: "core/**", risk_level: "critical" }], pipeline: { max_review_rounds: 2 }, ...manifest }));
+  writeFileSync(join(repo, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", default_branch: "main", context_files: [{ path: "AGENTS.md", references: [] }], protected_paths: ["secret/**"], risk_boundaries: [{ path: "core/**", risk_level: "critical" }], pipeline: { max_review_rounds: 2 }, ...manifest }));
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "init");
   git(repo, "remote", "add", "origin", remote);
@@ -426,6 +426,12 @@ test("pure parts: criteria detection, issue numbers, claude argv, retry argv, ex
   assert.ok(rev.includes("plan") && rev.includes("--disallowedTools"), "the reviewer cannot edit or run a shell");
   assert.ok(!rev.includes("acceptEdits"));
   assert.ok(!claudeArgs("qa", { prompt: "P" }).includes("acceptEdits"), "QA does not get edit permission");
+  // Windows gives Claude a separate PowerShell tool. Roles that run commands must be allowed it (else their first
+  // command is denied), and the read-only Reviewer must have it denied (a live run showed it executes under plan mode).
+  const tools = (argv, flag) => argv[argv.indexOf(flag) + 1].split(",");
+  assert.ok(tools(impl, "--allowedTools").includes("PowerShell") && tools(impl, "--allowedTools").includes("Bash"));
+  assert.ok(tools(claudeArgs("qa", { prompt: "P" }), "--allowedTools").includes("PowerShell"));
+  assert.ok(["Bash", "PowerShell", "Write", "Edit", "MultiEdit", "NotebookEdit"].every((t) => tools(rev, "--disallowedTools").includes(t)), "the Reviewer has no shell of either kind and no way to write");
 
   const withSession = retryArgs(impl, "0b9d7e44-aaaa-4bbb-8ccc-123456789abc", ["$.commit: required"]);
   assert.deepEqual(withSession.slice(2, 4), ["--resume", "0b9d7e44-aaaa-4bbb-8ccc-123456789abc"]);
@@ -577,6 +583,7 @@ test("run: a ready issue publishes without running any role again", async () => 
     const second = await run(env, agent, { pr: true });
     assert.equal(second.result.status, "pr", JSON.stringify(second.result));
     assert.deepEqual({ ...agent.counts }, counts, "no role is paid for twice just to push");
+    assert.ok(!second.logs.some((l) => l.kind === "step" && /implementing|reviewing|QA$/.test(l.text)), "nothing is announced as work when nothing launches");
     assert.ok(second.gh.some((c) => c.startsWith("pr create") && c.includes("--base main")), "the pull request targets the base branch by name");
   } finally {
     env.cleanup();
@@ -1025,5 +1032,144 @@ test("lock: a stale lock is removed only if it is still the one that was judged 
     assert.equal(removeIfUnchanged(path, "A"), false, "already gone is not an error");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("run on Windows: a claude.cmd shim is launched through cmd.exe with no deprecation warning, and the whole prompt arrives", { skip: process.platform !== "win32" }, () => {
+  const env = makeRepo();
+  const shimDir = mkdtempSync(join(tmpdir(), "af-shim-"));
+  try {
+    // A stand-in for the npm shim: answers --version, and for a role records the arguments it received and prints junk.
+    const record = join(shimDir, "args.txt");
+    writeFileSync(
+      join(shimDir, "claude.cmd"),
+      ["@echo off", 'if "%~1"=="--version" (echo 2.1.0 (Claude Code)& exit /b 0)', `echo %* >> "${record}"`, "echo this is not a report", "exit /b 0", ""].join("\r\n")
+    );
+    const withShim = { ...process.env, NO_COLOR: "1", AGENT_FLOW_ROLE: "", AGENT_FLOW_OFFLINE: "1" };
+    for (const k of Object.keys(withShim)) if (k.toLowerCase() === "path") delete withShim[k];
+    withShim.PATH = `${shimDir};${process.env.PATH ?? process.env.Path}`;
+    assert.equal(spawnSync(process.execPath, [BIN, "install", "--harness", "claude"], { cwd: env.repo, encoding: "utf-8", env: withShim }).status, 0);
+    // --throw-deprecation turns Node's DEP0190 warning into a crash. It is only delivered once the program waits on a
+    // child process, which is why this runs a real role launch instead of a dry run.
+    const r = spawnSync(process.execPath, ["--throw-deprecation", BIN, "run", "Add a version flag so that users can see the version %PATH%", "--commands", "git diff --check", "--timeout", "60", "--json"], {
+      cwd: env.repo,
+      encoding: "utf-8",
+      env: withShim,
+    });
+    assert.doesNotMatch(r.stderr, /DEP0190|DeprecationWarning/, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.category, "malformed_report", JSON.stringify(out));
+    const seen = readFileSync(record, "utf-8");
+    assert.match(seen, /Use the implementer skill/, "the prompt reached the shim");
+    assert.match(seen, /Worktree: /, "and was not cut short at a line break");
+    assert.doesNotMatch(seen, /Path is C:/i, "%PATH% in the task text was not expanded by cmd.exe");
+  } finally {
+    env.cleanup();
+    rmSync(shimDir, { recursive: true, force: true });
+  }
+});
+
+test("run: preflight names the manifest problem instead of only counting it", () => {
+  const env = makeRepo();
+  try {
+    writeFileSync(join(env.repo, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2" }));
+    const r = spawnSync(process.execPath, [BIN, "run", "Add a version flag so that users can see the version"], { cwd: env.repo, encoding: "utf-8", env: { ...process.env, NO_COLOR: "1", AGENT_FLOW_ROLE: "" } });
+    assert.equal(r.status, 2);
+    assert.match(r.stdout, /CONTEXT_MANIFEST\.json has 1 problem: missing `context_files` array\./);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: resuming at publish does not run the gates again (they already passed on this commit)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-gatecount-"));
+  try {
+    const script = join(dir, "count.js");
+    const counter = join(dir, "count.txt");
+    writeFileSync(script, "require('fs').appendFileSync(process.argv[2], 'x');\n");
+    const env = makeRepo({ gates: [{ name: "counted", command: [process.execPath, script, counter] }] });
+    try {
+      const agent = standardAgent(env.repo);
+      assert.equal((await run(env, agent)).result.status, "ready");
+      assert.equal(readFileSync(counter, "utf-8"), "x", "the gate ran once on the way to ready");
+      assert.equal((await run(env, agent, { pr: true })).result.status, "pr");
+      assert.equal(readFileSync(counter, "utf-8"), "x", "and not again just to publish");
+    } finally {
+      env.cleanup();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("run: a critical change says so when no stronger review model is configured, and uses one when it is", async () => {
+  const env = makeRepo();
+  try {
+    const agent = fakeAgent(env.repo, { implementer: [implStep("core/engine.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => ({ report: qaReport() })] });
+    const { result, logs } = await run(env, agent);
+    assert.equal(result.risk, "critical");
+    assert.ok(logs.some((l) => l.kind === "warn" && /pipeline\.models\.high_reasoning is not set/.test(l.text)), "no pretending a critical review was stronger than it was");
+    assert.ok(!agent.calls.find((c) => c.role === "reviewer").argv.includes("--model"), "and no model was passed");
+  } finally {
+    env.cleanup();
+  }
+  const configured = makeRepo({ pipeline: { max_review_rounds: 2, models: { fast: "fast-model", high_reasoning: "strong-model" } } });
+  try {
+    const agent = fakeAgent(configured.repo, { implementer: [implStep("core/engine.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => ({ report: qaReport() })] });
+    const { logs } = await run(configured, agent);
+    assert.ok(!logs.some((l) => /high_reasoning is not set/.test(l.text)));
+    const argv = agent.calls.find((c) => c.role === "reviewer").argv;
+    assert.equal(argv[argv.indexOf("--model") + 1], "strong-model", "the critical review uses the stronger model");
+    const implArgv = agent.calls.find((c) => c.role === "implementer").argv;
+    assert.equal(implArgv[implArgv.indexOf("--model") + 1], "fast-model");
+  } finally {
+    configured.cleanup();
+  }
+});
+
+test("run: Ctrl-C stops the agent and what it started, releases the lock, saves progress, and says how to continue", { skip: process.platform === "win32" }, async () => {
+  const { spawn } = await import("node:child_process");
+  const env = makeRepo();
+  const shimDir = mkdtempSync(join(tmpdir(), "af-sigint-"));
+  try {
+    // A stand-in `claude` that never finishes and starts a process of its own, as a real agent running tests would.
+    const pidFile = join(shimDir, "grandchild.pid");
+    const script = join(shimDir, "claude");
+    writeFileSync(script, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi\nsleep 300 &\necho $! > "${pidFile}"\nsleep 300\n`);
+    fs.chmodSync(script, 0o755);
+    const withShim = { ...process.env, NO_COLOR: "1", AGENT_FLOW_ROLE: "", AGENT_FLOW_OFFLINE: "1", PATH: `${shimDir}:${process.env.PATH}` };
+    assert.equal(spawnSync(process.execPath, [BIN, "install", "--harness", "claude"], { cwd: env.repo, encoding: "utf-8", env: withShim }).status, 0);
+
+    const cli = spawn(process.execPath, [BIN, "run", "Add a version flag so that users can see the version", "--timeout", "120"], { cwd: env.repo, env: withShim, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    cli.stdout.on("data", (d) => (output += d));
+    cli.stderr.on("data", (d) => (output += d));
+    const exited = new Promise((resolve) => cli.on("exit", (code, signal) => resolve({ code, signal })));
+    for (let k = 0; k < 300 && !existsSync(pidFile); k++) await sleep(50);
+    assert.ok(existsSync(pidFile), `the agent started its own process. output so far:\n${output}`);
+    const grandchild = Number(readFileSync(pidFile, "utf-8").trim());
+
+    cli.kill("SIGINT");
+    const { code, signal } = await Promise.race([exited, sleep(15000).then(() => ({ code: "timeout" }))]);
+    assert.equal(code, 130, `exit code for an interrupt (signal ${signal})\n${output}`);
+    assert.match(output, /SIGINT: stopped 1 running role/);
+    assert.match(output, /Progress is saved; continue with: agent-flow run 100000/);
+
+    let alive = true;
+    for (let k = 0; k < 50 && alive; k++) {
+      await sleep(100);
+      try {
+        process.kill(grandchild, 0);
+      } catch {
+        alive = false;
+      }
+    }
+    assert.equal(alive, false, "the process the agent started is gone, not left running unattended");
+    assert.ok(!existsSync(join(env.repo, ".agent-flow", "artifacts", "issue-100000", "run.lock")), "the lock is released");
+    const saved = JSON.parse(spawnSync(process.execPath, [BIN, "state", "show", "--issue", "100000", "--json"], { cwd: env.repo, encoding: "utf-8", env: withShim }).stdout);
+    assert.deepEqual([saved.state, saved.phase, saved.round], ["Working", "implement", 1], "resumable from where it stopped");
+  } finally {
+    env.cleanup();
+    rmSync(shimDir, { recursive: true, force: true });
   }
 });

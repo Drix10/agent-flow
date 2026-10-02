@@ -94,6 +94,7 @@ npx @drix10/agent-flow status       # protection, checks, context and pending wo
 npx @drix10/agent-flow doctor       # read-only context report
 npx @drix10/agent-flow scan         # read-only repository reconnaissance
 npx @drix10/agent-flow hook install # install the pre-commit gate
+npx @drix10/agent-flow state dismiss --issue 100000 --reason "did it by hand"   # drop an issue from the list
 ```
 
 ## Pipeline behavior
@@ -120,6 +121,8 @@ When an agent repeats a mistake, prefer a mechanical fix: an invariant in code, 
 - Shell-write analysis is best-effort. Use a sandbox or remove shell access from read-only roles when a hard boundary is required.
 - Per-tool enforcement is available on Claude Code and Pi. Other harnesses have different enforcement limits.
 - Hooks do not access the network. `doctor` may make optional, cached read-only lookups for package updates and GitHub Code Owner settings; CI and offline modes skip them.
+- Each issue gets its own git worktree. Measured on Windows with a synthetic 60,000-file repository: creating it took 16 seconds (git's checkout), Agent Flow's own commands each finished in about half a second or less, and the before-and-after check around QA added about 3 seconds in total. Very large monorepos should use git sparse-checkout or a partial clone; Agent Flow does not automate that.
+- Critical changes are reviewed by a stronger model only if you set `pipeline.models.high_reasoning` (and `pipeline.models.fast` for the rest). Unset, every role uses the default model, and `status` and `run` say so.
 - Audit logs are tamper-evident, not tamper-proof. Keep an audit hash outside the repository if you need an external trust anchor.
 
 See [Security](SECURITY.md) and [known failure modes](FAILURE_MODES.md) for details. Agent Flow works one repository at a time and does not provide model-provider failover.

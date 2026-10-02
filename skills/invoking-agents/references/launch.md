@@ -129,13 +129,13 @@ Every role runs with **the repo root as its working directory**, not the worktre
 
 Read-only enforcement is `--permission-mode plan` (edits need an approval nobody is there to grant) plus `--disallowedTools` (the deny-list), plus the guard hook above — which is the part that actually blocks. Where the CLI offers it, `--agent reviewer` with `--tools Read,Grep,Glob` is stronger (an allow-list instead of a deny-list); prefer that.
 
-**Implementer.** `acceptEdits` lets it edit files. `--allowedTools` pre-approves the shell (tests, commit) and the `Skill` tool, which otherwise needs a permission nobody is there to grant in `-p` mode. The guard hook still vets every call. `ROLE_TIMEOUT` (the runner) is the budget; hitting it ends the run with exit 124.
+**Implementer.** `acceptEdits` lets it edit files. `--allowedTools` pre-approves the shell (tests, commit; `PowerShell` is the shell tool Claude uses on Windows, and without it the first command is denied) and the `Skill` tool, which otherwise needs a permission nobody is there to grant in `-p` mode. The guard hook still vets every call. `ROLE_TIMEOUT` (the runner) is the budget; hitting it ends the run with exit 124.
 
 ```bash
 node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=implementer AGENT_FLOW_WORKTREE="$WT" \
   claude -p ${FAST_MODEL:+--model "$FAST_MODEL"} \
-  --permission-mode acceptEdits --allowedTools Bash,Skill \
+  --permission-mode acceptEdits --allowedTools Bash,PowerShell,Skill \
   --output-format json \
   "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS"
 ```
@@ -146,7 +146,7 @@ node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- \
 node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=reviewer \
   claude -p ${MODEL:+--model "$MODEL"} \
-  --permission-mode plan --disallowedTools Write,Edit,MultiEdit,NotebookEdit,Bash,Skill \
+  --permission-mode plan --disallowedTools Write,Edit,MultiEdit,NotebookEdit,Bash,PowerShell,Skill \
   --output-format json \
   "Round $R of $LIMIT. Read .claude/skills/reviewer/SKILL.md and follow it. Packet: $A/ (issue.md, diff.patch, classification.json, implementer-r$R.json, and review-r$((R-1)).json if it exists). Worktree for reading context: $WT"
 ```
@@ -157,7 +157,7 @@ node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- \
 node "$A/run-role.mjs" "$A/qa-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=qa \
   claude -p ${FAST_MODEL:+--model "$FAST_MODEL"} \
-  --allowedTools Bash,Skill \
+  --allowedTools Bash,PowerShell,Skill \
   --output-format json \
   "Use the qa skill. Issue $N. Worktree: $WT (cd into it first). Commands: $COMMANDS"
 ```

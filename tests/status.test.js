@@ -79,3 +79,30 @@ test("status does not claim another harness guard is active from config-file pre
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("status: critical areas with no stronger review model set are called out, and not once one is set", () => {
+  const critical = [{ path: "core/**", risk_level: "critical" }];
+  const withoutModel = repo({ protected_paths: ["secret/**"], risk_boundaries: critical, gates: [{ name: "a", command: "true" }] });
+  const withModel = repo({ protected_paths: ["secret/**"], risk_boundaries: critical, gates: [{ name: "a", command: "true" }], pipeline: { models: { high_reasoning: "strong-model" } } });
+  try {
+    assert.match(cli(withoutModel, "status").stdout, /1 critical area, but no stronger model is set for reviewing them/);
+    assert.doesNotMatch(cli(withModel, "status").stdout, /no stronger model is set/);
+  } finally {
+    rmSync(withoutModel, { recursive: true, force: true });
+    rmSync(withModel, { recursive: true, force: true });
+  }
+});
+
+test("status: an issue that passed review, gates and QA is 'ready', not 'in progress'", () => {
+  const dir = repo({ protected_paths: ["secret/**"], gates: [{ name: "a", command: "true" }] });
+  try {
+    cli(dir, "state", "update", "--issue", "9", "--state", "Working", "--phase", "publish", "--round", "1");
+    cli(dir, "state", "update", "--issue", "10", "--state", "Working", "--phase", "qa", "--round", "1");
+    const out = cli(dir, "status").stdout;
+    assert.match(out, /#9 is ready: reviewed, checked, not pushed/);
+    assert.match(out, /agent-flow run 9 --pr {2}to open the pull request/);
+    assert.match(out, /#10 in progress \(round 1, qa\)/, "an issue still in QA is in progress");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

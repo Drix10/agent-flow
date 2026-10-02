@@ -63,6 +63,7 @@ Ask these one at a time. Never pre-fill the answers.
    - **How long it takes.** Set `timeout_seconds` above the slowest honest run (default 600).
    - **Fast ones for the stop gate.** Lint, typecheck and unit tests can be `on_stop: true`; full builds can't.
    Prefer one gate per CI job over one per file. A loop in a string command is fine: `for t in a b; do python3 tests/$t.py || exit 1; done`.
+6. **Models (only if there are critical areas).** "Should critical changes be reviewed by a stronger model than routine ones?" This sets `pipeline.models.high_reasoning` (and `pipeline.models.fast` for everything else), spelled the way their harness does (`opus` and `sonnet` on Claude Code). Left unset, a critical review runs on the same model as any other, and `status` and `run` say so. If they don't know, leave it unset; don't guess a model name.
 
 Patterns match with globs from the repo root: `*` stays inside one directory level only when it has a `/` before it (`src/*.ts`); `*.md` and `**/*.md` match at any depth, and `docs/` covers everything under it. When a diff matches several boundaries, the highest level wins, so a `low` test folder inside a `critical` tree stays critical. A context file that sits in a critical tree (`kernel/AGENTS.md` under `kernel/**`) makes its edits critical too: say so, and let the human choose.
 
