@@ -291,13 +291,31 @@ test("run: a failing gate sends the logs back as the next round's findings; QA n
 });
 
 test("run: QA that changes the tree it is testing is not believed", async () => {
-  const env = makeRepo();
-  try {
-    const agent = fakeAgent(env.repo, { implementer: [implStep("f.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [({ wt }) => ({ effect: () => writeFileSync(join(wt, "left-behind.txt"), "x"), report: qaReport() })] });
-    const { result } = await run(env, agent);
-    assert.equal(result.category, "qa_mutated_tree");
-  } finally {
-    env.cleanup();
+  const scenarios = [
+    {
+      name: "binary tracked diff",
+      before: (wt) => writeFileSync(join(wt, "f.txt"), Buffer.from([0, 1])),
+      after: (wt) => writeFileSync(join(wt, "f.txt"), Buffer.from([0, 4])),
+    },
+    {
+      name: "untracked file content hash",
+      before: (wt) => writeFileSync(join(wt, "untracked.bin"), Buffer.from([2, 3])),
+      after: (wt) => writeFileSync(join(wt, "untracked.bin"), Buffer.from([2, 5])),
+    },
+  ];
+  for (const scenario of scenarios) {
+    const env = makeRepo();
+    try {
+      const agent = fakeAgent(env.repo, {
+        implementer: [implStep("f.txt")],
+        reviewer: [({ round }) => ({ effect: scenario.before, report: reviewReport(round) })],
+        qa: [({ wt }) => ({ effect: () => scenario.after(wt), report: qaReport() })],
+      });
+      const { result } = await run(env, agent);
+      assert.equal(result.category, "qa_mutated_tree", scenario.name);
+    } finally {
+      env.cleanup();
+    }
   }
 });
 
@@ -471,6 +489,11 @@ test("role launcher rejects invalid input and closes files if spawn throws", asy
     const ok = await realSpawner({ argv: [process.execPath, "-e", "process.exit(0)"], env: {}, cwd: dir, base, timeoutSec: 5 });
     assert.equal(ok.exit, 0);
     assert.ok(existsSync(`${base}.exit`));
+
+    const failingBase = join(dir, "failing-role");
+    mkdirSync(`${failingBase}.err`);
+    await assert.rejects(realSpawner({ argv: [process.execPath], env: {}, cwd: dir, base: failingBase, timeoutSec: 5 }));
+    assert.ok(existsSync(`${failingBase}.raw`), "stdout file remains available after stderr setup fails");
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }

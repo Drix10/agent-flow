@@ -59,7 +59,17 @@ export const realSpawner: Spawner = (spec) =>
     const exe = resolveExecutable(argv[0]);
     writeFileSync(`${base}.argv`, JSON.stringify(argv));
     const out = openSync(`${base}.raw`, "w");
-    const err = openSync(`${base}.err`, "w");
+    let err: number;
+    try {
+      err = openSync(`${base}.err`, "w");
+    } catch (error) {
+      try {
+        closeSync(out);
+      } catch {
+        // Preserve the error that prevented stderr from opening.
+      }
+      throw error;
+    }
     const stdio: ["ignore", number, number] = ["ignore", out, err];
     const childEnv = { ...process.env, ...env };
     delete childEnv.AF_SUPERVISED;
