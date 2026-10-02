@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -301,6 +302,40 @@ test("run: QA that changes the tree it is testing is not believed", async () => 
   }
 });
 
+for (const kind of ["tracked text", "tracked binary", "staged", "untracked", "unchanged"]) {
+  test(`run: QA snapshot detects content changes with unchanged status and HEAD (${kind})`, async () => {
+    const env = makeRepo();
+    try {
+      const name = kind === "untracked" ? "nested/untracked file.bin" : "f.txt";
+      const before = kind === "tracked text" ? "before\n" : Buffer.from([0, 1, 2]);
+      const after = kind === "tracked text" ? "after\n" : Buffer.from([0, 1, 3]);
+      const agent = fakeAgent(env.repo, {
+        implementer: [implStep("f.txt")],
+        reviewer: [({ wt, round }) => {
+          mkdirSync(join(wt, "nested"), { recursive: true });
+          writeFileSync(join(wt, name), before);
+          if (kind === "staged") git(wt, "add", "--", name);
+          return { report: reviewReport(round) };
+        }],
+        qa: [({ wt }) => {
+          const status = git(wt, "status", "--porcelain").stdout;
+          const head = headOf(wt);
+          if (kind !== "unchanged") writeFileSync(join(wt, name), after);
+          if (kind === "staged") git(wt, "add", "--", name);
+          assert.equal(git(wt, "status", "--porcelain").stdout, status);
+          assert.equal(headOf(wt), head);
+          return { report: qaReport() };
+        }],
+      });
+      const { result } = await run(env, agent);
+      assert.equal(result.status, kind === "unchanged" ? "ready" : "needs_me", JSON.stringify(result));
+      if (kind !== "unchanged") assert.equal(result.category, "qa_mutated_tree");
+    } finally {
+      env.cleanup();
+    }
+  });
+}
+
 test("run: a disputed finding raised again escalates immediately instead of repeating the argument", async () => {
   const env = makeRepo();
   try {
@@ -475,3 +510,38 @@ test("role launcher rejects invalid input and closes files if spawn throws", asy
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
+
+for (const cleanupThrows of [false, true]) {
+  test(`role launcher closes stdout and preserves the stderr open error (cleanup throws: ${cleanupThrows})`, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), "af-launch-"));
+    const base = join(dir, "role");
+    const open = fs.openSync;
+    const close = fs.closeSync;
+    const failure = new Error("stderr could not open");
+    let out;
+    try {
+      t.mock.method(fs, "openSync", (path, ...args) => {
+        if (path === `${base}.err`) throw failure;
+        const fd = open(path, ...args);
+        if (path === `${base}.raw`) out = fd;
+        return fd;
+      });
+      t.mock.method(fs, "closeSync", (fd) => {
+        close(fd);
+        if (fd === out && cleanupThrows) throw new Error("cleanup failed");
+      });
+      syncBuiltinESMExports();
+      await assert.rejects(realSpawner({ argv: [process.execPath], env: {}, cwd: dir, base, timeoutSec: 5 }), (error) => error === failure);
+      assert.equal(typeof out, "number");
+      assert.throws(() => fs.fstatSync(out), { code: "EBADF" });
+      assert.equal(existsSync(`${base}.exit`), false);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      if (out !== undefined) {
+        try { close(out); } catch { /* already closed */ }
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}

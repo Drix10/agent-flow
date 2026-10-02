@@ -6,7 +6,8 @@
  * report validation, gates, the completion binding) is made by the same `agent-flow` subcommands the skill uses; they are
  * called through the injected `af`, so the two cannot drift and a test can run the whole loop against a fake agent.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Spawner } from "./launch.js";
 import { issueCost } from "./state.js";
@@ -257,7 +258,14 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       function snapshot(): string {
         const s = sh("git", ["-C", WT, "status", "--porcelain"], root).stdout;
         const h = sh("git", ["-C", WT, "rev-parse", "HEAD"], root).stdout.trim();
-        return `${h}\n${s}`;
+        const diff = sh("git", ["-C", WT, "diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"], root).stdout;
+        const untracked = sh("git", ["-C", WT, "ls-files", "--others", "--exclude-standard", "-z"], root).stdout
+          .split("\0").filter(Boolean).sort().map((file) => {
+            const path = join(WT, file);
+            const content = lstatSync(path).isSymbolicLink() ? readlinkSync(path, { encoding: "buffer" }) : readFileSync(path);
+            return [file, createHash("sha256").update(content).digest("hex")];
+          });
+        return JSON.stringify([h, s, diff, untracked]);
       }
     }
 
