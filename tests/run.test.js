@@ -433,6 +433,16 @@ test("pure parts: criteria detection, issue numbers, claude argv, retry argv, ex
   assert.ok(tools(claudeArgs("qa", { prompt: "P" }), "--allowedTools").includes("PowerShell"));
   assert.ok(["Bash", "PowerShell", "Write", "Edit", "MultiEdit", "NotebookEdit"].every((t) => tools(rev, "--disallowedTools").includes(t)), "the Reviewer has no shell of either kind and no way to write");
 
+  // A role that cd's into its worktree loses read access to the issue folder unless Claude is told about it (a real run:
+  // three of four implementers were denied reading issue.md). The flag must also not swallow the next option or the prompt.
+  for (const role of ["implementer", "reviewer", "qa"]) {
+    const a = claudeArgs(role, { prompt: "P", model: "m", dirs: ["/r/.agent-flow/artifacts/issue-7", "/r/.worktrees/issue-7"] });
+    assert.deepEqual(a.slice(a.indexOf("--add-dir") + 1, a.indexOf("--add-dir") + 3), ["/r/.agent-flow/artifacts/issue-7", "/r/.worktrees/issue-7"], role);
+    assert.ok(a[a.indexOf("--add-dir") + 3].startsWith("--"), `${role}: the next token is a flag, so the variadic option stops`);
+    assert.equal(a.at(-1), "P");
+  }
+  assert.ok(!claudeArgs("qa", { prompt: "P" }).includes("--add-dir"), "no dirs, no flag");
+
   const withSession = retryArgs(impl, "0b9d7e44-aaaa-4bbb-8ccc-123456789abc", ["$.commit: required"]);
   assert.deepEqual(withSession.slice(2, 4), ["--resume", "0b9d7e44-aaaa-4bbb-8ccc-123456789abc"]);
   assert.match(withSession.at(-1), /rejected by the validator: \$\.commit: required/);
