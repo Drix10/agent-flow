@@ -7,7 +7,7 @@
  * called through the injected `af`, so the two cannot drift and a test can run the whole loop against a fake agent.
  */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { Spawner } from "./launch.js";
 import { issueCost } from "./state.js";
@@ -66,18 +66,142 @@ export interface RunOutcome {
   unreported_runs?: number;
 }
 
-const PHASE_ORDER = ["implement", "review", "qa"];
+/** The order a round moves through; `publish` is recorded once QA has passed, so a later `run N --pr` skips straight to publishing. */
+const PHASE_ORDER = ["implement", "review", "qa", "publish"];
+const ROLE_PHASE: Record<Role, string> = { implementer: "implement", reviewer: "review", qa: "qa" };
 const fileFor = (role: Role) => (role === "reviewer" ? "review" : role);
+/** QA is told the commands inline up to this length; longer lists go in a file (a command line has a hard length limit on Windows). */
+const INLINE_COMMANDS_MAX = 800;
 const json = (s: string): any => JSON.parse(s);
 const readJson = (p: string): any => JSON.parse(readFileSync(p, "utf-8"));
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 /** Keep issue data inside its wrapper even when it contains markup that looks like a closing tag. */
 const xmlText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** Text that goes into a command line: one line, bounded, so a long or multi-line message can't break the launch. */
+const oneLine = (s: string, max = 1200) => s.replace(/\s+/g, " ").trim().slice(0, max);
+const SESSION_ID = /^[A-Za-z0-9_-]{8,80}$/;
+/** What `state update` records in `reason` begins with its category: `budget_exceeded: …`, `SPEC_ERROR: …`. */
+const categoryOf = (reason: unknown, fallback: string) => {
+  const m = /^([A-Za-z_]+):/.exec(String(reason ?? ""));
+  return m ? m[1] : fallback;
+};
 
 class Stop extends Error {
   constructor(public outcome: RunOutcome) {
     super(outcome.reason ?? outcome.status);
   }
+}
+
+/** SHA-256 of a file's bytes, read in 1 MiB pieces so a large build output can't exhaust memory. */
+function hashFile(path: string): string {
+  const h = createHash("sha256");
+  let st;
+  try {
+    st = lstatSync(path);
+  } catch {
+    return "missing";
+  }
+  if (st.isSymbolicLink()) h.update("link:").update(readlinkSync(path, { encoding: "buffer" }));
+  else if (st.isFile()) {
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.allocUnsafe(1 << 20);
+      for (let n = readSync(fd, buf, 0, buf.length, null); n > 0; n = readSync(fd, buf, 0, buf.length, null)) h.update(buf.subarray(0, n));
+    } finally {
+      closeSync(fd);
+    }
+  } else h.update(`special:${st.mode}`); // a directory (a nested repository) or a device: never read it
+  return h.digest("hex");
+}
+
+const heldLocks = new Set<string>();
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM"; // exists, owned by someone else
+  }
+};
+const LOCK_STALE_MS = 12 * 3600_000;
+
+/**
+ * One `run` per issue at a time: two would race on the worktree, the state file and the report files. A lock left by a
+ * crashed run (its process gone, or older than half a day) is taken over. Returns a release function, or the pid that holds it.
+ */
+export function acquireRunLock(dir: string, now = Date.now()): { release: () => void } | { heldBy: number } {
+  const path = join(dir, "run.lock");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, "wx");
+      try {
+        writeSync(fd, JSON.stringify({ pid: process.pid, at: now }));
+      } finally {
+        closeSync(fd);
+      }
+      heldLocks.add(path);
+      return {
+        release: () => {
+          heldLocks.delete(path);
+          try {
+            unlinkSync(path);
+          } catch {
+            /* already gone */
+          }
+        },
+      };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      let held: { pid?: number; at?: number } = {};
+      try {
+        held = JSON.parse(readFileSync(path, "utf-8"));
+      } catch {
+        /* unreadable: treat as stale */
+      }
+      const live = Number.isInteger(held.pid) && (held.pid as number) > 0 && pidAlive(held.pid as number) && typeof held.at === "number" && now - held.at < LOCK_STALE_MS;
+      if (live) return { heldBy: held.pid as number };
+      try {
+        unlinkSync(path);
+      } catch {
+        /* someone else just took it over; the next attempt sees theirs */
+      }
+    }
+  }
+  return { heldBy: 0 };
+}
+
+/** Drop every lock this process holds. Called when a run is interrupted, where `finally` blocks don't run. */
+export function releaseHeldLocks(): void {
+  for (const path of heldLocks) {
+    try {
+      unlinkSync(path);
+    } catch {
+      /* already gone */
+    }
+  }
+  heldLocks.clear();
+}
+
+/**
+ * The report that ended round `r`, for the Implementer of round r+1 to act on. A later stage only runs when the earlier
+ * ones passed, so at most one of these fails per round; checked from the last stage back.
+ */
+export function findingsFor(dir: string, r: number): string {
+  const read = (name: string): any => {
+    try {
+      return JSON.parse(readFileSync(join(dir, name), "utf-8"));
+    } catch {
+      return null;
+    }
+  };
+  const qa = read(`qa-r${r}.json`);
+  if (qa && qa.status === "failed") return join(dir, `qa-r${r}.json`);
+  const gates = read(`gates-r${r}.json`);
+  if (gates && gates.ok === false) return join(dir, `gates-r${r}.json`);
+  const review = read(`review-r${r}.json`);
+  if (review && review.status === "request_changes") return join(dir, `review-r${r}.json`);
+  for (const name of [`dirty-r${r}.json`, `policy-r${r}.json`]) if (existsSync(join(dir, name))) return join(dir, name);
+  return "none";
 }
 
 export function claudeArgs(role: Role, p: { prompt: string; model?: string }): string[] {
@@ -89,9 +213,10 @@ export function claudeArgs(role: Role, p: { prompt: string; model?: string }): s
 
 /** The same command resumed in the same Claude session, asked to fix its report; without a session, the prompt gets the sentence appended. */
 export function retryArgs(argv: string[], sessionId: string | undefined, problems: string[]): string[] {
-  const sentence = `Your report was rejected by the validator: ${problems.join("; ")}. Print only the corrected JSON report.`;
+  const sentence = `Your report was rejected by the validator: ${oneLine(problems.join("; "))}. Print only the corrected JSON report.`;
   const out = [...argv];
-  if (sessionId) {
+  // The id comes from the harness's own output and lands on a command line: only a plain token is used.
+  if (sessionId && SESSION_ID.test(sessionId)) {
     out.splice(2, 0, "--resume", sessionId);
     out[out.length - 1] = sentence;
   } else out[out.length - 1] = `${out[out.length - 1]}\n\n${sentence}`;
@@ -121,8 +246,9 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
   const updatePhase = (phase: string, roundNumber: number): void => {
     const u = af(["state", "update", "--issue", String(N), "--state", "Working", "--phase", phase, "--round", String(roundNumber), "--json"]);
     if (u.status === 3) {
+      // The state machine says which cap it was (rounds or budget) in the reason it recorded.
       const current = afJson(["state", "show", "--issue", String(N)]);
-      throw new Stop(done({ status: "needs_me", category: "max_rounds_exceeded", reason: current.reason ?? "max_rounds_exceeded: the review-round cap was reached" }));
+      throw new Stop(done({ status: "needs_me", category: categoryOf(current.reason, "max_rounds_exceeded"), reason: current.reason ?? "max_rounds_exceeded: the review-round cap was reached" }));
     }
     if (u.status !== 0) throw new Stop(done({ status: "error", reason: `could not record phase ${phase}: ${(u.stderr || u.stdout).trim().slice(0, 300)}` }));
   };
@@ -137,12 +263,16 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
     return r.status === 0 ? r.stdout.trim() : "";
   };
 
+  const lock = acquireRunLock(A);
+  if ("heldBy" in lock) {
+    return done({ status: "error", reason: `another \`agent-flow run\` for issue #${N} is already working on it${lock.heldBy ? ` (process ${lock.heldBy})` : ""}. Wait for it, or stop it, then run again.` });
+  }
   try {
     // ---- Step 0: prepare ---------------------------------------------------------------
     log({ kind: "step", text: `issue #${N}: ${i.title}` });
     const st = afJson(["state", "show", "--issue", String(N)]);
     if (st.state === "Completed") throw new Stop(done({ status: "completed", reason: st.reason ?? "already completed" }));
-    if (st.state === "Needs Me") throw new Stop(done({ status: "needs_me", reason: st.reason ?? "waiting on a decision", category: String(st.reason ?? "").split(":")[0] }));
+    if (st.state === "Needs Me") throw new Stop(done({ status: "needs_me", reason: st.reason ?? "waiting on a decision", category: categoryOf(st.reason, "needs_me") }));
     const LIMIT = Number(st.max_review_rounds ?? 2);
     if (!(LIMIT >= 1)) throw new Stop(done({ status: "error", reason: "pipeline.max_review_rounds is below 1; set it to at least 1 in CONTEXT_MANIFEST.json" }));
     const resuming = st.state === "Working";
@@ -152,23 +282,33 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
     }
     let R = resuming ? Math.max(1, Number(st.round) || 1) : 1;
     if (resuming) log({ kind: "info", text: `resuming at round ${R}, ${storedPhase}` });
+    /**
+     * How far the saved round got. A report is trusted only if its role finished before that phase: a person who sends
+     * an escalated issue back to `implement` gets every role run again, not a stale (or rejected) result replayed.
+     */
+    const phaseReached = (rr: number): number => (resuming && rr === Number(st.round) ? PHASE_ORDER.indexOf(storedPhase) : 0);
 
     const wt = afJson(["worktree", "create", String(N)]);
     if (wt.error && wt.error !== "worktree_exists") throw new Stop(done({ status: "error", reason: `worktree: ${wt.error}` }));
-    const BASE: string = wt.base ?? (cfg("default_branch") || "main");
-    if (!existsSync(join(A, "issue.md"))) {
+    const recordedBase = sh("git", ["config", "--get", `branch.${branch}.agentflowbase`], root).stdout.trim();
+    const BASE: string = wt.base ?? (recordedBase || cfg("default_branch") || "main");
+    // The task text is rewritten whenever the caller supplies it. Resuming by number supplies none, so the saved text stands;
+    // without this rule a second, different task could inherit the files of an earlier attempt that never registered.
+    if (i.body || !existsSync(join(A, "issue.md"))) {
       writeFileSync(join(A, "issue.md"), `<untrusted_issue number="${N}">\n# ${xmlText(i.title)}\n\n${xmlText(i.body)}\n</untrusted_issue>\n`);
       writeFileSync(join(A, "title.txt"), `${i.title.replace(/\r?\n.*/s, "")}\n`);
     }
     const FAST = cfg("pipeline.models.fast");
     const HIGH = cfg("pipeline.models.high_reasoning");
     const gatesDefined = (afJson(["gates", "list"]).gates ?? []).length > 0;
-    let findings = "none";
+    let findings = R > 1 ? findingsFor(A, R - 1) : "none";
+    // What the worktree already shows as changed, so only what the Implementer leaves behind is held against it.
+    const dirtyBaseline = new Set(sh("git", ["-C", WT, "status", "--porcelain"], root).stdout.split("\n").filter(Boolean));
 
     // ---- Step 1: the round loop --------------------------------------------------------
     for (;;) {
       round = R;
-      const phaseNow = resuming && R === Number(st.round) ? PHASE_ORDER.indexOf(storedPhase) : 0;
+      const phaseNow = phaseReached(R);
       const at = (p: string) => PHASE_ORDER.indexOf(p) >= phaseNow;
       const roundTag = `round ${R}${LIMIT ? ` of ${LIMIT}` : ""}`;
 
@@ -182,13 +322,26 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         escalate(String(impl.category ?? "IMPL_ERROR"), `${impl.what_failed ?? "the Implementer stopped"}. Decide: ${impl.suggested_next_step ?? "how to proceed"}`);
       }
 
-      // 1c. classify (mechanical, and authoritative)
+      // 1c. Work left uncommitted would be reviewed and tested here but missing from the branch that gets pushed.
+      const leftover = sh("git", ["-C", WT, "status", "--porcelain"], root).stdout.split("\n").filter((l) => l && !dirtyBaseline.has(l));
+      if (leftover.length) {
+        log({ kind: "warn", text: `the Implementer left ${leftover.length} uncommitted change(s)` });
+        writeFileSync(join(A, `dirty-r${R}.json`), `${JSON.stringify({ problem: "Uncommitted changes in the worktree. Commit the work (the pipeline reviews and publishes commits only).", files: leftover.slice(0, 50) }, null, 2)}\n`);
+        findings = join(A, `dirty-r${R}.json`);
+        R = nextRound(R);
+        continue;
+      }
+
+      // 1d. classify (mechanical, and authoritative)
       const cls = afJson(["classify", "--issue", String(N)]);
       writeFileSync(join(A, "classification.json"), `${JSON.stringify(cls, null, 2)}\n`);
       const diff = sh("git", ["-C", WT, "diff", `${cls.base ?? BASE}...HEAD`], root);
       writeFileSync(join(A, "diff.patch"), diff.stdout);
       risk = cls.risk_level;
       log({ kind: "info", text: `risk ${cls.risk_level}, ${(cls.files ?? []).length} file(s) changed` });
+      if (!(cls.files ?? []).length) {
+        escalate("no_changes", `the Implementer reported ready_for_review, but the branch has no changes against ${cls.base ?? BASE}. Decide: whether this task needs no change, or restate it with clearer criteria.`);
+      }
       if ((cls.protected_violations ?? []).length) {
         escalate("protected_path", `protected path modified: ${cls.protected_violations.join(", ")}. Decide: whether a human makes this change.`);
       }
@@ -239,7 +392,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
           continue;
         }
       }
-      updatePhase("qa", R);
+      if (at("qa")) updatePhase("qa", R);
       log({ kind: "step", text: `${roundTag}: QA` });
       const pre = snapshot();
       const qa = await runRole("qa", R, { model: FAST });
@@ -253,27 +406,23 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       if (qa.status === "failed") escalate("qa_environment", `QA could not run the checks: ${qa.reason}. Decide: fix the environment, then resume.`);
 
       // ---- Step 2: PR ------------------------------------------------------------------
+      if (at("publish")) updatePhase("publish", R);
       return await finish(rev, qa, cls, LIMIT);
 
+      /**
+       * A fingerprint of everything QA could have changed: the commit, which blobs are staged, what git reports as
+       * changed, and the bytes of every modified or untracked file (streamed, never held whole). Compared before and after QA.
+       */
       function snapshot(): string {
-        const s = sh("git", ["-C", WT, "status", "--porcelain"], root).stdout;
-        const h = sh("git", ["-C", WT, "rev-parse", "HEAD"], root).stdout.trim();
-        const diff = sh("git", ["-C", WT, "diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"], root).stdout;
-        const untracked = sh("git", ["-C", WT, "ls-files", "--others", "--exclude-standard", "-z"], root).stdout
-          .split("\0")
-          .filter(Boolean)
-          .sort()
-          .map((file) => {
-            const path = join(WT, file);
-            const stat = lstatSync(path);
-            const content = stat.isSymbolicLink()
-              ? readlinkSync(path, { encoding: "buffer" })
-              : stat.isFile()
-                ? readFileSync(path)
-                : Buffer.from(`special:${stat.mode}:${stat.size}:${stat.mtimeMs}`);
-            return [file, createHash("sha256").update(content).digest("hex")];
-          });
-        return JSON.stringify([h, s, diff, untracked]);
+        const git = (...a: string[]) => sh("git", ["-C", WT, ...a], root).stdout;
+        const names = [...new Set(git("ls-files", "-m", "-o", "--exclude-standard", "-z").split("\0").filter(Boolean))].sort();
+        const parts = [
+          git("rev-parse", "HEAD").trim(),
+          createHash("sha256").update(git("ls-files", "-s", "-z")).digest("hex"),
+          git("status", "--porcelain", "-z", "--untracked-files=all"),
+          names.map((name) => [name, hashFile(join(WT, name))]),
+        ];
+        return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
       }
     }
 
@@ -284,14 +433,23 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
     // ---- role launch + validation ------------------------------------------------------
     async function runRole(role: Role, rr: number, o: { findings?: string; model?: string; limit?: number }): Promise<any> {
       const stem = join(A, `${fileFor(role)}-r${rr}`);
-      if (existsSync(`${stem}.json`)) {
+      if (existsSync(`${stem}.json`) && PHASE_ORDER.indexOf(ROLE_PHASE[role]) < phaseReached(rr)) {
         log({ kind: "info", text: `${role}: using the report from the earlier run` });
-        return readJson(`${stem}.json`);
+        try {
+          return readJson(`${stem}.json`);
+        } catch {
+          log({ kind: "warn", text: `${role}: the saved report is unreadable; running it again` });
+        }
+      }
+      let commands = i.commands;
+      if (commands.length > INLINE_COMMANDS_MAX) {
+        writeFileSync(join(A, "commands.txt"), `${commands}\n`);
+        commands = `listed, one per line separated by ";", in ${join(A, "commands.txt")}`;
       }
       const prompts: Record<Role, string> = {
         implementer: `Use the implementer skill. Round ${rr}. Issue: ${A}/issue.md. Worktree: ${WT} (cd into it first). Findings to address: ${o.findings ?? "none"}`,
         reviewer: `Round ${rr} of ${o.limit}. Read .claude/skills/reviewer/SKILL.md and follow it. Packet: ${A}/ (issue.md, diff.patch, classification.json, implementer-r${rr}.json, and review-r${rr - 1}.json if it exists). Worktree for reading context: ${WT}`,
-        qa: `Use the qa skill. Issue ${N}. Worktree: ${WT} (cd into it first). Commands: ${i.commands}`,
+        qa: `Use the qa skill. Issue ${N}. Worktree: ${WT} (cd into it first). Commands: ${commands}`,
       };
       const env: Record<string, string> = { AGENT_FLOW_ROLE: role };
       if (role === "implementer") env.AGENT_FLOW_WORKTREE = WT;
@@ -351,7 +509,9 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       }
       if (!url) {
         const title = `${readFileSync(join(A, "title.txt"), "utf-8").split("\n")[0]} (#${N})`;
-        const created = sh("gh", ["pr", "create", "--base", BASE, "--head", branch, "--title", title, "--body-file", join(A, "pr.md"), ...(cls.risk_level === "critical" ? ["--draft"] : [])], root);
+        // classify may name the base as `origin/main`; a pull request needs the branch name.
+        const prBase = (cls.base ?? BASE).replace(/^origin\//, "");
+        const created = sh("gh", ["pr", "create", "--base", prBase, "--head", branch, "--title", title, "--body-file", join(A, "pr.md"), ...(cls.risk_level === "critical" ? ["--draft"] : [])], root);
         if (created.status !== 0) escalate("push_failed", `could not open the pull request: ${(created.stderr || created.stdout).trim().slice(0, 300)}`);
         url = created.stdout.trim().split("\n").pop() ?? "";
       }
@@ -378,6 +538,8 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
   } catch (e) {
     if (e instanceof Stop) return e.outcome;
     return done({ status: "error", reason: e instanceof Error ? e.message : String(e) });
+  } finally {
+    lock.release();
   }
   return done({ status: "error", reason: "the run ended without a result" });
 }

@@ -1086,6 +1086,14 @@ function shCaller() {
   };
 }
 
+const safeJson = (text) => {
+  try {
+    return JSON.parse(text || "{}") ?? {};
+  } catch {
+    return {};
+  }
+};
+
 const fmtElapsed = (ms) => {
   const s = Math.round(ms / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
@@ -1155,7 +1163,7 @@ async function cmdRun(args) {
   let issue, title, body, fromGitHub = false;
   if (numeric) {
     issue = Number(numeric[1]);
-    const s = JSON.parse(af(["state", "show", "--issue", String(issue), "--json"]).stdout || "{}");
+    const s = safeJson(af(["state", "show", "--issue", String(issue), "--json"]).stdout);
     const art = join(rt, ".agent-flow", "artifacts", `issue-${issue}`);
     if (s.state) {
       title = existsSync(join(art, "title.txt")) ? readFileSync(join(art, "title.txt"), "utf-8").trim() : `issue #${issue}`;
@@ -1169,8 +1177,14 @@ async function cmdRun(args) {
       fromGitHub = true;
     }
   } else {
-    const all = JSON.parse(af(["state", "show", "--json"]).stdout || "{}");
-    issue = orchestrateLib.nextInlineIssue((all.sessions ?? []).map((x) => x.issue));
+    const all = safeJson(af(["state", "show", "--json"]).stdout);
+    // A number is taken if it has a session, saved artifacts or a worktree: an earlier attempt may have stopped before registering.
+    const onDisk = (dir, prefix) => (existsSync(dir) ? readdirSync(dir).map((n) => Number(n.startsWith(prefix) ? n.slice(prefix.length) : NaN)).filter(Number.isInteger) : []);
+    issue = orchestrateLib.nextInlineIssue([
+      ...(all.sessions ?? []).map((x) => x.issue),
+      ...onDisk(join(rt, ".agent-flow", "artifacts"), "issue-"),
+      ...onDisk(join(rt, ".worktrees"), "issue-"),
+    ]);
     title = text.split(/\r?\n/)[0].slice(0, 100);
     body = text;
   }
@@ -1204,22 +1218,34 @@ async function cmdRun(args) {
   }
 
   if (problems.length) {
-    for (const p of problems) bad(p);
+    if (args.json) console.log(JSON.stringify({ status: "error", issue, reason: "setup needed before a run", setup_issues: problems }, null, 2));
+    else for (const p of problems) bad(p);
     return 2;
   }
 
   const t0 = Date.now();
+  const emit = args.json ? console.error : console.log;
   const log = (e) => {
     const stamp = dim(`[${fmtElapsed(Date.now() - t0)}]`);
-    if (e.kind === "step") console.log(`${stamp} ${c(1, e.text)}`);
-    else if (e.kind === "warn") console.log(`${stamp} ${c(33, "!")} ${e.text}`);
-    else console.log(`${stamp} ${dim(e.text)}`);
+    if (e.kind === "step") emit(`${stamp} ${c(1, e.text)}`);
+    else if (e.kind === "warn") emit(`${stamp} ${c(33, "!")} ${e.text}`);
+    else emit(`${stamp} ${dim(e.text)}`);
   };
+  // Ctrl-C or a terminated terminal must not leave an agent working unattended or the issue locked. State is saved, so it resumes.
+  const interrupted = (signal) => {
+    const stopped = launchLib.killActiveChildren();
+    orchestrateLib.releaseHeldLocks();
+    console.error(`
+${signal}: stopped ${stopped} running role${stopped === 1 ? "" : "s"}. Progress is saved; continue with: agent-flow run ${issue}`);
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  process.once("SIGINT", () => interrupted("SIGINT"));
+  process.once("SIGTERM", () => interrupted("SIGTERM"));
   const result = await orchestrateLib.runIssue({ root: rt, issue, title, body, fromGitHub, af, sh, spawner: launchLib.realSpawner, log, pr: wantPr, timeoutSec, commands, autoMerge: !!args["auto-merge"] && !args["no-auto-merge"] });
 
   out(args, result, (r) => {
     console.log("");
-    const cost = r.cost_usd ? dim(`  (${r.cost_usd.toFixed(2)}${r.unreported_runs ? ", some runs didn't report cost" : ""})`) : "";
+    const cost = r.cost_usd ? dim(`  ($${r.cost_usd.toFixed(2)}${r.unreported_runs ? ", some runs didn't report cost" : ""})`) : "";
     if (r.status === "pr") ok(`Pull request ready: ${r.pr}${cost}`);
     else if (r.status === "ready") {
       ok(`Done and checked, not pushed. Branch ${r.branch}${cost}`);
@@ -1229,7 +1255,8 @@ async function cmdRun(args) {
     else if (r.status === "needs_me") {
       warn(`This needs you — ${r.reason}${cost}`);
       console.log(dim(`  details:  ${relative(rt, r.artifacts) || r.artifacts}/`));
-      console.log(dim(`  then:     decide, and if it should go on: agent-flow state update --issue ${r.issue} --state Working --phase implement --round ${r.round}; agent-flow run ${r.issue}`));
+      const raise = r.category === "max_rounds_exceeded" ? "raise pipeline.max_review_rounds in CONTEXT_MANIFEST.json, then " : r.category === "budget_exceeded" ? "raise pipeline.max_cost_usd in CONTEXT_MANIFEST.json, then " : r.category === "SPEC_ERROR" ? `fix the criteria in ${relative(rt, r.artifacts)}/issue.md, then ` : "";
+      console.log(dim(`  then:     ${raise}to go on: agent-flow state update --issue ${r.issue} --state Working --phase implement --round ${Math.max(1, r.round || 1)}; agent-flow run ${r.issue}`));
     } else bad(`Stopped before starting work: ${r.reason}`);
   });
   return result.status === "needs_me" ? 3 : result.status === "error" ? 1 : 0;
@@ -1268,7 +1295,7 @@ function cmdStatus(args) {
     if (prot) add("Protection", "ok", `${prot} protected path${prot === 1 ? "" : "s"}, ${crit} critical area${crit === 1 ? "" : "s"}`);
     else add("Protection", "warn", "no protected paths set: only secrets and git internals are guarded", "ask Claude to use the bootstrap skill and answer the risk questions");
     gates = gatesLib.gatesOf(man);
-    if (man.pipeline?.auto_merge_low_risk === true) add("Protection", "warn", "low-risk changes that pass QA will merge themselves (pipeline.auto_merge_low_risk)", 'set it to false in CONTEXT_MANIFEST.json until you trust the pipeline here');
+    if (man.pipeline?.auto_merge_low_risk === true) add("Protection", "warn", "auto-merge is allowed: `run --pr --auto-merge` queues low-risk pull requests that pass QA (pipeline.auto_merge_low_risk)", "set it to false in CONTEXT_MANIFEST.json until you trust the pipeline here");
   }
 
   // Context: do the notes still match the code?
@@ -1300,7 +1327,7 @@ function cmdStatus(args) {
   const sessions = state.readState(rt).sessions ?? [];
   const waiting = sessions.filter((s) => s.state === "Needs Me");
   const working = sessions.filter((s) => s.state === "Working");
-  if (waiting.length) for (const s of waiting) add("Work", "warn", `#${s.issue} needs you: ${String(s.reason ?? "").slice(0, 160)}`, `agent-flow run ${s.issue}  (after you decide)`);
+  if (waiting.length) for (const s of waiting) add("Work", "warn", `#${s.issue} needs you: ${String(s.reason ?? "").slice(0, 160)}`, `decide, then: agent-flow state update --issue ${s.issue} --state Working --phase implement --round ${Math.max(1, Number(s.round) || 1)}; agent-flow run ${s.issue}`);
   else add("Work", "ok", "nothing is waiting on you");
   for (const s of working) add("Work", "info", `#${s.issue} in progress (round ${s.round ?? 1}, ${s.phase ?? "?"})`, `agent-flow run ${s.issue}  to resume`);
 

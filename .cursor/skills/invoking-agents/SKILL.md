@@ -53,15 +53,16 @@ The CLI owns the same state transitions, report validation, risk checks and role
 
 ## Resuming
 
-A `Working` issue has a stored `round` and `phase`. Set `R` to that round (the state machine refuses to go backwards, so never re-open round 1), then re-enter at the stored phase, skipping any launch whose validated `<role>-rR.json` already exists:
+A `Working` issue has a stored `round` and `phase`. Set `R` to that round (the state machine refuses to go backwards, so never re-open round 1), then re-enter at the stored phase. Skip a launch only if its role finished *before* that phase, i.e. its validated `<role>-rR.json` exists and the table says it is done. A report from the phase you are re-entering is not trusted: that is what lets a person send an escalated issue back to `implement` and get every role run again, instead of a rejected result replayed:
 
 | Stored phase | Re-enter at |
 |---|---|
-| `implement` | 1b; if `implementer-rR.json` exists, 1c |
-| `review` | 1d; if `review-rR.json` exists, route on it |
-| `qa` | 1e; if `qa-rR.json` exists, route on it |
+| `implement` | 1b (nothing from this round is reused) |
+| `review` | 1b is done (reuse `implementer-rR.json`); 1d runs again |
+| `qa` | 1b and 1d are done (reuse both reports); 1e runs again |
+| `publish` | everything is done; re-check gates, then Step 2 |
 
-A launch with a `.pid` but no `.exit` may still be running: use the crash check in launch.md before relaunching it. Recording the same phase and round again is allowed, so repeating a `state update` you can't remember making is harmless.
+On re-entry into round R+1, `FINDINGS` is the report that ended round R (the failing `qa-r`, else `gates-r`, else `review-r`, else the `dirty-` or `policy-` note), not `none`. A launch with a `.pid` but no `.exit` may still be running: use the crash check in launch.md before relaunching it. Recording the same phase and round again is allowed, so repeating a `state update` you can't remember making is harmless.
 
 ## Step 1: The round loop
 
@@ -79,14 +80,14 @@ Exit code 3 means the round cap was hit and the issue is now Needs Me. Stop, and
 
 **1b. Implementer.** Launch it with `FINDINGS` as launch.md defines it and validate it as `implementer`. If its `status` is `needs_me`, record Needs Me with its `what_failed` and `suggested_next_step` as the reason, and stop.
 
-**1c. Classify** (mechanical, and authoritative):
+**1c. Check the branch, then classify** (mechanical, and authoritative). First `git -C "$WT" status --porcelain`: anything the Implementer left uncommitted would be reviewed here but missing from the pushed branch, so it is a round R+1 with a note listing those files as the findings (`dirty-rR.json`). Then:
 
 ```bash
 AF classify --issue N --json > "$A/classification.json"
 git -C "$WT" diff "$BASE...HEAD" > "$A/diff.patch"
 ```
 
-A non-empty `protected_violations` means Needs Me ("protected path modified: …"). Don't review it and don't open a PR. A non-empty `policy_violations` (the manifest's `policy` rules) is a round R+1 with those messages as the findings: the Implementer can fix them, a reviewer shouldn't have to notice them.
+An empty `files` list means the branch changes nothing against its base: Needs Me (`no_changes`), not a review and not an empty PR. A non-empty `protected_violations` means Needs Me ("protected path modified: …"). Don't review it and don't open a PR. A non-empty `policy_violations` (the manifest's `policy` rules) is a round R+1 with those messages as the findings: the Implementer can fix them, a reviewer shouldn't have to notice them.
 
 **1d. Reviewer.** Record `AF state update --issue N --state Working --phase review --round R --json`, then launch it with the model its `reviewer_tier` asks for (`fast` → `FAST_MODEL`, `high-reasoning` → `HIGH_MODEL`). Validate it as `reviewer`. Route on the first row that matches:
 
@@ -104,14 +105,16 @@ A non-empty `protected_violations` means Needs Me ("protected path modified: …
 **1e. Gates, then QA.** If `AF gates list` shows gates, run `AF gates run --issue N --json > "$A/gates-rR.json"` first. Exit 0 → continue. Exit 1 → a required gate failed: round R+1 with the failing gates' `log` files as the findings, and QA doesn't run. Exit 2 (`environment_error`, a gate that couldn't start) → Needs Me (`qa_environment`), not another round. Only you run gates: the guard blocks `gates run` for `reviewer` and `qa`, so a pass is an exit code you observed. Then record `--phase qa`, snapshot the tree, launch QA, and compare:
 
 ```bash
-git -C "$WT" status --porcelain > "$A/pre-qa-status.txt"; git -C "$WT" rev-parse HEAD > "$A/pre-qa-head.txt"
+fingerprint() { git -C "$WT" rev-parse HEAD; git -C "$WT" ls-files -s; git -C "$WT" status --porcelain --untracked-files=all
+  git -C "$WT" ls-files -m -o --exclude-standard | sort -u | while IFS= read -r f; do printf '%s ' "$f"; git -C "$WT" hash-object -- "$f" 2>/dev/null || echo missing; done; }
+fingerprint > "$A/pre-qa.txt"
 # launch QA and wait for it (launch.md), then:
-git -C "$WT" status --porcelain | diff "$A/pre-qa-status.txt" - && git -C "$WT" rev-parse HEAD | diff "$A/pre-qa-head.txt" -
+fingerprint | diff "$A/pre-qa.txt" -
 ```
 
-Status alone would miss a commit QA made, which is why HEAD is compared too. Any difference means QA changed what it was testing, so its result is invalid: Needs Me (`qa_mutated_tree`). Otherwise validate it as `qa`:
+Status alone would miss a commit QA made, or an edit to a file that was already modified, which is why the commit, the staged blobs and a hash of every modified or untracked file are compared too. Any difference means QA changed what it was testing, so its result is invalid: Needs Me (`qa_mutated_tree`). Otherwise validate it as `qa`:
 
-- `passed` → Step 2.
+- `passed` → record `AF state update --issue N --state Working --phase publish --round R --json`, then Step 2. (Resuming at `publish` goes straight to Step 2.)
 - `passed_with_flaky` → Step 2, and list the flaky tests in the PR body (FM-14).
 - `failed` with `reason: null` → the tests ran and failed: round R+1 with `qa-rR.json` as the findings.
 - `failed` with a `reason` (`no_commands_defined`, missing tooling, a sandbox or permission error, an install that failed) → Needs Me (`qa_environment`). The Implementer can't fix the environment, so another round would only burn the cap.
@@ -146,7 +149,7 @@ The guard refuses pushes to the default branch, force-pushes and `--no-verify`. 
 <category>: <one line>. Tried: <what, per round>. Blocked by: <exact finding or error>. Decide: <the specific question for the human>.
 ```
 
-Categories: `max_rounds_exceeded`, `SPEC_ERROR`, `ARCH_ERROR`, `disputed_finding`, `protected_path`, `qa_mutated_tree`, `qa_environment`, `malformed_report`, `role_timeout`, `role_failed`, `push_failed`, `issue_not_found`, `critical_change_needs_human`.
+Categories: `max_rounds_exceeded`, `SPEC_ERROR`, `ARCH_ERROR`, `disputed_finding`, `protected_path`, `qa_mutated_tree`, `qa_environment`, `malformed_report`, `role_timeout`, `role_failed`, `push_failed`, `issue_not_found`, `critical_change_needs_human`, `no_changes`, `permission_violation`, `budget_exceeded`.
 
 To give an escalated issue another round, a human raises `pipeline.max_review_rounds` (5 at most) and moves it back to Working. You don't. The same goes for `budget_exceeded` (`pipeline.max_cost_usd`): a human raises the cap or accepts the spend.
 

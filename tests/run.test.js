@@ -7,8 +7,8 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { claudeArgs, hasCriteria, nextInlineIssue, retryArgs, runIssue } from "../extensions/lib/orchestrate.js";
-import { realSpawner, resolveExecutable } from "../extensions/lib/launch.js";
+import { acquireRunLock, claudeArgs, findingsFor, hasCriteria, nextInlineIssue, retryArgs, runIssue } from "../extensions/lib/orchestrate.js";
+import { killActiveChildren, quoteForCmd, realSpawner, resolveExecutable } from "../extensions/lib/launch.js";
 
 const BIN = fileURLToPath(new URL("../bin/agent-flow.js", import.meta.url));
 const N = 100001;
@@ -222,7 +222,7 @@ test("run: a critical change gets the high-reasoning reviewer, a draft PR, and w
 test("run: an invalid report gets one correction in the same session, a second failure escalates", async () => {
   const env = makeRepo();
   try {
-    const bad = JSON.stringify({ type: "result", is_error: false, session_id: "sess-1", result: "not a report" });
+    const bad = JSON.stringify({ type: "result", is_error: false, session_id: "6f1c2a9e-1b7d-4c53-9a0e-2d8f4b6c7a10", result: "not a report" });
     const agent = fakeAgent(env.repo, {
       implementer: [() => ({ raw: bad }), implStep("f.txt")],
       reviewer: [({ round }) => ({ report: reviewReport(round) })],
@@ -232,7 +232,7 @@ test("run: an invalid report gets one correction in the same session, a second f
     assert.equal(result.status, "ready", JSON.stringify(result));
     const calls = agent.calls.filter((c) => c.role === "implementer");
     assert.equal(calls.length, 2);
-    assert.deepEqual(calls[1].argv.slice(2, 4), ["--resume", "sess-1"], "the retry resumes the same Claude session");
+    assert.deepEqual(calls[1].argv.slice(2, 4), ["--resume", "6f1c2a9e-1b7d-4c53-9a0e-2d8f4b6c7a10"], "the retry resumes the same Claude session");
     assert.match(calls[1].argv.at(-1), /rejected by the validator/);
     assert.equal(audit(env.repo).filter((e) => e.event === "role_run" && e.role === "implementer").length, 2, "both attempts are logged");
   } finally {
@@ -274,7 +274,7 @@ test("run: a failing gate sends the logs back as the next round's findings; QA n
         },
         (ctx) => {
           git(ctx.wt, "rm", "-q", "gatefail");
-          git(ctx.wt, "commit", "-qm", "fix");
+          commitFile("fixed.txt")(ctx.wt);
           return { report: implReport(headOf(ctx.wt)) };
         },
       ],
@@ -427,8 +427,8 @@ test("pure parts: criteria detection, issue numbers, claude argv, retry argv, ex
   assert.ok(!rev.includes("acceptEdits"));
   assert.ok(!claudeArgs("qa", { prompt: "P" }).includes("acceptEdits"), "QA does not get edit permission");
 
-  const withSession = retryArgs(impl, "sess-9", ["$.commit: required"]);
-  assert.deepEqual(withSession.slice(2, 4), ["--resume", "sess-9"]);
+  const withSession = retryArgs(impl, "0b9d7e44-aaaa-4bbb-8ccc-123456789abc", ["$.commit: required"]);
+  assert.deepEqual(withSession.slice(2, 4), ["--resume", "0b9d7e44-aaaa-4bbb-8ccc-123456789abc"]);
   assert.match(withSession.at(-1), /rejected by the validator: \$\.commit: required/);
   assert.match(retryArgs(impl, undefined, ["x"]).at(-1), /^P\n\nYour report was rejected/, "no session: the original prompt plus the correction");
 
@@ -535,3 +535,305 @@ for (const cleanupThrows of [false, true]) {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// Hardening pass: resume semantics, locking, uncommitted work, launcher cleanup
+// ---------------------------------------------------------------------------
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const standardAgent = (repo, extra = {}) => fakeAgent(repo, { implementer: [implStep("feature.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => ({ report: qaReport() })], ...extra });
+
+test("run: after a person sends an escalated issue back to implement, every role runs again (nothing replayed)", async () => {
+  const env = makeRepo();
+  try {
+    let dirty = true;
+    const agent = fakeAgent(env.repo, {
+      implementer: [implStep("a.txt"), implStep("b.txt")],
+      reviewer: [({ round }) => ({ report: reviewReport(round) })],
+      qa: [({ wt }) => (dirty ? ((dirty = false), { effect: () => writeFileSync(join(wt, "left.txt"), "x"), report: qaReport() }) : { report: qaReport() })],
+    });
+    const first = await run(env, agent);
+    assert.equal(first.result.category, "qa_mutated_tree");
+    assert.deepEqual({ ...agent.counts }, { implementer: 1, reviewer: 1, qa: 1 });
+    // The person looks, cleans up, and sends it back: the rejected QA result must not be believed again.
+    rmSync(join(agent.wt, "left.txt"));
+    assert.equal(af(env.repo)(["state", "update", "--issue", String(N), "--state", "Working", "--phase", "implement", "--round", "1"]).status, 0);
+    const second = await run(env, agent);
+    assert.equal(second.result.status, "ready", JSON.stringify(second.result));
+    assert.deepEqual({ ...agent.counts }, { implementer: 2, reviewer: 2, qa: 2 });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: a ready issue publishes without running any role again", async () => {
+  const env = makeRepo();
+  try {
+    const agent = standardAgent(env.repo);
+    const first = await run(env, agent);
+    assert.equal(first.result.status, "ready");
+    assert.equal(stateOf(env.repo).phase, "publish", "QA passing is checkpointed");
+    const counts = { ...agent.counts };
+    const second = await run(env, agent, { pr: true });
+    assert.equal(second.result.status, "pr", JSON.stringify(second.result));
+    assert.deepEqual({ ...agent.counts }, counts, "no role is paid for twice just to push");
+    assert.ok(second.gh.some((c) => c.startsWith("pr create") && c.includes("--base main")), "the pull request targets the base branch by name");
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: new task text replaces files from an earlier attempt that never registered; resuming by number keeps the saved text", async () => {
+  const env = makeRepo();
+  try {
+    const dir = join(env.repo, ".agent-flow", "artifacts", `issue-${N}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "issue.md"), "<untrusted_issue>OLD TASK</untrusted_issue>\n");
+    writeFileSync(join(dir, "title.txt"), "old\n");
+    const agent = standardAgent(env.repo);
+    await run(env, agent, { title: "New title", body: "NEW TASK so that it works" });
+    const text = readFileSync(join(dir, "issue.md"), "utf-8");
+    assert.match(text, /NEW TASK/);
+    assert.doesNotMatch(text, /OLD TASK/);
+    assert.equal(readFileSync(join(dir, "title.txt"), "utf-8").trim(), "New title");
+    await run(env, agent, { title: "ignored", body: "" });
+    assert.match(readFileSync(join(dir, "issue.md"), "utf-8"), /NEW TASK/, "no text supplied: the saved task stands");
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: resuming into a later round still hands the Implementer the previous round's findings", async () => {
+  const env = makeRepo();
+  try {
+    const finding = [{ severity: "blocking", category: "IMPL_ERROR", issue: "the output has no trailing newline", evidence: "f.txt:1" }];
+    let crash = true;
+    const agent = fakeAgent(env.repo, {
+      implementer: [
+        implStep("a.txt"),
+        () => {
+          if (crash) {
+            crash = false;
+            throw new Error("power cut");
+          }
+          return {};
+        },
+        implStep("b.txt"),
+      ],
+      reviewer: [({ round }) => ({ report: round === 1 ? reviewReport(round, "request_changes", finding) : reviewReport(round) })],
+      qa: [() => ({ report: qaReport() })],
+    });
+    const first = await run(env, agent);
+    assert.equal(first.result.status, "error");
+    assert.equal(stateOf(env.repo).round, 2, "the crash happened in round 2");
+    const second = await run(env, agent);
+    assert.equal(second.result.status, "ready", JSON.stringify(second.result));
+    const lastImplementer = agent.calls.filter((c) => c.role === "implementer").at(-1);
+    assert.match(lastImplementer.argv.at(-1), /review-r1\.json/, "round 1's review is what round 2 is told to fix");
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: a second run for the same issue is refused while the first lives; a dead or ancient lock is taken over", async () => {
+  const env = makeRepo();
+  try {
+    const dir = join(env.repo, ".agent-flow", "artifacts", `issue-${N}`);
+    mkdirSync(dir, { recursive: true });
+    const lock = join(dir, "run.lock");
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+    const agent = standardAgent(env.repo);
+    const blocked = await run(env, agent);
+    assert.equal(blocked.result.status, "error");
+    assert.match(blocked.result.reason, /already working on it/);
+    assert.equal(agent.calls.length, 0, "nothing launched");
+    assert.ok(existsSync(lock), "the live run's lock is not deleted by the refused one");
+    writeFileSync(lock, JSON.stringify({ pid: 2147483646, at: Date.now() }));
+    assert.equal((await run(env, standardAgent(env.repo))).result.status, "ready", "a dead process's lock is taken over");
+    assert.ok(!existsSync(lock), "and released when done");
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() - 13 * 3600_000 }));
+    assert.equal((await run(env, standardAgent(env.repo))).result.status, "ready", "a lock older than half a day is stale even if the pid was reused");
+    writeFileSync(lock, "not json");
+    assert.equal((await run(env, standardAgent(env.repo))).result.status, "ready", "a corrupt lock does not block forever");
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: the lock is released on every exit path, including an escalation", async () => {
+  const env = makeRepo();
+  try {
+    const dir = join(env.repo, ".agent-flow", "artifacts", `issue-${N}`);
+    const agent = fakeAgent(env.repo, { implementer: [() => ({ exit: 124 })] });
+    const { result } = await run(env, agent);
+    assert.equal(result.category, "role_timeout");
+    assert.ok(!existsSync(join(dir, "run.lock")));
+    const held = acquireRunLock(dir);
+    assert.ok("release" in held);
+    assert.ok("heldBy" in acquireRunLock(dir), "a second taker is refused");
+    held.release();
+    assert.ok(!existsSync(join(dir, "run.lock")));
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: work left uncommitted is sent back, not reviewed and then missing from the pushed branch", async () => {
+  const env = makeRepo();
+  try {
+    const agent = fakeAgent(env.repo, {
+      implementer: [
+        (ctx) => {
+          commitFile("a.txt")(ctx.wt);
+          writeFileSync(join(ctx.wt, "forgot.txt"), "x\n");
+          return { report: implReport(headOf(ctx.wt)) };
+        },
+        (ctx) => {
+          commitFile("forgot.txt")(ctx.wt);
+          return { report: implReport(headOf(ctx.wt)) };
+        },
+      ],
+      reviewer: [({ round }) => ({ report: reviewReport(round) })],
+      qa: [() => ({ report: qaReport() })],
+    });
+    const { result } = await run(env, agent);
+    assert.equal(result.status, "ready", JSON.stringify(result));
+    assert.equal(agent.counts.reviewer, 1, "the first round was never reviewed");
+    const second = agent.calls.filter((c) => c.role === "implementer")[1];
+    assert.match(second.argv.at(-1), /dirty-r1\.json/);
+    assert.match(readFileSync(join(result.artifacts, "dirty-r1.json"), "utf-8"), /forgot\.txt/);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: an Implementer that changed nothing escalates instead of opening an empty pull request", async () => {
+  const env = makeRepo();
+  try {
+    const agent = fakeAgent(env.repo, { implementer: [(ctx) => ({ report: implReport(headOf(ctx.wt)) })], reviewer: [({ round }) => ({ report: reviewReport(round) })] });
+    const { result } = await run(env, agent, { pr: true });
+    assert.equal(result.category, "no_changes", JSON.stringify(result));
+    assert.equal(agent.counts.reviewer, 0);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: the QA snapshot sees a change made far into a large file (hashed in pieces, not skimmed)", async () => {
+  const env = makeRepo();
+  try {
+    const big = (last) => {
+      const b = Buffer.alloc(3 << 20, 7);
+      b[b.length - 1] = last;
+      return b;
+    };
+    const agent = standardAgent(env.repo, {
+      reviewer: [({ round }) => ({ effect: (wt) => writeFileSync(join(wt, "big.bin"), big(1)), report: reviewReport(round) })],
+      qa: [({ wt }) => ({ effect: () => writeFileSync(join(wt, "big.bin"), big(2)), report: qaReport() })],
+    });
+    assert.equal((await run(env, agent)).result.category, "qa_mutated_tree");
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: a long command list reaches QA through a file, not the command line", async () => {
+  const env = makeRepo();
+  try {
+    const agent = standardAgent(env.repo);
+    const commands = Array.from({ length: 80 }, (_, k) => `python3 tests/test_${k}.py`).join("; ");
+    const { result } = await run(env, agent, { commands });
+    assert.equal(result.status, "ready");
+    const qaCall = agent.calls.find((c) => c.role === "qa");
+    assert.ok(qaCall.argv.at(-1).length < 600, "the prompt stays short");
+    assert.match(qaCall.argv.at(-1), /commands\.txt/);
+    assert.equal(readFileSync(join(result.artifacts, "commands.txt"), "utf-8").trim(), commands);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("pure parts, hardening: findings recovery order, one-line retry text, session-id check, cmd.exe quoting", () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-find-"));
+  try {
+    assert.equal(findingsFor(dir, 1), "none");
+    writeFileSync(join(dir, "policy-r1.json"), "{}");
+    assert.equal(findingsFor(dir, 1), join(dir, "policy-r1.json"));
+    writeFileSync(join(dir, "review-r1.json"), JSON.stringify({ status: "request_changes" }));
+    assert.equal(findingsFor(dir, 1), join(dir, "review-r1.json"), "a review beats a policy note");
+    writeFileSync(join(dir, "gates-r1.json"), JSON.stringify({ ok: false }));
+    assert.equal(findingsFor(dir, 1), join(dir, "gates-r1.json"));
+    writeFileSync(join(dir, "qa-r1.json"), JSON.stringify({ status: "failed" }));
+    assert.equal(findingsFor(dir, 1), join(dir, "qa-r1.json"), "the last stage to fail wins");
+    writeFileSync(join(dir, "qa-r1.json"), JSON.stringify({ status: "passed" }));
+    writeFileSync(join(dir, "gates-r1.json"), "not json");
+    assert.equal(findingsFor(dir, 1), join(dir, "review-r1.json"), "a passing or unreadable report is not a finding");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const noisy = retryArgs(["claude", "-p", "prompt"], "x; calc.exe & whoami", [`line one\nline two ${"x".repeat(5000)}`]);
+  assert.ok(!noisy.includes("--resume"), "a session id that isn't a plain token is never put on a command line");
+  const correction = noisy.at(-1).split("\n\n").pop();
+  assert.match(correction, /^Your report was rejected by the validator: line one line two x+/);
+  assert.ok(!correction.includes("\n"), "validator text is flattened to one line");
+  assert.ok(correction.length < 1400, "and bounded");
+  assert.equal(quoteForCmd('say "hi"\r\nnext'), '"say ""hi"" next"', "a line break would end a cmd.exe command line, so it becomes a space");
+});
+
+test("role launcher: interrupting stops the role and the processes it started", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-kill-"));
+  try {
+    const pidFile = join(dir, "grandchild.pid");
+    const script = `const {spawn}=require("child_process");const c=spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{stdio:"ignore"});require("fs").writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setTimeout(()=>{},60000)`;
+    const running = realSpawner({ argv: [process.execPath, "-e", script], env: {}, cwd: dir, base: join(dir, "role"), timeoutSec: 60 });
+    for (let k = 0; k < 200 && !existsSync(pidFile); k++) await sleep(50);
+    assert.ok(existsSync(pidFile), "the role started its own child");
+    assert.equal(killActiveChildren(), 1);
+    const result = await running;
+    assert.notEqual(result.exit, 0);
+    assert.equal(killActiveChildren(), 0, "nothing is left registered");
+    const grandchild = Number(readFileSync(pidFile, "utf-8"));
+    let alive = true;
+    for (let k = 0; k < 40 && alive; k++) {
+      await sleep(100);
+      try {
+        process.kill(grandchild, 0);
+      } catch {
+        alive = false;
+      }
+    }
+    assert.equal(alive, false, "the process the role started is gone too");
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test("the CLI: --json keeps stdout a single JSON document, including when setup is missing", () => {
+  const env = makeRepo();
+  try {
+    const cli = (args) => spawnSync(process.execPath, [BIN, ...args], { cwd: env.repo, encoding: "utf-8", env: { ...process.env, NO_COLOR: "1", AGENT_FLOW_ROLE: "" } });
+    const task = "Add a version flag so that users can see the version";
+    const refused = cli(["run", task, "--json"]);
+    assert.equal(refused.status, 2);
+    const doc = JSON.parse(refused.stdout);
+    assert.equal(doc.status, "error");
+    assert.ok(doc.setup_issues.some((p) => /guard hook/.test(p)));
+    const preview = JSON.parse(cli(["run", task, "--dry-run", "--json"]).stdout);
+    assert.equal(preview.ready, false);
+    assert.ok(preview.issue >= 100000);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("the CLI: a number with saved artifacts or a worktree is never reused for a new task", () => {
+  const env = makeRepo();
+  try {
+    mkdirSync(join(env.repo, ".agent-flow", "artifacts", "issue-100000"), { recursive: true });
+    mkdirSync(join(env.repo, ".worktrees", "issue-100001"), { recursive: true });
+    const r = spawnSync(process.execPath, [BIN, "run", "Add a version flag so that users can see the version", "--dry-run", "--json"], { cwd: env.repo, encoding: "utf-8", env: { ...process.env, NO_COLOR: "1", AGENT_FLOW_ROLE: "" } });
+    assert.equal(JSON.parse(r.stdout).issue, 100002);
+  } finally {
+    env.cleanup();
+  }
+});

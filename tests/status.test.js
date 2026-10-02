@@ -43,11 +43,11 @@ test("status: after install it is green, counts the protection, and lists work t
     const r = cli(dir, "status");
     assert.match(r.stdout, /✓ Claude Code guard hook is active/);
     assert.match(r.stdout, /✓ 2 protected paths, 1 critical area\b/);
-    assert.match(r.stdout, /merge themselves/, "auto-merge is called out");
+    assert.match(r.stdout, /auto-merge is allowed: `run --pr --auto-merge`/, "auto-merge is called out, and described as the opt-in it is");
     assert.ok(r.stdout.includes(`1 check runs here; 1 needs ${OTHER_NAME} and is skipped`), r.stdout);
     assert.match(r.stdout, /! #7 needs you: SPEC_ERROR: the criteria contradict each other/);
     assert.match(r.stdout, /· #8 in progress \(round 2, review\)/);
-    assert.match(r.stdout, /agent-flow run 7/, "the next command is given");
+    assert.match(r.stdout, /state update --issue 7 --state Working --phase implement --round [1-9]\d*; agent-flow run 7/, "the full next command is given, not just `run`");
     const j = JSON.parse(cli(dir, "status", "--json").stdout);
     assert.equal(j.ok, true);
     assert.ok(j.rows.some((x) => x.section === "Work" && x.level === "warn"));

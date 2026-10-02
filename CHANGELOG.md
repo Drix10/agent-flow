@@ -9,6 +9,14 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 - Task text is XML-escaped before it is placed inside the untrusted issue boundary. Auto-merge defaults off in the CLI, even when the repository allows it.
 - Updated Quickstart, README and orchestration skill to make the CLI the first path on Claude Code and keep the harness-specific skill procedure for other agents.
 - Added end-to-end fake-agent coverage for the run loop, resumptions, report correction, risk escalation, gate failures, protected paths, QA tree mutation and PR creation.
+- **Resume is trustworthy.** A saved report is reused only if its role finished before the phase the issue stopped in, so sending an escalated issue back to `implement` runs every role again instead of replaying a rejected result. A resumed round gets the report that ended the previous round as its findings (it used to get `none`). Once QA passes the issue is checkpointed as `publish`, so `run N --pr` after a local run publishes without paying for another review or QA.
+- **One run per issue.** A lock in the artifacts folder refuses a second `run` for the same issue and takes over a lock left by a dead process.
+- **Ctrl-C is safe.** An interrupted `run` stops the agent and everything it started (the whole process tree, on Windows and POSIX), releases the lock, and says how to continue. A timeout now stops the tree too, not just the agent.
+- **Checks on what the Implementer hands over.** Uncommitted work is sent back as findings (it would be reviewed here but missing from the pushed branch), and a branch with no changes escalates as `no_changes` instead of opening an empty pull request.
+- **QA mutation check no longer holds files in memory.** Modified and untracked files are hashed in 1 MiB pieces; the staged blobs and `git status` are included. The manual skill's shell snippet uses the same fingerprint (with `git hash-object`, so it works on macOS).
+- **Windows launch fixes.** A line break in a prompt ended the `cmd.exe` command line and silently dropped the rest; it is now a space. Validator text is flattened and bounded, a session id is used only if it is a plain token, and QA command lists over 800 characters are passed in a file (a command line is limited to about 8,000 characters).
+- **Task and state fixes.** New task text replaces files left by an earlier attempt that never started (it used to inherit the old task), issue numbers skip any with saved artifacts or a worktree, a budget stop is reported as `budget_exceeded` instead of a round cap, and the pull request targets the base branch by name (not `origin/main`).
+- **Output.** `--json` keeps stdout a single JSON document (progress goes to stderr, and a missing-setup error is JSON too). `status` prints the full command to send an escalated issue back, and describes auto-merge as the opt-in it is. Cost is shown with its `$`.
 
 ## [1.1.7] - 2026-10-02
 
