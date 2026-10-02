@@ -66,7 +66,7 @@ export const realSpawner: Spawner = (spec) =>
       try {
         closeSync(out);
       } catch {
-        // Preserve the error that prevented stderr from opening.
+        // Preserve the error that prevented stream setup.
       }
       throw error;
     }
