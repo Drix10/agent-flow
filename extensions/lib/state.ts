@@ -199,6 +199,27 @@ export function issueCost(root: string, issue: number): { total: number; by_roun
   return out;
 }
 
+/**
+ * Drop an issue from the pipeline's list: a person handled it by hand, or no longer wants it. The issue's files stay
+ * where they are and the audit trail records who-knows-what-why, so nothing is lost; only the "needs you" nag goes.
+ */
+export function dismissSession(root: string, issue: number, reason: string): { dismissed: boolean; from: SessionState | null } {
+  if (!Number.isInteger(issue) || issue < 1) throw new Error(`issue must be a positive integer, got ${issue}`);
+  if (!reason.trim()) throw new Error("a reason is required: say why it is being dropped");
+  if (reason.length > MAX_REASON) throw new Error(`reason is limited to ${MAX_REASON} characters`);
+  return withLock(join(root, ".agent-flow", "state.lock"), () => {
+    const state = readState(root);
+    const at = state.sessions.findIndex((s) => s.issue === issue);
+    if (at < 0) return { dismissed: false, from: null };
+    const [gone] = state.sessions.splice(at, 1);
+    state.lastUpdated = isoNow();
+    atomicWrite(join(root, STATE_FILE), JSON.stringify(state, null, 2) + "\n");
+    atomicWrite(join(root, STATE_MD), renderMarkdown(state));
+    appendAudit(root, { event: "session_dismissed", issue, from: gone.state, phase: gone.phase, round: gone.round, reason });
+    return { dismissed: true, from: gone.state };
+  });
+}
+
 export function updateState(root: string, p: UpdateParams, maxRounds = DEFAULT_MAX_REVIEW_ROUNDS, maxCostUsd?: number): UpdateResult {
   if (!Number.isInteger(p.issue) || p.issue < 1) throw new Error(`issue must be a positive integer, got ${p.issue}`);
   if (!STATES.includes(p.state)) throw new Error(`state must be one of ${STATES.join(" | ")}`);

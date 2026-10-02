@@ -7,7 +7,7 @@
  */
 
 import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, chmodSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -15,10 +15,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib;
+let launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib;
 try {
-  [updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib] = await Promise.all(
-    ["update", "fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners"].map(lib),
+  [launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib] = await Promise.all(
+    ["launch", "orchestrate", "update", "fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -55,7 +55,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline"]);
+const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -67,7 +67,7 @@ function fixBools(args) {
   return args;
 }
 
-const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner"];
+const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner", "timeout", "commands"];
 const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
 
 /** Closest candidate within edit distance 2, or null. */
@@ -93,6 +93,7 @@ const HELP = `agent-flow ${VERSION} — context drift detection + guarded agent 
 Usage: agent-flow <command> [options]
 
 Start here (no setup needed):
+  status                    One screen: is anything protecting this repo, what is waiting on you, is agent-flow current
   doctor                    Check every path your AGENTS.md / CLAUDE.md / .cursorrules / … mention
   init [--yes] [--dry-run]  Write a starter CONTEXT_MANIFEST.json (+ AGENTS.md if missing) from a scan
 
@@ -122,6 +123,8 @@ Checks (CI-safe, read-only):
 Pipeline (the CLI twin of the Pi tools — same rules, any harness):
   state [show] [--issue <n>]  Print pipeline state
   state update --issue <n> --state "Working|Needs Me|Completed" [--phase p] [--round r] [--reason t] [--reopen]
+  state dismiss --issue <n> --reason <why>
+                            Drop an issue from the list (you handled it by hand, or no longer want it); its files are kept
                             Exit 3 when the round cap escalated the issue to Needs Me
   worktree create <n> [--base <branch>] | remove <n> [--force] [--delete-branch] | list
   schema <implementer|reviewer|qa|manifest> [--strict]
@@ -134,6 +137,8 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
       --harness <h> [--model m --exit n --seconds s --argv-file f --issue n --round r]
                             Also append a role_run line (argv, exit, duration, cost/tokens) to .agent-flow/audit.jsonl
   repair --yes              Refresh manifest timestamps after the prose was re-verified (Gardener)
+  run "<task>" | run <issue>  Take one task from words to a reviewed, gated, tested change (Implementer → Reviewer → gates → QA) [--pr] [--auto-merge] [--dry-run]
+                            without --pr it stops with the work ready locally; --pr pushes and opens the pull request
   update [--yes] [--check] [--force]  Bring installed skills, hooks and the vendored runtime up to this version; edited files are kept
                             run it as: npx @drix10/agent-flow@latest update --yes   (--check exits 10 when an update is available, for scheduled CI)
   codeowners [--yes] [--owner @x]  CODEOWNERS lines covering protected_paths; --yes appends the missing ones
@@ -744,7 +749,25 @@ function cmdState(args) {
     // Distinct exit code so a script can't miss the escalation by only checking for failure.
     return r.escalated ? 3 : 0;
   }
-  return sub("state", args._[1], ["show", "update"], "state [show] | state update --issue <n> --state <s> …");
+  if (action === "dismiss") {
+    const issue = issueNumber(args.issue, "state dismiss --issue <n> --reason <why>");
+    const reason = typeof args.reason === "string" ? args.reason : "";
+    if (!reason.trim()) throw new UserError('say why it is being dropped: state dismiss --issue <n> --reason "<why>"');
+    // A run that is still working on it would go on writing: refuse while one is alive.
+    const artifacts = join(rt, ".agent-flow", "artifacts", `issue-${issue}`);
+    if (existsSync(artifacts)) {
+      const held = orchestrateLib.acquireRunLock(artifacts);
+      if ("heldBy" in held) throw new UserError(`#${issue} is being worked on right now${held.heldBy ? ` (process ${held.heldBy})` : ""}. Stop that run first (Ctrl-C), then dismiss it.`);
+      held.release();
+    }
+    const r = state.dismissSession(rt, issue, reason);
+    out(args, { issue, ...r }, () => {
+      if (!r.dismissed) return warn(`#${issue} is not in the list, so there is nothing to drop`);
+      ok(`#${issue} dropped from the list (it was ${r.from}). Its files stay in ${relative(rt, artifacts) || artifacts}; remove its worktree with: agent-flow worktree remove ${issue}`);
+    });
+    return r.dismissed ? 0 : 1;
+  }
+  return sub("state", args._[1], ["show", "update", "dismiss"], "state [show] | state update --issue <n> --state <s> … | state dismiss --issue <n> --reason <why>");
 }
 
 function cmdWorktree(args) {
@@ -1058,6 +1081,326 @@ function sameTree(a, b) {
     return la.length === lb.length && la.every((n, i) => n === lb[i] && sameTree(join(a, n), join(b, n)));
   }
   return statSync(b).isFile() && readFileSync(a).equals(readFileSync(b));
+}
+
+// ---------------------------------------------------------------------------
+// run: one task from words to a reviewed, tested change (the Orchestrator skill as code)
+// ---------------------------------------------------------------------------
+
+const SELF_BIN = fileURLToPath(import.meta.url);
+
+/** Calls an agent-flow subcommand from the repo root, the way the orchestrator needs to (no role, no network lookups). */
+/** Set by `run` while it works: a child that died of Ctrl-C ends the run at once, instead of reading as a failure. */
+let interruptHook = null;
+
+function afCaller(rt) {
+  return (a) => {
+    const env = { ...process.env, NO_COLOR: "1", AGENT_FLOW_OFFLINE: "1" };
+    delete env.AGENT_FLOW_ROLE;
+    const r = spawnSync(process.execPath, [SELF_BIN, ...a], { cwd: rt, encoding: "utf-8", env, maxBuffer: 64 * 1024 * 1024 });
+    const sig = launchLib.interruptSignal(r);
+    if (sig && interruptHook) interruptHook(sig);
+    return { status: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  };
+}
+
+function shCaller() {
+  return (cmd, a, cwd) => {
+    const r = spawnSync(launchLib.resolveExecutable(cmd), a, { cwd, encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 });
+    const sig = launchLib.interruptSignal(r);
+    if (sig && interruptHook) interruptHook(sig);
+    return { status: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? (r.error ? String(r.error.message) : "") };
+  };
+}
+
+const safeJson = (text) => {
+  try {
+    return JSON.parse(text || "{}") ?? {};
+  } catch {
+    return {};
+  }
+};
+
+const fmtElapsed = (ms) => {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+};
+
+/** Everything `run` needs to know before it launches anything, as a list of plain-language problems (with the fix). */
+function runPreflight(rt, af, harness, { pr = false } = {}) {
+  const problems = [];
+  const loaded = manifestLib.loadManifest(rt, undefined);
+  if (!loaded.ok) {
+    if (loaded.error === "manifest_not_found") problems.push("this repo isn't set up yet — run `npx @drix10/agent-flow install --harness claude`, then ask Claude to use the bootstrap skill");
+    else problems.push(`CONTEXT_MANIFEST.json can't be read (${loaded.error}); run \`npx @drix10/agent-flow doctor\` before starting work`);
+  } else if (loaded.value.problems.length) {
+    const found = loaded.value.problems;
+    problems.push(`CONTEXT_MANIFEST.json has ${found.length} problem${found.length === 1 ? "" : "s"}: ${found.slice(0, 2).join("; ")}${found.length > 2 ? "; …" : ""}. Fix it (\`npx @drix10/agent-flow doctor\` lists them all) before starting work`);
+  }
+  if (harness !== "claude") problems.push(`\`run\` drives Claude Code for now (you asked for ${harness}); Codex and Gemini still work through the invoking-agents skill`);
+  else {
+    // An npm .cmd shim must go through cmd.exe. Node prints a deprecation warning when arguments are passed alongside
+    // `shell: true`, so in that case the whole command is one quoted string (as the role launcher does).
+    const claudeExe = launchLib.resolveExecutable("claude");
+    const probe = process.platform === "win32" && /\.(cmd|bat)$/i.test(claudeExe)
+      ? spawnSync(`${launchLib.quoteForCmd(claudeExe)} --version`, { encoding: "utf-8", timeout: 20000, shell: true })
+      : spawnSync(claudeExe, ["--version"], { encoding: "utf-8", timeout: 20000 });
+    if (probe.error || probe.status !== 0) problems.push("the `claude` command isn't available on PATH — install Claude Code and log in (`claude` once), then retry");
+    if (af(["guard", "--check"]).status !== 0) problems.push("the guard hook isn't wired — run `npx @drix10/agent-flow install --harness claude` (it's what confines the Implementer to its worktree)");
+  }
+  if (!git.git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], rt).ok) problems.push("this repo has no commits yet — make a first commit");
+  if (pr) {
+    const remote = git.git(["remote", "get-url", "origin"], rt);
+    if (!remote.ok) problems.push("there is no `origin` remote to push the pull request branch to");
+    const auth = spawnSync(launchLib.resolveExecutable("gh"), ["auth", "status"], { cwd: rt, encoding: "utf-8", timeout: 20000 });
+    if (auth.error || auth.status !== 0) problems.push("GitHub CLI isn't authenticated; run `gh auth login` before using --pr");
+  }
+  return problems;
+}
+
+/** The test commands QA is told to run: what the repo's own gates run on this machine, or "none". */
+function qaCommands(rt, override) {
+  if (typeof override === "string" && override.trim()) return override.trim();
+  const loaded = manifestLib.loadManifest(rt, undefined);
+  const gates = loaded.ok ? gatesLib.gatesOf(loaded.value.manifest) : [];
+  const here = gates.filter((g) => !(Array.isArray(g.os) && g.os.length && !g.os.includes(process.platform)));
+  return here.length ? here.map((g) => gatesLib.describeCommand(g.command)).join("; ") : "none";
+}
+
+async function askLine(question) {
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await rl.question(question)).trim();
+  } finally {
+    rl.close();
+  }
+}
+
+async function cmdRun(args) {
+  if (process.env.AGENT_FLOW_ROLE) throw new UserError("a pipeline role can't start another pipeline run");
+  const rt = root();
+  const af = afCaller(rt);
+  const sh = shCaller();
+  const text = args._.slice(1).join(" ").trim();
+  if (!text) {
+    return usage('run "<what to do, and how to tell it is done>" | run <issue-number>   [--pr] [--auto-merge] [--dry-run] [--timeout <seconds>] [--commands "<tests>"]');
+  }
+  const harness = typeof args.harness === "string" ? args.harness : "claude";
+  const wantPr = !!args.pr;
+  if (args["auto-merge"] && !wantPr) throw new UserError("`--auto-merge` needs `--pr`; without it, the reviewed work stays local");
+  const problems = runPreflight(rt, af, harness, { pr: wantPr });
+
+  // Which task is this? A number is a tracked issue (resume it, or fetch it from GitHub); anything else is the task itself.
+  const numeric = /^#?(\d+)$/.exec(text);
+  let issue, title, body, fromGitHub = false;
+  if (numeric) {
+    issue = Number(numeric[1]);
+    const s = safeJson(af(["state", "show", "--issue", String(issue), "--json"]).stdout);
+    const art = join(rt, ".agent-flow", "artifacts", `issue-${issue}`);
+    if (s.state) {
+      title = existsSync(join(art, "title.txt")) ? readFileSync(join(art, "title.txt"), "utf-8").trim() : `issue #${issue}`;
+      body = "";
+    } else {
+      const g = sh("gh", ["issue", "view", String(issue), "--json", "number,title,body"], rt);
+      if (g.status !== 0) throw new UserError(`issue #${issue} isn't tracked here and GitHub didn't return it (${(g.stderr || g.stdout).trim().split("\n")[0] || "gh failed"}). Describe the task instead: agent-flow run "what to do"`);
+      const j = JSON.parse(g.stdout);
+      title = j.title;
+      body = j.body ?? "";
+      fromGitHub = true;
+    }
+  } else {
+    const all = safeJson(af(["state", "show", "--json"]).stdout);
+    // A number is taken if it has a session, saved artifacts or a worktree: an earlier attempt may have stopped before registering.
+    const onDisk = (dir, prefix) => (existsSync(dir) ? readdirSync(dir).map((n) => Number(n.startsWith(prefix) ? n.slice(prefix.length) : NaN)).filter(Number.isInteger) : []);
+    issue = orchestrateLib.nextInlineIssue([
+      ...(all.sessions ?? []).map((x) => x.issue),
+      ...onDisk(join(rt, ".agent-flow", "artifacts"), "issue-"),
+      ...onDisk(join(rt, ".worktrees"), "issue-"),
+    ]);
+    title = text.split(/\r?\n/)[0].slice(0, 100);
+    body = text;
+  }
+
+  if (body && !orchestrateLib.hasCriteria(body)) {
+    const interactive = !args.json && !!process.stdin.isTTY && !!process.stdout.isTTY;
+    if (!interactive) throw new UserError("the task doesn't say how to tell it is done. Add what should be true afterwards (\"…, so that <observable result>\"), or a short checklist");
+    const more = await askLine("How will we know it is done? (one line, e.g. 'the tests for X pass and Y prints Z'): ");
+    if (!more) throw new UserError("no acceptance criteria — nothing was started");
+    body = `${body}\n\nAcceptance criteria: ${more}`;
+  }
+
+  const timeoutSec = args.timeout === undefined ? 3600 : Number(args.timeout);
+  if (args.timeout !== undefined && (typeof args.timeout !== "string" || !Number.isSafeInteger(timeoutSec) || timeoutSec < 1 || timeoutSec > 86_400)) {
+    throw new UserError("`--timeout` must be a whole number from 1 to 86400 seconds");
+  }
+  const commands = qaCommands(rt, args.commands);
+  if (args["dry-run"]) {
+    out(args, { issue, title, harness, pr: wantPr, timeout_s: timeoutSec, qa_commands: commands, ready: problems.length === 0, setup_issues: problems }, () => {
+      console.log(`Would run issue #${issue} (${title}) with ${harness}:`);
+      console.log("  1. a worktree on agent/issue-" + issue + ", then Implementer → risk check → Reviewer → gates → QA, up to the manifest's round cap");
+      console.log(`  2. QA would run: ${commands}`);
+      console.log(`  3. ${wantPr ? "push the branch and open a pull request" : "stop with the work ready locally (add --pr to push and open a pull request)"}`);
+      if (problems.length) {
+        console.log("  Setup needed before a real run:");
+        for (const p of problems) console.log(`    - ${p}`);
+      }
+      console.log(dim("nothing was started (dry run)"));
+    });
+    return 0;
+  }
+
+  if (problems.length) {
+    if (args.json) console.log(JSON.stringify({ status: "error", issue, reason: "setup needed before a run", setup_issues: problems }, null, 2));
+    else for (const p of problems) bad(p);
+    return 2;
+  }
+
+  const t0 = Date.now();
+  const emit = args.json ? console.error : console.log;
+  const log = (e) => {
+    const stamp = dim(`[${fmtElapsed(Date.now() - t0)}]`);
+    if (e.kind === "step") emit(`${stamp} ${c(1, e.text)}`);
+    else if (e.kind === "warn") emit(`${stamp} ${c(33, "!")} ${e.text}`);
+    else emit(`${stamp} ${dim(e.text)}`);
+  };
+  // Ctrl-C or a terminated terminal must not leave an agent working unattended or the issue locked. State is saved, so it resumes.
+  const interrupted = (signal) => {
+    const stopped = launchLib.killActiveChildren();
+    orchestrateLib.releaseHeldLocks();
+    console.error(`
+${signal}: stopped ${stopped} running role${stopped === 1 ? "" : "s"}. Progress is saved; continue with: agent-flow run ${issue}`);
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  interruptHook = interrupted;
+  process.once("SIGINT", () => interrupted("SIGINT"));
+  process.once("SIGTERM", () => interrupted("SIGTERM"));
+  const result = await orchestrateLib.runIssue({ root: rt, issue, title, body, fromGitHub, af, sh, spawner: launchLib.realSpawner, log, pr: wantPr, timeoutSec, commands, autoMerge: !!args["auto-merge"] && !args["no-auto-merge"] });
+
+  out(args, result, (r) => {
+    console.log("");
+    const cost = r.cost_usd ? dim(`  ($${r.cost_usd.toFixed(2)}${r.unreported_runs ? ", some runs didn't report cost" : ""})`) : "";
+    if (r.status === "pr") ok(`Pull request ready: ${r.pr}${cost}`);
+    else if (r.status === "ready") {
+      ok(`Done and checked, not pushed. Branch ${r.branch}${cost}`);
+      console.log(dim(`  risk:     ${r.risk ?? "unknown"}`));
+      if (r.risk === "critical") warn(`This touches a critical area. Read the diff yourself before publishing: \`run ${r.issue} --pr\` opens a draft pull request that waits for your review`);
+      console.log(dim(`  look:     git -C ${relative(rt, r.worktree) || r.worktree} log --oneline -5 && git -C ${relative(rt, r.worktree) || r.worktree} diff --stat`));
+      console.log(dim(`  publish:  agent-flow run ${r.issue} --pr`));
+    } else if (r.status === "completed") ok(`Already finished: ${r.reason ?? ""}`);
+    else if (r.status === "needs_me") {
+      warn(`This needs you — ${r.reason}${cost}`);
+      console.log(dim(`  details:  ${relative(rt, r.artifacts) || r.artifacts}/`));
+      const sendBack = `agent-flow state update --issue ${r.issue} --state Working --phase implement --round ${Math.max(1, r.round || 1)}`;
+      if (r.category === "protected_path") {
+        // A protected path is a person's to change; the Implementer is told to stop, with or without the guard override.
+        console.log(dim("  then:     change it yourself: agents may not edit protected paths"));
+      } else {
+        const raise = r.category === "max_rounds_exceeded" ? "raise pipeline.max_review_rounds in CONTEXT_MANIFEST.json, then " : r.category === "budget_exceeded" ? "raise pipeline.max_cost_usd in CONTEXT_MANIFEST.json, then " : r.category === "SPEC_ERROR" ? `fix the criteria in ${relative(rt, r.artifacts)}/issue.md, then ` : "";
+        console.log(dim(`  then:     ${raise}to go on: ${sendBack}; agent-flow run ${r.issue}`));
+      }
+      console.log(dim(`  or drop:  agent-flow state dismiss --issue ${r.issue} --reason "<why>"`));
+    } else bad(`Stopped before starting work: ${r.reason}`);
+  });
+  return result.status === "needs_me" ? 3 : result.status === "error" ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// status: everything you need to know about this repo's protection and pending work, on one screen
+// ---------------------------------------------------------------------------
+
+function cmdStatus(args) {
+  const rt = root();
+  const rows = [];
+  const add = (section, level, text, hint) => rows.push({ section, level, text, ...(hint ? { hint } : {}) });
+
+  // Protection: is anything actually stopping an agent?
+  const guardOk = spawnSync(process.execPath, [SELF_BIN, "guard", "--check"], { cwd: rt, encoding: "utf-8" }).status === 0;
+  const claudeSettings = existsSync(join(rt, ".claude", "settings.json"));
+  const otherHooks = [".codex/hooks.json", ".gemini/settings.json", ".cursor/hooks.json", ".opencode/plugins/agent-flow-guard.js"].filter((p) => existsSync(join(rt, p)));
+  if (guardOk) add("Protection", "ok", "Claude Code guard hook is active");
+  else if (claudeSettings) add("Protection", "bad", "Claude settings exist, but the Agent Flow guard hook is missing or invalid", "npx @drix10/agent-flow install --harness claude");
+  else if (otherHooks.length) add("Protection", "warn", `guard configuration found for ${otherHooks.map((p) => p.split("/")[0].replace(".", "")).join(", ")} (not verified active)`, "check the harness hook configuration and ensure the Agent Flow runtime is installed");
+  else add("Protection", "bad", "no guard hook: agents are not being stopped from touching protected files or secrets", "npx @drix10/agent-flow install --harness claude");
+  const hooksDirRel = git.git(["rev-parse", "--git-path", "hooks"], rt);
+  const preCommit = hooksDirRel.ok ? join(resolve(rt, hooksDirRel.stdout.trim()), "pre-commit") : null;
+  if (preCommit && existsSync(preCommit) && readFileSync(preCommit, "utf-8").includes(HOOK_MARKER)) add("Protection", "ok", "pre-commit gate is installed");
+  else add("Protection", "warn", "no pre-commit gate in this clone (git doesn't copy hooks)", "npx @drix10/agent-flow hook install");
+
+  const loaded = manifestLib.loadManifest(rt, undefined);
+  let gates = [];
+  if (!loaded.ok) {
+    add("Protection", "bad", "no CONTEXT_MANIFEST.json: nothing says what to protect", "npx @drix10/agent-flow install --harness claude, then ask Claude to use the bootstrap skill");
+  } else {
+    const man = loaded.value.manifest;
+    const prot = (man.protected_paths ?? []).length;
+    const crit = (man.risk_boundaries ?? []).filter((b) => b.risk_level === "critical").length;
+    if (prot) add("Protection", "ok", `${prot} protected path${prot === 1 ? "" : "s"}, ${crit} critical area${crit === 1 ? "" : "s"}`);
+    else add("Protection", "warn", "no protected paths set: only secrets and git internals are guarded", "ask Claude to use the bootstrap skill and answer the risk questions");
+    if (crit && !man.pipeline?.models?.high_reasoning) {
+      add("Protection", "warn", `${crit} critical area${crit === 1 ? "" : "s"}, but no stronger model is set for reviewing them, so a critical change is reviewed by the same model as any other`, 'add "models": { "high_reasoning": "<model>" } under "pipeline" in CONTEXT_MANIFEST.json');
+    }
+    gates = gatesLib.gatesOf(man);
+    if (man.pipeline?.auto_merge_low_risk === true) add("Protection", "warn", "auto-merge is allowed: `run --pr --auto-merge` queues low-risk pull requests that pass QA (pipeline.auto_merge_low_risk)", "set it to false in CONTEXT_MANIFEST.json until you trust the pipeline here");
+  }
+
+  // Context: do the notes still match the code?
+  const d = stale.detectStale(rt, { prose: true, discover: true });
+  if (!d.ok) add("Context", "bad", `the manifest can't be read (${d.error})`, "npx @drix10/agent-flow doctor");
+  else if (d.healthy) add("Context", "ok", "context files match the code");
+  else if (d.only_stale) add("Context", "warn", `${d.report.stale_files.length} context file${d.report.stale_files.length === 1 ? "" : "s"} not re-checked recently`, "npx @drix10/agent-flow doctor");
+  else {
+    const r = d.report;
+    const why = r.schema_problems.length ? `CONTEXT_MANIFEST.json has a problem: ${r.schema_problems[0]}`
+      : r.missing_paths.length ? `${r.missing_paths.length} path${r.missing_paths.length === 1 ? "" : "s"} named in the context files no longer exist (e.g. ${r.missing_paths[0].path})`
+      : r.missing_context_files.length ? `context file missing: ${r.missing_context_files[0]}`
+      : r.unfilled_placeholders.length ? "a context file still has {{placeholders}}"
+      : "context files disagree with the code";
+    add("Context", "bad", why, "npx @drix10/agent-flow doctor");
+  }
+
+  // Checks: which gates can run on this machine?
+  if (gates.length) {
+    const here = gates.filter((g) => !(Array.isArray(g.os) && g.os.length && !g.os.includes(process.platform)));
+    const skipped = gates.length - here.length;
+    const osName = (o) => ({ linux: "Linux", darwin: "macOS", win32: "Windows" })[o] ?? o;
+    const needs = [...new Set(gates.filter((g) => !here.includes(g)).flatMap((g) => g.os ?? []))].map(osName).join("/");
+    const runs = `${here.length} check${here.length === 1 ? "" : "s"} run${here.length === 1 ? "s" : ""} here`;
+    add("Checks", skipped ? "warn" : "ok", skipped ? `${runs}; ${skipped} need${skipped === 1 ? "s" : ""} ${needs} and ${skipped === 1 ? "is" : "are"} skipped (CI runs them)` : runs, skipped ? `use a ${needs} clone for the full set` : undefined);
+  } else add("Checks", "warn", "no checks (gates) defined: the pipeline can't prove a change works", "ask Claude to use the bootstrap skill");
+
+  // Work: what is waiting on you?
+  const sessions = state.readState(rt).sessions ?? [];
+  const waiting = sessions.filter((s) => s.state === "Needs Me");
+  const working = sessions.filter((s) => s.state === "Working");
+  if (waiting.length) for (const s of waiting) add("Work", "warn", `#${s.issue} needs you: ${String(s.reason ?? "").slice(0, 160)}`, `decide, then: agent-flow state update --issue ${s.issue} --state Working --phase implement --round ${Math.max(1, Number(s.round) || 1)}; agent-flow run ${s.issue}`);
+  else add("Work", "ok", "nothing is waiting on you");
+  for (const s of working) {
+    // The publish checkpoint is recorded once review, gates and QA have passed: finished, waiting for a person to publish.
+    if (s.phase === "publish") add("Work", "info", `#${s.issue} is ready: reviewed, checked, not pushed`, `agent-flow run ${s.issue} --pr  to open the pull request`);
+    else add("Work", "info", `#${s.issue} in progress (round ${s.round ?? 1}, ${s.phase ?? "?"})`, `agent-flow run ${s.issue}  to resume`);
+  }
+
+  // Updates
+  const n = updateLib.updateNotice(rt, VERSION, { check: updateLib.updateCheckAllowed() && !args.offline && !args.json && !!process.stdout.isTTY });
+  add("Updates", n ? "warn" : "ok", n ? n.message : `agent-flow ${VERSION} is current`);
+
+  const bad_ = rows.some((r) => r.level === "bad");
+  out(args, { version: VERSION, repo: basename(rt), ok: !bad_, rows }, () => {
+    console.log(c(1, `agent-flow ${VERSION} · ${basename(rt)}`));
+    let section = "";
+    for (const r of rows) {
+      if (r.section !== section) {
+        section = r.section;
+        console.log(`\n${c(1, section)}`);
+      }
+      const mark = r.level === "ok" ? c(32, "✓") : r.level === "bad" ? c(31, "✗") : r.level === "warn" ? c(33, "!") : dim("·");
+      console.log(`  ${mark} ${r.text}`);
+      if (r.hint && r.level !== "ok") console.log(dim(`      → ${r.hint}`));
+    }
+    console.log("");
+  });
+  return bad_ ? 1 : 0;
 }
 
 /** What install wrote, as hashes, so `update` can tell an older agent-flow file from one you edited. */
@@ -1710,6 +2053,8 @@ const table = {
   repair: cmdRepair,
   manifest: cmdManifest,
   update: cmdUpdate,
+  run: cmdRun,
+  status: cmdStatus,
   codeowners: cmdCodeowners,
   guard: cmdGuard,
 };

@@ -22,6 +22,17 @@ On Pi, the `state_update`, `worktree_create`, `risk_classify` and `worktree_remo
 
 Launch mechanics live in [references/launch.md](references/launch.md): the variables (`N`, `A`, `WT`, `MODEL`, `COMMANDS`, `FINDINGS`), the background runner, the per-launch validate/log/retry routine, and one section per harness. Read "Setup", "Every launch" and your harness's section before Step 0.
 
+## Preferred entry point
+
+When this skill is invoked in a repository using Claude Code, first use the packaged CLI instead of manually replaying the steps below:
+
+```bash
+npx @drix10/agent-flow run "<task with observable acceptance criteria>"
+npx @drix10/agent-flow run 42
+```
+
+The CLI owns the same state transitions, report validation, risk checks and role launches described below. By default it keeps the reviewed work in a local worktree. Add `--pr` only when asked to push and open a PR. Auto-merge is a separate opt-in: pass `--auto-merge`, and the repository must also set `pipeline.auto_merge_low_risk: true`. Use `--dry-run` to preview the plan and setup requirements without launching roles. Continue with the manual procedure below on other harnesses or if the CLI cannot be used; don't run both paths for one issue.
+
 ## Step 0: Prepare
 
 1. **Issue.** The first available source wins:
@@ -29,7 +40,7 @@ Launch mechanics live in [references/launch.md](references/launch.md): the varia
    - `ISSUES.md` or `.agent-issues.json` at the repo root;
    - title and acceptance criteria written inline by the user. These have no number: use the lowest integer ≥ 100000 that `AF state show --json` doesn't list.
 
-   Write it to `.agent-flow/artifacts/issue-N/issue.md`, verbatim inside `<untrusted_issue number="N"> … </untrusted_issue>`. Write the title alone to `title.txt` beside it; the PR title is read from that file, never typed into a command. No testable acceptance criteria → Needs Me (`SPEC_ERROR`) now; don't let the Implementer guess.
+   Write it to `.agent-flow/artifacts/issue-N/issue.md` inside `<untrusted_issue number="N"> … </untrusted_issue>`, escaping `&`, `<` and `>` in the title and body before inserting them. Write the title alone to `title.txt` beside it; the PR title is read from that file, never typed into a command. No testable acceptance criteria → Needs Me (`SPEC_ERROR`) now; don't let the Implementer guess.
 2. **State.** `AF state show --issue N --json`:
    - `Completed` → stop and tell the user (reopening is their call).
    - `Needs Me` → show the reason and ask how to proceed.
@@ -42,15 +53,16 @@ Launch mechanics live in [references/launch.md](references/launch.md): the varia
 
 ## Resuming
 
-A `Working` issue has a stored `round` and `phase`. Set `R` to that round (the state machine refuses to go backwards, so never re-open round 1), then re-enter at the stored phase, skipping any launch whose validated `<role>-rR.json` already exists:
+A `Working` issue has a stored `round` and `phase`. Set `R` to that round (the state machine refuses to go backwards, so never re-open round 1), then re-enter at the stored phase. Skip a launch only if its role finished *before* that phase, i.e. its validated `<role>-rR.json` exists and the table says it is done. A report from the phase you are re-entering is not trusted: that is what lets a person send an escalated issue back to `implement` and get every role run again, instead of a rejected result replayed:
 
 | Stored phase | Re-enter at |
 |---|---|
-| `implement` | 1b; if `implementer-rR.json` exists, 1c |
-| `review` | 1d; if `review-rR.json` exists, route on it |
-| `qa` | 1e; if `qa-rR.json` exists, route on it |
+| `implement` | 1b (nothing from this round is reused) |
+| `review` | 1b is done (reuse `implementer-rR.json`); 1d runs again |
+| `qa` | 1b and 1d are done (reuse both reports); 1e runs again |
+| `publish` | everything is done; re-check gates, then Step 2 |
 
-A launch with a `.pid` but no `.exit` may still be running: use the crash check in launch.md before relaunching it. Recording the same phase and round again is allowed, so repeating a `state update` you can't remember making is harmless.
+On re-entry into round R+1, `FINDINGS` is the report that ended round R (the failing `qa-r`, else `gates-r`, else `review-r`, else the `dirty-` or `policy-` note), not `none`. A launch with a `.pid` but no `.exit` may still be running: use the crash check in launch.md before relaunching it. Recording the same phase and round again is allowed, so repeating a `state update` you can't remember making is harmless.
 
 ## Step 1: The round loop
 
@@ -68,14 +80,14 @@ Exit code 3 means the round cap was hit and the issue is now Needs Me. Stop, and
 
 **1b. Implementer.** Launch it with `FINDINGS` as launch.md defines it and validate it as `implementer`. If its `status` is `needs_me`, record Needs Me with its `what_failed` and `suggested_next_step` as the reason, and stop.
 
-**1c. Classify** (mechanical, and authoritative):
+**1c. Check the branch, then classify** (mechanical, and authoritative). First `git -C "$WT" status --porcelain`: anything the Implementer left uncommitted would be reviewed here but missing from the pushed branch, so it is a round R+1 with a note listing those files as the findings (`dirty-rR.json`). Then:
 
 ```bash
 AF classify --issue N --json > "$A/classification.json"
 git -C "$WT" diff "$BASE...HEAD" > "$A/diff.patch"
 ```
 
-A non-empty `protected_violations` means Needs Me ("protected path modified: …"). Don't review it and don't open a PR. A non-empty `policy_violations` (the manifest's `policy` rules) is a round R+1 with those messages as the findings: the Implementer can fix them, a reviewer shouldn't have to notice them.
+An empty `files` list means the branch changes nothing against its base: Needs Me (`no_changes`), not a review and not an empty PR. A non-empty `protected_violations` means Needs Me ("protected path modified: …"). Don't review it and don't open a PR. A non-empty `policy_violations` (the manifest's `policy` rules) is a round R+1 with those messages as the findings: the Implementer can fix them, a reviewer shouldn't have to notice them.
 
 **1d. Reviewer.** Record `AF state update --issue N --state Working --phase review --round R --json`, then launch it with the model its `reviewer_tier` asks for (`fast` → `FAST_MODEL`, `high-reasoning` → `HIGH_MODEL`). Validate it as `reviewer`. Route on the first row that matches:
 
@@ -93,14 +105,16 @@ A non-empty `protected_violations` means Needs Me ("protected path modified: …
 **1e. Gates, then QA.** If `AF gates list` shows gates, run `AF gates run --issue N --json > "$A/gates-rR.json"` first. Exit 0 → continue. Exit 1 → a required gate failed: round R+1 with the failing gates' `log` files as the findings, and QA doesn't run. Exit 2 (`environment_error`, a gate that couldn't start) → Needs Me (`qa_environment`), not another round. Only you run gates: the guard blocks `gates run` for `reviewer` and `qa`, so a pass is an exit code you observed. Then record `--phase qa`, snapshot the tree, launch QA, and compare:
 
 ```bash
-git -C "$WT" status --porcelain > "$A/pre-qa-status.txt"; git -C "$WT" rev-parse HEAD > "$A/pre-qa-head.txt"
+fingerprint() { git -C "$WT" rev-parse HEAD; git -C "$WT" ls-files -s; git -C "$WT" status --porcelain --untracked-files=all
+  git -C "$WT" ls-files -m -o --exclude-standard | sort -u | while IFS= read -r f; do printf '%s ' "$f"; git -C "$WT" hash-object -- "$f" 2>/dev/null || echo missing; done; }
+fingerprint > "$A/pre-qa.txt"
 # launch QA and wait for it (launch.md), then:
-git -C "$WT" status --porcelain | diff "$A/pre-qa-status.txt" - && git -C "$WT" rev-parse HEAD | diff "$A/pre-qa-head.txt" -
+fingerprint | diff "$A/pre-qa.txt" -
 ```
 
-Status alone would miss a commit QA made, which is why HEAD is compared too. Any difference means QA changed what it was testing, so its result is invalid: Needs Me (`qa_mutated_tree`). Otherwise validate it as `qa`:
+Status alone would miss a commit QA made, or an edit to a file that was already modified, which is why the commit, the staged blobs and a hash of every modified or untracked file are compared too. Any difference means QA changed what it was testing, so its result is invalid: Needs Me (`qa_mutated_tree`). Otherwise validate it as `qa`:
 
-- `passed` → Step 2.
+- `passed` → record `AF state update --issue N --state Working --phase publish --round R --json`, then Step 2. (Resuming at `publish` goes straight to Step 2.)
 - `passed_with_flaky` → Step 2, and list the flaky tests in the PR body (FM-14).
 - `failed` with `reason: null` → the tests ran and failed: round R+1 with `qa-rR.json` as the findings.
 - `failed` with a `reason` (`no_commands_defined`, missing tooling, a sandbox or permission error, an install that failed) → Needs Me (`qa_environment`). The Implementer can't fix the environment, so another round would only burn the cap.
@@ -119,7 +133,7 @@ Checking for an open PR first makes this step safe to repeat after a crash. Add 
 - `human_approval_required: true` → a draft PR plus Needs Me ("critical change — human review required on PR #X"). Humans merge critical changes.
 - Otherwise → `AF state update --issue N --state Completed --reason "PR #X"`.
   `Completed` is refused (exit 3, recorded as Needs Me `unreviewed_commits`) unless the latest reviewer run, QA run and every required gate for this round name the current tip of `agent/issue-N`. If it refuses, re-run the missing role or gate on the current tip; don't reset the state by hand.
-- Auto-merge only if the manifest sets `pipeline.auto_merge_low_risk: true` **and** `risk_level` is `low` **and** QA passed: `gh pr merge --auto --squash`. This still waits for CI and branch protection.
+- Auto-merge only when the user explicitly asked for it, the manifest sets `pipeline.auto_merge_low_risk: true`, `risk_level` is `low`, and QA passed: `gh pr merge --auto --squash`. This still waits for CI and branch protection.
 
 The guard refuses pushes to the default branch, force-pushes and `--no-verify`. Don't route around it.
 
@@ -135,7 +149,7 @@ The guard refuses pushes to the default branch, force-pushes and `--no-verify`. 
 <category>: <one line>. Tried: <what, per round>. Blocked by: <exact finding or error>. Decide: <the specific question for the human>.
 ```
 
-Categories: `max_rounds_exceeded`, `SPEC_ERROR`, `ARCH_ERROR`, `disputed_finding`, `protected_path`, `qa_mutated_tree`, `qa_environment`, `malformed_report`, `role_timeout`, `role_failed`, `push_failed`, `issue_not_found`, `critical_change_needs_human`.
+Categories: `max_rounds_exceeded`, `SPEC_ERROR`, `ARCH_ERROR`, `disputed_finding`, `protected_path`, `qa_mutated_tree`, `qa_environment`, `malformed_report`, `role_timeout`, `role_failed`, `push_failed`, `issue_not_found`, `critical_change_needs_human`, `no_changes`, `permission_violation`, `budget_exceeded`.
 
 To give an escalated issue another round, a human raises `pipeline.max_review_rounds` (5 at most) and moves it back to Working. You don't. The same goes for `budget_exceeded` (`pipeline.max_cost_usd`): a human raises the cap or accepts the spend.
 

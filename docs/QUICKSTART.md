@@ -40,9 +40,19 @@ npx @drix10/agent-flow baseline accept --all --yes
 
 Commit `.risk-baseline.json`. Until it exists, `audit-risk --fail-on-new` exits 1 — a CI gate with nothing to compare against would pass while checking nothing.
 
-## 3. Run an issue
+## 3. Run a task
 
-Pi: `/implement 42`. Elsewhere: ask the agent to work issue 42 through the pipeline (`invoking-agents` skill).
+For Claude Code, give the pipeline one clear task and a way to tell when it is done:
+
+```bash
+npx @drix10/agent-flow run "Add a --json flag so CI can parse the output"
+```
+
+It creates a local worktree, runs implementation, review, gates and QA, and leaves the checked change there. Nothing is pushed by default. Add `--pr` to push the branch and open a pull request; add `--auto-merge` only when you also want eligible low-risk PRs to enter GitHub's auto-merge queue and the repo manifest allows it. Preview the steps and any missing setup with `--dry-run`.
+
+**If it stops or you interrupt it,** nothing is lost. Ctrl-C stops the agent and everything it started; the issue number it printed (for a task you typed, 100000 and up) resumes it with `npx @drix10/agent-flow run <number>`, and finished steps are not repeated. When it stops with "This needs you", read the reason, fix what it names, and run the two commands it prints to send the issue back to work. A second `run` for an issue that is already running is refused. If you handled an issue yourself, `npx @drix10/agent-flow state dismiss --issue <number> --reason "<why>"` drops it from the list (its files stay; agents cannot do this). Work the agent forgot to commit is sent back to it, and a change that touches nothing stops as `no_changes`.
+
+For a GitHub issue, use `npx @drix10/agent-flow run 42`. Pi: `/implement 42`. On Codex, Gemini CLI, Cursor, Copilot and Windsurf, ask the agent to work the issue through the `invoking-agents` skill; that skill uses the same checks with the harness-specific launch path.
 
 Worktree → Implementer → mechanical classification → Reviewer (no write or shell tools) → QA (re-runs failures once to catch flakes) → PR. Round 3 escalates to **Needs Me**. Critical changes open a **draft** PR for you.
 

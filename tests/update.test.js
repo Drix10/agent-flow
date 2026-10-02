@@ -10,6 +10,9 @@ import { fileState, hashTree, isNewer, latestVersion, parseVersion, updateCheckA
 
 const PKG = fileURLToPath(new URL("..", import.meta.url));
 const BIN = join(PKG, "bin/agent-flow.js");
+const CURRENT_VERSION = JSON.parse(readFileSync(join(PKG, "package.json"), "utf-8")).version;
+const [CURRENT_MAJOR, CURRENT_MINOR, CURRENT_PATCH] = CURRENT_VERSION.split(".").map(Number);
+const NEXT_VERSION = `${CURRENT_MAJOR}.${CURRENT_MINOR}.${CURRENT_PATCH + 1}`;
 const run = (bin, cwd, args, env = {}) => spawnSync(process.execPath, [bin, ...args], { cwd, encoding: "utf-8", env: { ...process.env, NO_COLOR: "1", AGENT_FLOW_OFFLINE: "1", ...env } });
 
 /** A copy of this package that claims to be `version`, with `qa` changed: what a newer release looks like to a repo. */
@@ -133,13 +136,13 @@ test("doctor: a newer CLI notices an older vendored runtime without any network"
 test("update notice: says so once when the registry has a newer version, and never in CI or when opted out", () => {
   withRepo((dir, repo) => {
     run(BIN, repo, ["install", "--harness", "claude"]);
-    const n = updateNotice(repo, "1.1.6", { check: true, latest: "1.1.9" });
+    const n = updateNotice(repo, CURRENT_VERSION, { check: true, latest: NEXT_VERSION });
     assert.equal(n.kind, "newer_published");
-    assert.match(n.message, /1\.1\.9 is available .*update --yes/, "a vendored repo is told to run update");
-    assert.equal(updateNotice(repo, "1.1.6", { check: true, latest: "1.1.6" }), null);
-    assert.equal(updateNotice(repo, "1.1.6", { check: false, latest: "9.9.9" }), null, "checks off: no registry line");
+    assert.ok(n.message.includes(`${NEXT_VERSION} is available`) && n.message.includes("update --yes"), "a vendored repo is told to run update");
+    assert.equal(updateNotice(repo, CURRENT_VERSION, { check: true, latest: CURRENT_VERSION }), null);
+    assert.equal(updateNotice(repo, CURRENT_VERSION, { check: false, latest: NEXT_VERSION }), null, "checks off: no registry line");
   });
-  assert.match(updateNotice("/definitely/not/a/repo", "1.1.6", { check: true, latest: "1.2.0" }).message, /npm i -D @drix10\/agent-flow@latest/, "an npm user is told how to upgrade");
+  assert.match(updateNotice("/definitely/not/a/repo", CURRENT_VERSION, { check: true, latest: NEXT_VERSION }).message, /npm i -D @drix10\/agent-flow@latest/, "an npm user is told how to upgrade");
   assert.equal(updateCheckAllowed({ CI: "true" }), false);
   assert.equal(updateCheckAllowed({ NO_UPDATE_NOTIFIER: "1" }), false);
   assert.equal(updateCheckAllowed({ AGENT_FLOW_OFFLINE: "1" }), false);

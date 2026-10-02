@@ -35,7 +35,7 @@ EOF
 What each one means, and why:
 
 - **Models.** `pipeline.models.fast` and `pipeline.models.high_reasoning` in `CONTEXT_MANIFEST.json` are optional model IDs for the harness you run (`sonnet`/`opus` for Claude, a Codex or Gemini model name, a Pi pattern). When a key is missing the variable is empty, and every command below uses `${FAST_MODEL:+--model "$FAST_MODEL"}`, which drops the flag entirely. An empty `--model ""` would be an error; no flag means the harness's own default.
-- **Harness per role.** `pipeline.harness_by_role` (optional) runs a role on a different harness than yours, for example `{"reviewer": "codex"}` so the Reviewer doesn't share the Implementer's model family and blind spots. For each launch use the section below for `HARNESS_<ROLE>` when it is set, otherwise the harness you run on, and pass that name to `report --harness`. The read-only launch of each section still applies to the Reviewer, so check the [harness matrix](../../../docs/HARNESS-MATRIX.md) before pointing the Reviewer at a harness whose read-only cell isn't ✅. A value that isn't `claude`, `codex`, `gemini` or `pi`, a missing CLI or a failed login is `role_failed` → Needs Me, never a silent fallback to the Implementer's harness. On the last allowed round (`R` = `LIMIT`) the Implementer uses `HIGH_MODEL` when it is set.
+- **Harness per role.** `pipeline.harness_by_role` (optional) runs a role on a different harness than yours, for example `{"reviewer": "codex"}` so the Reviewer doesn't share the Implementer's model family and blind spots. For each launch use the section below for `HARNESS_<ROLE>` when it is set, otherwise the harness you run on, and pass that name to `report --harness`. The read-only launch of each section still applies to the Reviewer, so check the [harness matrix](https://github.com/Drix10/agent-flow/blob/main/docs/HARNESS-MATRIX.md) before pointing the Reviewer at a harness whose read-only cell isn't ✅. A value that isn't `claude`, `codex`, `gemini` or `pi`, a missing CLI or a failed login is `role_failed` → Needs Me, never a silent fallback to the Implementer's harness. On the last allowed round (`R` = `LIMIT`) the Implementer uses `HIGH_MODEL` when it is set.
 - **`MODEL`** for a launch: `FAST_MODEL` for the Implementer and QA; for the Reviewer, `FAST_MODEL` when `reviewer_tier` is `fast` and `HIGH_MODEL` when it is `high-reasoning`.
 - **`COMMANDS`**: the test, typecheck and lint commands exactly as `AGENTS.md` lists them, `;`-separated, or `none` when it lists none. QA reports `no_commands_defined` rather than invent one.
 - **`FINDINGS`** (set per round, not in `env.sh`): `none` in round 1. Otherwise the absolute path of the report that ended the previous round: `$A/qa-r$((R-1)).json` if it exists (QA failed), else `$A/review-r$((R-1)).json`. It is absolute because the Implementer works from the worktree, not the repo root.
@@ -129,13 +129,13 @@ Every role runs with **the repo root as its working directory**, not the worktre
 
 Read-only enforcement is `--permission-mode plan` (edits need an approval nobody is there to grant) plus `--disallowedTools` (the deny-list), plus the guard hook above — which is the part that actually blocks. Where the CLI offers it, `--agent reviewer` with `--tools Read,Grep,Glob` is stronger (an allow-list instead of a deny-list); prefer that.
 
-**Implementer.** `acceptEdits` lets it edit files. `--allowedTools` pre-approves the shell (tests, commit) and the `Skill` tool, which otherwise needs a permission nobody is there to grant in `-p` mode. The guard hook still vets every call. `ROLE_TIMEOUT` (the runner) is the budget; hitting it ends the run with exit 124.
+**Implementer.** `acceptEdits` lets it edit files. `--allowedTools` pre-approves the shell (tests, commit; `PowerShell` is the shell tool Claude uses on Windows, and without it the first command is denied) and the `Skill` tool, which otherwise needs a permission nobody is there to grant in `-p` mode. The guard hook still vets every call. `ROLE_TIMEOUT` (the runner) is the budget; hitting it ends the run with exit 124.
 
 ```bash
 node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=implementer AGENT_FLOW_WORKTREE="$WT" \
   claude -p ${FAST_MODEL:+--model "$FAST_MODEL"} \
-  --permission-mode acceptEdits --allowedTools Bash,Skill \
+  --permission-mode acceptEdits --allowedTools Bash,PowerShell,Skill \
   --output-format json \
   "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS"
 ```
@@ -146,7 +146,7 @@ node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- \
 node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=reviewer \
   claude -p ${MODEL:+--model "$MODEL"} \
-  --permission-mode plan --disallowedTools Write,Edit,MultiEdit,NotebookEdit,Bash,Skill \
+  --permission-mode plan --disallowedTools Write,Edit,MultiEdit,NotebookEdit,Bash,PowerShell,Skill \
   --output-format json \
   "Round $R of $LIMIT. Read .claude/skills/reviewer/SKILL.md and follow it. Packet: $A/ (issue.md, diff.patch, classification.json, implementer-r$R.json, and review-r$((R-1)).json if it exists). Worktree for reading context: $WT"
 ```
@@ -157,7 +157,7 @@ node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- \
 node "$A/run-role.mjs" "$A/qa-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=qa \
   claude -p ${FAST_MODEL:+--model "$FAST_MODEL"} \
-  --allowedTools Bash,Skill \
+  --allowedTools Bash,PowerShell,Skill \
   --output-format json \
   "Use the qa skill. Issue $N. Worktree: $WT (cd into it first). Commands: $COMMANDS"
 ```
