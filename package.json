@@ -37,6 +37,7 @@
     ".gemini/agents/reviewer.md",
     ".gemini/settings.json.example",
     "README.md",
+    "SETUP.md",
     "README-COMPATIBILITY.md",
     "SECURITY.md",
     "ROADMAP.md",

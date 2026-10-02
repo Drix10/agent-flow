@@ -27,6 +27,8 @@ Use `codex`, `gemini`, `cursor`, `copilot`, `windsurf` or `agents` instead of `c
 
 In repositories without `package.json`, `install` vendors the small runtime needed by local hooks into `.agent-flow-runtime/`. Commit that directory so the hooks work for other clones; Agent Flow adds no package files or dependencies to the project.
 
+To have your coding agent do the whole setup for you, give it the prompt in [SETUP.md](SETUP.md).
+
 Bootstrap scans the code read-only and proposes `AGENTS.md`, `CONTEXT_MANIFEST.json` and related context files. It asks about protected paths and risk boundaries before writing. Review every proposal before accepting it.
 
 For Claude Code, run a task with observable acceptance criteria:
