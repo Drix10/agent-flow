@@ -7,7 +7,7 @@
  * called through the injected `af`, so the two cannot drift and a test can run the whole loop against a fake agent.
  */
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { Spawner } from "./launch.js";
 import { issueCost } from "./state.js";
@@ -114,7 +114,7 @@ function hashFile(path: string): string {
   return h.digest("hex");
 }
 
-const heldLocks = new Set<string>();
+const heldLocks = new Map<string, () => void>();
 const pidAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -123,63 +123,131 @@ const pidAlive = (pid: number): boolean => {
     return (e as NodeJS.ErrnoException).code === "EPERM"; // exists, owned by someone else
   }
 };
-const LOCK_STALE_MS = 12 * 3600_000;
+/** A running `run` refreshes its lock this often. */
+const LOCK_BEAT_MS = 30_000;
+/**
+ * A lock nobody has refreshed for this long belongs to a process that is gone, even if its pid has since been reused.
+ * Far longer than the refresh interval, because the blocking git and gate calls between refreshes can take a while.
+ */
+const LOCK_STALE_MS = 6 * 3600_000;
+const LINK_UNSUPPORTED = new Set(["EPERM", "ENOSYS", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "EINVAL"]);
 
 /**
- * One `run` per issue at a time: two would race on the worktree, the state file and the report files. A lock left by a
- * crashed run (its process gone, or older than half a day) is taken over. Returns a release function, or the pid that holds it.
+ * Delete `path` only if it still holds exactly `expected`: a lock judged stale may have been taken over by another
+ * process a moment ago, and that new lock must not be deleted. Returns whether it was removed.
  */
-export function acquireRunLock(dir: string, now = Date.now()): { release: () => void } | { heldBy: number } {
+export function removeIfUnchanged(path: string, expected: string): boolean {
+  try {
+    if (readFileSync(path, "utf-8") !== expected) return false;
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const lockOwner = (path: string): number | null => {
+  try {
+    const pid = JSON.parse(readFileSync(path, "utf-8")).pid;
+    return Number.isInteger(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * One `run` per issue at a time: two would race on the worktree, the state file and the report files.
+ * The lock file is created already holding its content (written to a temp file, then hard-linked into place), so a
+ * second process can never see it half-written and mistake it for a leftover. A lock whose process is gone, or that
+ * has not been refreshed for hours, is taken over. Returns a release function, or who holds it.
+ */
+export function acquireRunLock(dir: string, now = Date.now()): { release: () => void } | { heldBy: number; path: string } {
   const path = join(dir, "run.lock");
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const content = () => JSON.stringify({ pid: process.pid, at: Date.now() });
+  const create = (): boolean => {
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, content());
     try {
-      const fd = openSync(path, "wx");
+      linkSync(tmp, path);
+      return true;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "";
+      if (code === "EEXIST") return false;
+      if (!LINK_UNSUPPORTED.has(code)) throw e;
+      // A filesystem without hard links (some removable drives): fall back to exclusive create.
       try {
-        writeSync(fd, JSON.stringify({ pid: process.pid, at: now }));
-      } finally {
-        closeSync(fd);
+        const fd = openSync(path, "wx");
+        try {
+          writeSync(fd, content());
+        } finally {
+          closeSync(fd);
+        }
+        return true;
+      } catch (e2) {
+        if ((e2 as NodeJS.ErrnoException).code === "EEXIST") return false;
+        throw e2;
       }
-      heldLocks.add(path);
-      return {
-        release: () => {
-          heldLocks.delete(path);
+    } finally {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* nothing to clean */
+      }
+    }
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (create()) {
+      const beat = setInterval(() => {
+        // Refresh only a lock that is still ours; if it was taken over, stop (never overwrite the new holder's).
+        if (lockOwner(path) !== process.pid) {
+          clearInterval(beat);
+          return;
+        }
+        const tmp = `${path}.${process.pid}.beat`;
+        try {
+          writeFileSync(tmp, content());
+          renameSync(tmp, path);
+        } catch {
+          try {
+            unlinkSync(tmp);
+          } catch {
+            /* skip this beat */
+          }
+        }
+      }, LOCK_BEAT_MS);
+      beat.unref();
+      const release = () => {
+        clearInterval(beat);
+        heldLocks.delete(path);
+        if (lockOwner(path) === process.pid) {
           try {
             unlinkSync(path);
           } catch {
             /* already gone */
           }
-        },
+        }
       };
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      let held: { pid?: number; at?: number } = {};
-      try {
-        held = JSON.parse(readFileSync(path, "utf-8"));
-      } catch {
-        /* unreadable: treat as stale */
-      }
-      const live = Number.isInteger(held.pid) && (held.pid as number) > 0 && pidAlive(held.pid as number) && typeof held.at === "number" && now - held.at < LOCK_STALE_MS;
-      if (live) return { heldBy: held.pid as number };
-      try {
-        unlinkSync(path);
-      } catch {
-        /* someone else just took it over; the next attempt sees theirs */
-      }
+      heldLocks.set(path, release);
+      return { release };
     }
+    let raw = "";
+    let held: { pid?: number; at?: number } = {};
+    try {
+      raw = readFileSync(path, "utf-8");
+      held = JSON.parse(raw);
+    } catch {
+      /* unreadable or not ours: judged stale below */
+    }
+    const live = Number.isInteger(held.pid) && (held.pid as number) > 0 && pidAlive(held.pid as number) && typeof held.at === "number" && now - held.at < LOCK_STALE_MS;
+    if (live) return { heldBy: held.pid as number, path };
+    removeIfUnchanged(path, raw);
   }
-  return { heldBy: 0 };
+  return { heldBy: 0, path };
 }
 
 /** Drop every lock this process holds. Called when a run is interrupted, where `finally` blocks don't run. */
 export function releaseHeldLocks(): void {
-  for (const path of heldLocks) {
-    try {
-      unlinkSync(path);
-    } catch {
-      /* already gone */
-    }
-  }
-  heldLocks.clear();
+  for (const release of [...heldLocks.values()]) release();
 }
 
 /**
@@ -265,7 +333,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
 
   const lock = acquireRunLock(A);
   if ("heldBy" in lock) {
-    return done({ status: "error", reason: `another \`agent-flow run\` for issue #${N} is already working on it${lock.heldBy ? ` (process ${lock.heldBy})` : ""}. Wait for it, or stop it, then run again.` });
+    return done({ status: "error", reason: `another \`agent-flow run\` for issue #${N} is already working on it${lock.heldBy ? ` (process ${lock.heldBy})` : ""}. Wait for it, or stop it, then run again. If you are sure nothing is running, delete ${lock.path}.` });
   }
   try {
     // ---- Step 0: prepare ---------------------------------------------------------------
@@ -298,12 +366,19 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       writeFileSync(join(A, "issue.md"), `<untrusted_issue number="${N}">\n# ${xmlText(i.title)}\n\n${xmlText(i.body)}\n</untrusted_issue>\n`);
       writeFileSync(join(A, "title.txt"), `${i.title.replace(/\r?\n.*/s, "")}\n`);
     }
+    if (i.fromGitHub) writeFileSync(join(A, "from-github"), "1\n");
     const FAST = cfg("pipeline.models.fast");
     const HIGH = cfg("pipeline.models.high_reasoning");
     const gatesDefined = (afJson(["gates", "list"]).gates ?? []).length > 0;
     let findings = R > 1 ? findingsFor(A, R - 1) : "none";
-    // What the worktree already shows as changed, so only what the Implementer leaves behind is held against it.
-    const dirtyBaseline = new Set(sh("git", ["-C", WT, "status", "--porcelain"], root).stdout.split("\n").filter(Boolean));
+    /**
+     * Lines `git status` showed that the Implementer is not to blame for: what gates and QA wrote (coverage, build output)
+     * when a round ended. Refreshed after them each round. Resuming at or after review means the Implementer's work was
+     * already checked, so whatever is dirty now is generated; resuming at implement starts with none, so a crashed
+     * Implementer's uncommitted files are still sent back to be committed.
+     */
+    const statusLines = (): Set<string> => new Set(sh("git", ["-C", WT, "status", "--porcelain"], root).stdout.split("\n").filter(Boolean));
+    let dirtyBaseline: Set<string> = resuming && phaseReached(R) >= 1 ? statusLines() : new Set();
 
     // ---- Step 1: the round loop --------------------------------------------------------
     for (;;) {
@@ -311,6 +386,13 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       const phaseNow = phaseReached(R);
       const at = (p: string) => PHASE_ORDER.indexOf(p) >= phaseNow;
       const roundTag = `round ${R}${LIMIT ? ` of ${LIMIT}` : ""}`;
+
+      // Files from an abandoned attempt at this round, for phases we are about to run again, are set aside: they must
+      // neither be replayed nor outrank this attempt's own report when the next round looks for what went wrong.
+      for (const [name, phaseIndex] of [["implementer", 0], ["dirty", 0], ["policy", 0], ["review", 1], ["gates", 2], ["qa", 2]] as const) {
+        const stale = join(A, `${name}-r${R}.json`);
+        if (phaseIndex >= phaseNow && existsSync(stale)) renameSync(stale, `${stale}.prev`);
+      }
 
       // 1a. open the round (the state machine, not this loop, decides whether it may start)
       if (at("implement")) updatePhase("implement", R);
@@ -323,7 +405,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       }
 
       // 1c. Work left uncommitted would be reviewed and tested here but missing from the branch that gets pushed.
-      const leftover = sh("git", ["-C", WT, "status", "--porcelain"], root).stdout.split("\n").filter((l) => l && !dirtyBaseline.has(l));
+      const leftover = [...statusLines()].filter((l) => !dirtyBaseline.has(l));
       if (leftover.length) {
         log({ kind: "warn", text: `the Implementer left ${leftover.length} uncommitted change(s)` });
         writeFileSync(join(A, `dirty-r${R}.json`), `${JSON.stringify({ problem: "Uncommitted changes in the worktree. Commit the work (the pipeline reviews and publishes commits only).", files: leftover.slice(0, 50) }, null, 2)}\n`);
@@ -350,6 +432,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         log({ kind: "warn", text: `policy: ${msgs.join("; ")}` });
         writeFileSync(join(A, `policy-r${R}.json`), `${JSON.stringify({ policy_violations: msgs }, null, 2)}\n`);
         findings = join(A, `policy-r${R}.json`);
+        dirtyBaseline = statusLines();
         R = nextRound(R);
         continue;
       }
@@ -374,6 +457,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       }
       if (rev.status === "request_changes") {
         findings = join(A, `review-r${R}.json`);
+        dirtyBaseline = statusLines();
         log({ kind: "warn", text: `review asked for changes (${f.length} finding${f.length === 1 ? "" : "s"})` });
         R = nextRound(R);
         continue;
@@ -387,6 +471,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         if (g.status === 2) escalate("qa_environment", "a gate could not start (a missing tool or a bad path). Decide: fix the environment, then resume.");
         if (g.status === 1) {
           findings = join(A, `gates-r${R}.json`);
+          dirtyBaseline = statusLines();
           log({ kind: "warn", text: "a required gate failed" });
           R = nextRound(R);
           continue;
@@ -399,6 +484,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       if (snapshot() !== pre) escalate("qa_mutated_tree", "QA changed the files it was testing, so its result is invalid. Decide: re-run QA.");
       if (qa.status === "failed" && !qa.reason) {
         findings = join(A, `qa-r${R}.json`);
+        dirtyBaseline = statusLines();
         log({ kind: "warn", text: "QA found failures" });
         R = nextRound(R);
         continue;
@@ -442,7 +528,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         }
       }
       let commands = i.commands;
-      if (commands.length > INLINE_COMMANDS_MAX) {
+      if (commands.length > INLINE_COMMANDS_MAX || /[%"\r\n]/.test(commands)) {
         writeFileSync(join(A, "commands.txt"), `${commands}\n`);
         commands = `listed, one per line separated by ";", in ${join(A, "commands.txt")}`;
       }
@@ -487,7 +573,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       const flaky: any[] = qa.flaky ?? [];
       const stale: any[] = rev.context_stale_flags ?? [];
       const body = [
-        i.fromGitHub ? `Closes #${N}` : `Agent-flow run #${N}`,
+        i.fromGitHub || existsSync(join(A, "from-github")) ? `Closes #${N}` : `Agent-flow run #${N}`,
         "",
         `**Risk:** ${cls.risk_level} (${(cls.reasons ?? []).slice(0, 5).join("; ")})`,
         `**Review:** ${rev.status}: ${rev.summary ?? ""}`,

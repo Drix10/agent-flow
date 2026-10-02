@@ -1070,11 +1070,16 @@ function sameTree(a, b) {
 const SELF_BIN = fileURLToPath(import.meta.url);
 
 /** Calls an agent-flow subcommand from the repo root, the way the orchestrator needs to (no role, no network lookups). */
+/** Set by `run` while it works: a child that died of Ctrl-C ends the run at once, instead of reading as a failure. */
+let interruptHook = null;
+
 function afCaller(rt) {
   return (a) => {
     const env = { ...process.env, NO_COLOR: "1", AGENT_FLOW_OFFLINE: "1" };
     delete env.AGENT_FLOW_ROLE;
     const r = spawnSync(process.execPath, [SELF_BIN, ...a], { cwd: rt, encoding: "utf-8", env, maxBuffer: 64 * 1024 * 1024 });
+    const sig = launchLib.interruptSignal(r);
+    if (sig && interruptHook) interruptHook(sig);
     return { status: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };
 }
@@ -1082,6 +1087,8 @@ function afCaller(rt) {
 function shCaller() {
   return (cmd, a, cwd) => {
     const r = spawnSync(launchLib.resolveExecutable(cmd), a, { cwd, encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 });
+    const sig = launchLib.interruptSignal(r);
+    if (sig && interruptHook) interruptHook(sig);
     return { status: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? (r.error ? String(r.error.message) : "") };
   };
 }
@@ -1239,6 +1246,7 @@ async function cmdRun(args) {
 ${signal}: stopped ${stopped} running role${stopped === 1 ? "" : "s"}. Progress is saved; continue with: agent-flow run ${issue}`);
     process.exit(signal === "SIGINT" ? 130 : 143);
   };
+  interruptHook = interrupted;
   process.once("SIGINT", () => interrupted("SIGINT"));
   process.once("SIGTERM", () => interrupted("SIGTERM"));
   const result = await orchestrateLib.runIssue({ root: rt, issue, title, body, fromGitHub, af, sh, spawner: launchLib.realSpawner, log, pr: wantPr, timeoutSec, commands, autoMerge: !!args["auto-merge"] && !args["no-auto-merge"] });

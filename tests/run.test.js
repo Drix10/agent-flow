@@ -7,8 +7,8 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireRunLock, claudeArgs, findingsFor, hasCriteria, nextInlineIssue, retryArgs, runIssue } from "../extensions/lib/orchestrate.js";
-import { killActiveChildren, quoteForCmd, realSpawner, resolveExecutable } from "../extensions/lib/launch.js";
+import { acquireRunLock, claudeArgs, findingsFor, hasCriteria, nextInlineIssue, removeIfUnchanged, retryArgs, runIssue } from "../extensions/lib/orchestrate.js";
+import { createSpawner, interruptSignal, killActiveChildren, quoteForCmd, realSpawner, resolveExecutable } from "../extensions/lib/launch.js";
 
 const BIN = fileURLToPath(new URL("../bin/agent-flow.js", import.meta.url));
 const N = 100001;
@@ -835,5 +835,195 @@ test("the CLI: a number with saved artifacts or a worktree is never reused for a
     assert.equal(JSON.parse(r.stdout).issue, 100002);
   } finally {
     env.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fixes from the independent review: lock integrity, baselines, stale files, quoting
+// ---------------------------------------------------------------------------
+
+test("lock: it appears already holding valid content, release leaves a lock someone else took over, and only a program that never started reports 127", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-lock-"));
+  try {
+    const held = acquireRunLock(dir);
+    assert.ok("release" in held);
+    const doc = JSON.parse(readFileSync(join(dir, "run.lock"), "utf-8"));
+    assert.equal(doc.pid, process.pid);
+    assert.ok(Number.isFinite(doc.at));
+    assert.deepEqual(fs.readdirSync(dir).filter((n) => n.endsWith(".tmp") || n.endsWith(".beat")), [], "no temp files are left beside the lock");
+    // Another process took the lock over (we looked stale to it): releasing must not delete theirs.
+    writeFileSync(join(dir, "run.lock"), JSON.stringify({ pid: 2147483646, at: Date.now() }));
+    held.release();
+    assert.ok(existsSync(join(dir, "run.lock")), "someone else's lock survives our release");
+    const refused = acquireRunLock(dir, Date.now() + 1);
+    assert.ok("heldBy" in refused || "release" in refused);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const dir2 = mkdtempSync(join(tmpdir(), "af-enoent-"));
+  try {
+    const r = await realSpawner({ argv: ["definitely-not-a-real-binary-xyz"], env: {}, cwd: dir2, base: join(dir2, "role"), timeoutSec: 20 });
+    assert.equal(r.exit, 127, "a program that never started is the only 127");
+  } finally {
+    rmSync(dir2, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test("run: a pull request opened by a later `run N --pr` still says Closes #N for a GitHub issue", async () => {
+  const env = makeRepo();
+  try {
+    const agent = standardAgent(env.repo);
+    assert.equal((await run(env, agent, { fromGitHub: true })).result.status, "ready");
+    const second = await run(env, agent, { fromGitHub: false, body: "", pr: true });
+    assert.equal(second.result.status, "pr", JSON.stringify(second.result));
+    assert.match(readFileSync(join(second.result.artifacts, "pr.md"), "utf-8"), new RegExp(`^Closes #${N}`));
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: files a gate writes are not blamed on the next round's Implementer", async () => {
+  const gate = "node -e \"require('fs').writeFileSync('gate-output.txt','x'); process.exit(require('fs').existsSync('gatefail') ? 1 : 0)\"";
+  const env = makeRepo({ gates: [{ name: "writes-output", command: gate }] });
+  try {
+    const agent = fakeAgent(env.repo, {
+      implementer: [
+        (ctx) => {
+          commitFile("gatefail")(ctx.wt);
+          return { report: implReport(headOf(ctx.wt)) };
+        },
+        (ctx) => {
+          // Commit only its own change (a careful Implementer does not `git add -A` the gate's output along with it).
+          git(ctx.wt, "rm", "-q", "gatefail");
+          writeFileSync(join(ctx.wt, "fixed.txt"), "fixed\n");
+          git(ctx.wt, "add", "fixed.txt");
+          git(ctx.wt, "commit", "-qm", "fix");
+          return { report: implReport(headOf(ctx.wt)) };
+        },
+      ],
+      reviewer: [({ round }) => ({ report: reviewReport(round) })],
+      qa: [() => ({ report: qaReport() })],
+    });
+    const { result } = await run(env, agent);
+    assert.equal(result.status, "ready", JSON.stringify(result));
+    assert.equal(result.round, 2);
+    assert.ok(existsSync(join(agent.wt, "gate-output.txt")), "the gate really did leave an untracked file behind");
+    assert.ok(!existsSync(join(result.artifacts, "dirty-r2.json")), "the gate's untracked output did not become a 'forgot to commit' finding");
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: leftovers from an abandoned attempt at a round are set aside, not allowed to outrank the new attempt's own findings", async () => {
+  const env = makeRepo();
+  try {
+    const dir = join(env.repo, ".agent-flow", "artifacts", `issue-${N}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "review-r1.json"), JSON.stringify({ status: "request_changes", findings: [] }));
+    assert.equal(af(env.repo)(["state", "update", "--issue", String(N), "--state", "Working", "--phase", "implement", "--round", "1"]).status, 0);
+    let crash = true;
+    const agent = fakeAgent(env.repo, {
+      implementer: [
+        (ctx) => {
+          commitFile("a.txt")(ctx.wt);
+          writeFileSync(join(ctx.wt, "forgot.txt"), "x\n");
+          return { report: implReport(headOf(ctx.wt)) };
+        },
+        () => {
+          if (crash) {
+            crash = false;
+            throw new Error("power cut");
+          }
+          return {};
+        },
+        (ctx) => {
+          commitFile("forgot.txt")(ctx.wt);
+          return { report: implReport(headOf(ctx.wt)) };
+        },
+      ],
+      reviewer: [({ round }) => ({ report: reviewReport(round) })],
+      qa: [() => ({ report: qaReport() })],
+    });
+    assert.equal((await run(env, agent)).result.status, "error");
+    assert.ok(existsSync(join(dir, "review-r1.json.prev")) && !existsSync(join(dir, "review-r1.json")), "the old review was set aside");
+    const second = await run(env, agent);
+    assert.equal(second.result.status, "ready", JSON.stringify(second.result));
+    assert.match(agent.calls.filter((c) => c.role === "implementer").at(-1).argv.at(-1), /dirty-r1\.json/, "the round-2 Implementer is told what this attempt found");
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("run: commands that a shell could change travel in a file, byte for byte", async () => {
+  const env = makeRepo();
+  try {
+    const agent = standardAgent(env.repo);
+    const commands = 'echo "%PATH%"; pytest -k "not slow"';
+    const { result } = await run(env, agent, { commands });
+    assert.equal(result.status, "ready");
+    const prompt = agent.calls.find((c) => c.role === "qa").argv.at(-1);
+    assert.ok(!prompt.includes("%PATH%"), "nothing a shell would expand is in the command line");
+    assert.equal(readFileSync(join(result.artifacts, "commands.txt"), "utf-8").trim(), commands);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test("pure parts, review fixes: cmd.exe quoting neutralises %VAR%, and a Ctrl-C'd child is recognised on every platform", () => {
+  const q = quoteForCmd("path is %PATH% ok");
+  assert.ok(!q.includes("%"), "no ASCII percent reaches cmd.exe");
+  assert.match(q, /path is .PATH. ok/);
+  assert.equal(interruptSignal({ signal: "SIGINT" }), "SIGINT");
+  assert.equal(interruptSignal({ signal: "SIGTERM" }), "SIGTERM");
+  assert.equal(interruptSignal({ signal: "SIGKILL" }), null, "a kill we did not ask for is a failure, not an interrupt");
+  assert.equal(interruptSignal({ status: 1 }), null);
+  assert.equal(interruptSignal({ status: 0xc000013a }, "win32"), "SIGINT", "Windows reports Ctrl-C as STATUS_CONTROL_C_EXIT");
+  assert.equal(interruptSignal({ status: 0xc000013a }, "linux"), null);
+});
+
+test("role launcher: an error event from a process that did start does not discard its result; one that never started is 127", async () => {
+  const { EventEmitter } = await import("node:events");
+  const dir = mkdtempSync(join(tmpdir(), "af-late-"));
+  try {
+    const started = new EventEmitter();
+    started.pid = 424242;
+    started.kill = () => true;
+    const finishes = createSpawner(() => {
+      setImmediate(() => {
+        started.emit("error", new Error("kill EPERM")); // e.g. a failed kill, after the role was already running
+        started.emit("exit", 0, null);
+      });
+      return started;
+    });
+    const ok = await finishes({ argv: ["claude", "-p", "x"], env: {}, cwd: dir, base: join(dir, "role-a"), timeoutSec: 20 });
+    assert.equal(ok.exit, 0, "the role finished; a late error must not turn that into 'could not start'");
+
+    const never = new EventEmitter();
+    never.pid = undefined;
+    never.kill = () => true;
+    const cannot = createSpawner(() => {
+      setImmediate(() => never.emit("error", Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" })));
+      return never;
+    });
+    const missing = await cannot({ argv: ["claude", "-p", "x"], env: {}, cwd: dir, base: join(dir, "role-b"), timeoutSec: 20 });
+    assert.equal(missing.exit, 127);
+    assert.equal(killActiveChildren(), 0, "neither is left registered as running");
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test("lock: a stale lock is removed only if it is still the one that was judged stale", () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-unchanged-"));
+  try {
+    const path = join(dir, "run.lock");
+    writeFileSync(path, "A");
+    assert.equal(removeIfUnchanged(path, "B"), false, "another process replaced it: leave the new lock alone");
+    assert.ok(existsSync(path));
+    assert.equal(removeIfUnchanged(path, "A"), true);
+    assert.ok(!existsSync(path));
+    assert.equal(removeIfUnchanged(path, "A"), false, "already gone is not an error");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

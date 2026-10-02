@@ -42,10 +42,12 @@ export function resolveExecutable(cmd: string, env: NodeJS.ProcessEnv = process.
 }
 
 /**
- * Quote one argument for cmd.exe (used only for npm's .cmd shims). A line break would end the command line there and
- * silently drop the rest of the prompt, so it becomes a space.
+ * Quote one argument for cmd.exe (used only for npm's .cmd shims). Two things in a prompt would otherwise be acted on
+ * by the shell instead of read by the agent: a line break ends the command line (the rest is silently dropped), and
+ * `%NAME%` is replaced by that environment variable's value even inside quotes. The prompt is prose, so a space and the
+ * look-alike full-width percent sign are harmless; anything that must stay exact (the QA commands) travels in a file.
  */
-export const quoteForCmd = (a: string): string => `"${String(a).replace(/\r\n|\r|\n/g, " ").replace(/"/g, '""')}"`;
+export const quoteForCmd = (a: string): string => `"${String(a).replace(/\r\n|\r|\n/g, " ").replace(/%/g, "％").replace(/"/g, '""')}"`;
 
 /** Roles currently running, so an interrupted `run` can stop them instead of leaving them working unattended. */
 const active = new Set<ChildProcess>();
@@ -73,7 +75,10 @@ export function killActiveChildren(): number {
   return n;
 }
 
-export const realSpawner: Spawner = (spec) =>
+/** `spawnImpl` is `child_process.spawn`; a test passes a stand-in to simulate events a real process rarely produces. */
+export const createSpawner =
+  (spawnImpl: typeof spawn = spawn): Spawner =>
+  (spec) =>
   new Promise((resolve) => {
     const { argv, env, cwd, base, timeoutSec } = spec;
     if (!Array.isArray(argv) || !argv.length || argv.some((a) => typeof a !== "string" || a.includes("\0"))) {
@@ -108,8 +113,8 @@ export const realSpawner: Spawner = (spec) =>
     let child: ChildProcess;
     try {
       child = viaShell
-        ? spawn(`${quoteForCmd(exe)} ${argv.slice(1).map(quoteForCmd).join(" ")}`, { cwd, env: childEnv, stdio, shell: true, windowsHide: true })
-        : spawn(exe, argv.slice(1), { cwd, env: childEnv, stdio, windowsHide: true, detached: !win() });
+        ? spawnImpl(`${quoteForCmd(exe)} ${argv.slice(1).map(quoteForCmd).join(" ")}`, { cwd, env: childEnv, stdio, shell: true, windowsHide: true })
+        : spawnImpl(exe, argv.slice(1), { cwd, env: childEnv, stdio, windowsHide: true, detached: !win() });
     } catch {
       closeSync(out);
       closeSync(err);
@@ -154,6 +159,23 @@ export const realSpawner: Spawner = (spec) =>
       }
       resolve({ exit, seconds });
     };
-    child.on("error", () => done(127));
+    // 127 means "could not start". A process that has a pid did start; a later error (a failed kill, say) must not
+    // discard its result, so only a spawn that never produced a pid is reported that way. Its exit event follows.
+    child.on("error", () => {
+      if (!child.pid) done(127);
+    });
     child.on("exit", done);
   });
+
+export const realSpawner: Spawner = createSpawner();
+
+/**
+ * Was this finished child process stopped by the user pressing Ctrl-C (or by a termination request) rather than
+ * failing on its own? A blocking call that ends this way must not be read as a failed gate or a failed push: the run
+ * stops instead. On Windows a console process ended by Ctrl-C exits with STATUS_CONTROL_C_EXIT (0xC000013A).
+ */
+export function interruptSignal(r: { signal?: string | null; status?: number | null }, platform: string = process.platform): "SIGINT" | "SIGTERM" | null {
+  if (r.signal === "SIGINT" || r.signal === "SIGTERM") return r.signal;
+  if (platform === "win32" && r.status === 0xc000013a) return "SIGINT";
+  return null;
+}
