@@ -22,6 +22,17 @@ On Pi, the `state_update`, `worktree_create`, `risk_classify` and `worktree_remo
 
 Launch mechanics live in [references/launch.md](references/launch.md): the variables (`N`, `A`, `WT`, `MODEL`, `COMMANDS`, `FINDINGS`), the background runner, the per-launch validate/log/retry routine, and one section per harness. Read "Setup", "Every launch" and your harness's section before Step 0.
 
+## Preferred entry point
+
+When this skill is invoked in a repository using Claude Code, first use the packaged CLI instead of manually replaying the steps below:
+
+```bash
+npx @drix10/agent-flow run "<task with observable acceptance criteria>"
+npx @drix10/agent-flow run 42
+```
+
+The CLI owns the same state transitions, report validation, risk checks and role launches described below. By default it keeps the reviewed work in a local worktree. Add `--pr` only when asked to push and open a PR. Auto-merge is a separate opt-in: pass `--auto-merge`, and the repository must also set `pipeline.auto_merge_low_risk: true`. Use `--dry-run` to preview the plan and setup requirements without launching roles. Continue with the manual procedure below on other harnesses or if the CLI cannot be used; don't run both paths for one issue.
+
 ## Step 0: Prepare
 
 1. **Issue.** The first available source wins:
@@ -29,7 +40,7 @@ Launch mechanics live in [references/launch.md](references/launch.md): the varia
    - `ISSUES.md` or `.agent-issues.json` at the repo root;
    - title and acceptance criteria written inline by the user. These have no number: use the lowest integer ≥ 100000 that `AF state show --json` doesn't list.
 
-   Write it to `.agent-flow/artifacts/issue-N/issue.md`, verbatim inside `<untrusted_issue number="N"> … </untrusted_issue>`. Write the title alone to `title.txt` beside it; the PR title is read from that file, never typed into a command. No testable acceptance criteria → Needs Me (`SPEC_ERROR`) now; don't let the Implementer guess.
+   Write it to `.agent-flow/artifacts/issue-N/issue.md` inside `<untrusted_issue number="N"> … </untrusted_issue>`, escaping `&`, `<` and `>` in the title and body before inserting them. Write the title alone to `title.txt` beside it; the PR title is read from that file, never typed into a command. No testable acceptance criteria → Needs Me (`SPEC_ERROR`) now; don't let the Implementer guess.
 2. **State.** `AF state show --issue N --json`:
    - `Completed` → stop and tell the user (reopening is their call).
    - `Needs Me` → show the reason and ask how to proceed.
@@ -119,7 +130,7 @@ Checking for an open PR first makes this step safe to repeat after a crash. Add 
 - `human_approval_required: true` → a draft PR plus Needs Me ("critical change — human review required on PR #X"). Humans merge critical changes.
 - Otherwise → `AF state update --issue N --state Completed --reason "PR #X"`.
   `Completed` is refused (exit 3, recorded as Needs Me `unreviewed_commits`) unless the latest reviewer run, QA run and every required gate for this round name the current tip of `agent/issue-N`. If it refuses, re-run the missing role or gate on the current tip; don't reset the state by hand.
-- Auto-merge only if the manifest sets `pipeline.auto_merge_low_risk: true` **and** `risk_level` is `low` **and** QA passed: `gh pr merge --auto --squash`. This still waits for CI and branch protection.
+- Auto-merge only when the user explicitly asked for it, the manifest sets `pipeline.auto_merge_low_risk: true`, `risk_level` is `low`, and QA passed: `gh pr merge --auto --squash`. This still waits for CI and branch protection.
 
 The guard refuses pushes to the default branch, force-pushes and `--no-verify`. Don't route around it.
 

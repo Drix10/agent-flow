@@ -55,7 +55,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline"]);
+const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -135,7 +135,7 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
       --harness <h> [--model m --exit n --seconds s --argv-file f --issue n --round r]
                             Also append a role_run line (argv, exit, duration, cost/tokens) to .agent-flow/audit.jsonl
   repair --yes              Refresh manifest timestamps after the prose was re-verified (Gardener)
-  run "<task>" | run <issue>  Take one task from words to a reviewed, gated, tested change (Implementer → Reviewer → gates → QA) [--pr] [--dry-run]
+  run "<task>" | run <issue>  Take one task from words to a reviewed, gated, tested change (Implementer → Reviewer → gates → QA) [--pr] [--auto-merge] [--dry-run]
                             without --pr it stops with the work ready locally; --pr pushes and opens the pull request
   update [--yes] [--check] [--force]  Bring installed skills, hooks and the vendored runtime up to this version; edited files are kept
                             run it as: npx @drix10/agent-flow@latest update --yes   (--check exits 10 when an update is available, for scheduled CI)
@@ -1092,9 +1092,15 @@ const fmtElapsed = (ms) => {
 };
 
 /** Everything `run` needs to know before it launches anything, as a list of plain-language problems (with the fix). */
-function runPreflight(rt, af, harness) {
+function runPreflight(rt, af, harness, { pr = false } = {}) {
   const problems = [];
-  if (!existsSync(manifestLib.manifestPathFor(rt, undefined))) problems.push("this repo isn't set up yet — run `npx @drix10/agent-flow install --harness claude`, then ask Claude to use the bootstrap skill");
+  const loaded = manifestLib.loadManifest(rt, undefined);
+  if (!loaded.ok) {
+    if (loaded.error === "manifest_not_found") problems.push("this repo isn't set up yet — run `npx @drix10/agent-flow install --harness claude`, then ask Claude to use the bootstrap skill");
+    else problems.push(`CONTEXT_MANIFEST.json can't be read (${loaded.error}); run \`npx @drix10/agent-flow doctor\` before starting work`);
+  } else if (loaded.value.problems.length) {
+    problems.push(`CONTEXT_MANIFEST.json has ${loaded.value.problems.length} problem(s); run \`npx @drix10/agent-flow doctor\` before starting work`);
+  }
   if (harness !== "claude") problems.push(`\`run\` drives Claude Code for now (you asked for ${harness}); Codex and Gemini still work through the invoking-agents skill`);
   else {
     const probe = spawnSync(launchLib.resolveExecutable("claude"), ["--version"], { encoding: "utf-8", timeout: 20000, shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(launchLib.resolveExecutable("claude")) });
@@ -1102,6 +1108,12 @@ function runPreflight(rt, af, harness) {
     if (af(["guard", "--check"]).status !== 0) problems.push("the guard hook isn't wired — run `npx @drix10/agent-flow install --harness claude` (it's what confines the Implementer to its worktree)");
   }
   if (!git.git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], rt).ok) problems.push("this repo has no commits yet — make a first commit");
+  if (pr) {
+    const remote = git.git(["remote", "get-url", "origin"], rt);
+    if (!remote.ok) problems.push("there is no `origin` remote to push the pull request branch to");
+    const auth = spawnSync(launchLib.resolveExecutable("gh"), ["auth", "status"], { cwd: rt, encoding: "utf-8", timeout: 20000 });
+    if (auth.error || auth.status !== 0) problems.push("GitHub CLI isn't authenticated; run `gh auth login` before using --pr");
+  }
   return problems;
 }
 
@@ -1127,19 +1139,16 @@ async function askLine(question) {
 async function cmdRun(args) {
   if (process.env.AGENT_FLOW_ROLE) throw new UserError("a pipeline role can't start another pipeline run");
   const rt = root();
-  requireCommits(rt);
   const af = afCaller(rt);
   const sh = shCaller();
   const text = args._.slice(1).join(" ").trim();
   if (!text) {
-    return usage('run "<what to do, and how to tell it is done>" | run <issue-number>   [--pr] [--dry-run] [--timeout <seconds>] [--commands "<tests>"]');
+    return usage('run "<what to do, and how to tell it is done>" | run <issue-number>   [--pr] [--auto-merge] [--dry-run] [--timeout <seconds>] [--commands "<tests>"]');
   }
   const harness = typeof args.harness === "string" ? args.harness : "claude";
-  const problems = runPreflight(rt, af, harness);
-  if (problems.length) {
-    for (const p of problems) bad(p);
-    return 2;
-  }
+  const wantPr = !!args.pr;
+  if (args["auto-merge"] && !wantPr) throw new UserError("`--auto-merge` needs `--pr`; without it, the reviewed work stays local");
+  const problems = runPreflight(rt, af, harness, { pr: wantPr });
 
   // Which task is this? A number is a tracked issue (resume it, or fetch it from GitHub); anything else is the task itself.
   const numeric = /^#?(\d+)$/.exec(text);
@@ -1174,18 +1183,29 @@ async function cmdRun(args) {
     body = `${body}\n\nAcceptance criteria: ${more}`;
   }
 
-  const timeoutSec = Number.isFinite(Number(args.timeout)) && Number(args.timeout) > 0 ? Number(args.timeout) : 3600;
+  const timeoutSec = args.timeout === undefined ? 3600 : Number(args.timeout);
+  if (args.timeout !== undefined && (typeof args.timeout !== "string" || !Number.isSafeInteger(timeoutSec) || timeoutSec < 1 || timeoutSec > 86_400)) {
+    throw new UserError("`--timeout` must be a whole number from 1 to 86400 seconds");
+  }
   const commands = qaCommands(rt, args.commands);
-  const wantPr = !!args.pr;
   if (args["dry-run"]) {
-    out(args, { issue, title, harness, pr: wantPr, timeout_s: timeoutSec, qa_commands: commands }, () => {
+    out(args, { issue, title, harness, pr: wantPr, timeout_s: timeoutSec, qa_commands: commands, ready: problems.length === 0, setup_issues: problems }, () => {
       console.log(`Would run issue #${issue} (${title}) with ${harness}:`);
       console.log("  1. a worktree on agent/issue-" + issue + ", then Implementer → risk check → Reviewer → gates → QA, up to the manifest's round cap");
       console.log(`  2. QA would run: ${commands}`);
       console.log(`  3. ${wantPr ? "push the branch and open a pull request" : "stop with the work ready locally (add --pr to push and open a pull request)"}`);
+      if (problems.length) {
+        console.log("  Setup needed before a real run:");
+        for (const p of problems) console.log(`    - ${p}`);
+      }
       console.log(dim("nothing was started (dry run)"));
     });
     return 0;
+  }
+
+  if (problems.length) {
+    for (const p of problems) bad(p);
+    return 2;
   }
 
   const t0 = Date.now();
@@ -1195,7 +1215,7 @@ async function cmdRun(args) {
     else if (e.kind === "warn") console.log(`${stamp} ${c(33, "!")} ${e.text}`);
     else console.log(`${stamp} ${dim(e.text)}`);
   };
-  const result = await orchestrateLib.runIssue({ root: rt, issue, title, body, fromGitHub, af, sh, spawner: launchLib.realSpawner, log, pr: wantPr, timeoutSec, commands, autoMerge: !args["no-auto-merge"] });
+  const result = await orchestrateLib.runIssue({ root: rt, issue, title, body, fromGitHub, af, sh, spawner: launchLib.realSpawner, log, pr: wantPr, timeoutSec, commands, autoMerge: !!args["auto-merge"] && !args["no-auto-merge"] });
 
   out(args, result, (r) => {
     console.log("");
@@ -1229,7 +1249,8 @@ function cmdStatus(args) {
   const claudeSettings = existsSync(join(rt, ".claude", "settings.json"));
   const otherHooks = [".codex/hooks.json", ".gemini/settings.json", ".cursor/hooks.json", ".opencode/plugins/agent-flow-guard.js"].filter((p) => existsSync(join(rt, p)));
   if (guardOk) add("Protection", "ok", "Claude Code guard hook is active");
-  else if (claudeSettings || otherHooks.length) add("Protection", otherHooks.length && !claudeSettings ? "ok" : "bad", otherHooks.length && !claudeSettings ? `guard hook wired for ${otherHooks.map((p) => p.split("/")[0].replace(".", "")).join(", ")}` : "the guard hook isn't wired correctly", "npx @drix10/agent-flow install --harness claude");
+  else if (claudeSettings) add("Protection", "bad", "Claude settings exist, but the Agent Flow guard hook is missing or invalid", "npx @drix10/agent-flow install --harness claude");
+  else if (otherHooks.length) add("Protection", "warn", `guard configuration found for ${otherHooks.map((p) => p.split("/")[0].replace(".", "")).join(", ")} (not verified active)`, "check the harness hook configuration and ensure the Agent Flow runtime is installed");
   else add("Protection", "bad", "no guard hook: agents are not being stopped from touching protected files or secrets", "npx @drix10/agent-flow install --harness claude");
   const hooksDirRel = git.git(["rev-parse", "--git-path", "hooks"], rt);
   const preCommit = hooksDirRel.ok ? join(resolve(rt, hooksDirRel.stdout.trim()), "pre-commit") : null;

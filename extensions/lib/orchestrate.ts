@@ -43,7 +43,7 @@ export interface RunInput {
   timeoutSec: number;
   /** The test commands QA runs, `;`-separated, or "none". */
   commands: string;
-  /** Honor pipeline.auto_merge_low_risk after opening the PR. Default true; false for trial runs. */
+  /** Honor pipeline.auto_merge_low_risk after opening the PR. Explicit opt-in from the CLI. */
   autoMerge?: boolean;
 }
 
@@ -70,6 +70,8 @@ const fileFor = (role: Role) => (role === "reviewer" ? "review" : role);
 const json = (s: string): any => JSON.parse(s);
 const readJson = (p: string): any => JSON.parse(readFileSync(p, "utf-8"));
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+/** Keep issue data inside its wrapper even when it contains markup that looks like a closing tag. */
+const xmlText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 class Stop extends Error {
   constructor(public outcome: RunOutcome) {
@@ -115,9 +117,18 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       throw new Stop(done({ status: "error", reason: `agent-flow ${args.slice(0, 2).join(" ")} gave no usable answer (exit ${r.status}): ${(r.stderr || r.stdout).trim().slice(0, 300)}` }));
     }
   };
+  const updatePhase = (phase: string, roundNumber: number): void => {
+    const u = af(["state", "update", "--issue", String(N), "--state", "Working", "--phase", phase, "--round", String(roundNumber), "--json"]);
+    if (u.status === 3) {
+      const current = afJson(["state", "show", "--issue", String(N)]);
+      throw new Stop(done({ status: "needs_me", category: "max_rounds_exceeded", reason: current.reason ?? "max_rounds_exceeded: the review-round cap was reached" }));
+    }
+    if (u.status !== 0) throw new Stop(done({ status: "error", reason: `could not record phase ${phase}: ${(u.stderr || u.stdout).trim().slice(0, 300)}` }));
+  };
   const escalate = (category: string, brief: string): never => {
     const reason = `${category}: ${brief}`.slice(0, 900);
-    af(["state", "update", "--issue", String(N), "--state", "Needs Me", "--reason", reason]);
+    const u = af(["state", "update", "--issue", String(N), "--state", "Needs Me", "--reason", reason]);
+    if (u.status !== 0) throw new Stop(done({ status: "error", reason: `could not save the escalation (${u.status}): ${(u.stderr || u.stdout).trim().slice(0, 300)}` }));
     throw new Stop(done({ status: "needs_me", category, reason }));
   };
   const cfg = (key: string): string => {
@@ -134,7 +145,10 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
     const LIMIT = Number(st.max_review_rounds ?? 2);
     if (!(LIMIT >= 1)) throw new Stop(done({ status: "error", reason: "pipeline.max_review_rounds is below 1; set it to at least 1 in CONTEXT_MANIFEST.json" }));
     const resuming = st.state === "Working";
-    const storedPhase = typeof st.phase === "string" ? st.phase : "implement";
+    const storedPhase = st.phase;
+    if (resuming && (typeof storedPhase !== "string" || !PHASE_ORDER.includes(storedPhase))) {
+      throw new Stop(done({ status: "error", reason: `saved phase ${JSON.stringify(storedPhase)} is not valid; expected ${PHASE_ORDER.join(", ")}. Inspect AGENT_STATE.md and repair the session before resuming.` }));
+    }
     let R = resuming ? Math.max(1, Number(st.round) || 1) : 1;
     if (resuming) log({ kind: "info", text: `resuming at round ${R}, ${storedPhase}` });
 
@@ -142,7 +156,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
     if (wt.error && wt.error !== "worktree_exists") throw new Stop(done({ status: "error", reason: `worktree: ${wt.error}` }));
     const BASE: string = wt.base ?? (cfg("default_branch") || "main");
     if (!existsSync(join(A, "issue.md"))) {
-      writeFileSync(join(A, "issue.md"), `<untrusted_issue number="${N}">\n# ${i.title}\n\n${i.body}\n</untrusted_issue>\n`);
+      writeFileSync(join(A, "issue.md"), `<untrusted_issue number="${N}">\n# ${xmlText(i.title)}\n\n${xmlText(i.body)}\n</untrusted_issue>\n`);
       writeFileSync(join(A, "title.txt"), `${i.title.replace(/\r?\n.*/s, "")}\n`);
     }
     const FAST = cfg("pipeline.models.fast");
@@ -158,14 +172,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       const roundTag = `round ${R}${LIMIT ? ` of ${LIMIT}` : ""}`;
 
       // 1a. open the round (the state machine, not this loop, decides whether it may start)
-      if (at("implement")) {
-        const u = af(["state", "update", "--issue", String(N), "--state", "Working", "--phase", "implement", "--round", String(R), "--json"]);
-        if (u.status === 3) {
-          const s2 = afJson(["state", "show", "--issue", String(N)]);
-          throw new Stop(done({ status: "needs_me", category: "max_rounds_exceeded", reason: s2.reason ?? "max_rounds_exceeded: the review-round cap was reached" }));
-        }
-        if (u.status !== 0) throw new Stop(done({ status: "error", reason: `state update refused: ${(u.stderr || u.stdout).trim().slice(0, 300)}` }));
-      }
+      if (at("implement")) updatePhase("implement", R);
 
       // 1b. Implementer
       log({ kind: "step", text: `${roundTag}: implementing` });
@@ -194,7 +201,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       }
 
       // 1d. Reviewer
-      if (at("review")) af(["state", "update", "--issue", String(N), "--state", "Working", "--phase", "review", "--round", String(R), "--json"]);
+      if (at("review")) updatePhase("review", R);
       log({ kind: "step", text: `${roundTag}: reviewing (${cls.reviewer_tier})` });
       const rev = await runRole("reviewer", R, { model: cls.reviewer_tier === "high-reasoning" ? HIGH || FAST : FAST, limit: LIMIT });
       const f: any[] = Array.isArray(rev.findings) ? rev.findings : [];
@@ -231,7 +238,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
           continue;
         }
       }
-      af(["state", "update", "--issue", String(N), "--state", "Working", "--phase", "qa", "--round", String(R), "--json"]);
+      updatePhase("qa", R);
       log({ kind: "step", text: `${roundTag}: QA` });
       const pre = snapshot();
       const qa = await runRole("qa", R, { model: FAST });
@@ -334,7 +341,8 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       }
       log({ kind: "info", text: `pull request: ${url}` });
       if (cls.human_approval_required) {
-        af(["state", "update", "--issue", String(N), "--state", "Needs Me", "--reason", `critical_change_needs_human: critical change, human review required on ${url}`]);
+        const saved = af(["state", "update", "--issue", String(N), "--state", "Needs Me", "--reason", `critical_change_needs_human: critical change, human review required on ${url}`]);
+        if (saved.status !== 0) throw new Stop(done({ status: "error", reason: `critical PR opened at ${url}, but its human-review state could not be saved: ${(saved.stderr || saved.stdout).trim().slice(0, 300)}`, pr: url }));
         return done({ status: "needs_me", category: "critical_change_needs_human", reason: `critical_change_needs_human: critical change, human review required on ${url}`, pr: url });
       }
       const c = af(["state", "update", "--issue", String(N), "--state", "Completed", "--reason", `PR ${url}`, "--json"]);
@@ -342,11 +350,13 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         const s3 = afJson(["state", "show", "--issue", String(N)]);
         return done({ status: "needs_me", category: "unreviewed_commits", reason: s3.reason ?? "unreviewed_commits", pr: url });
       }
-      if (i.autoMerge !== false && cfg("pipeline.auto_merge_low_risk") === "true" && cls.risk_level === "low" && qa.status !== "failed") {
+      if (c.status !== 0) throw new Stop(done({ status: "error", reason: `PR opened at ${url}, but completion could not be recorded: ${(c.stderr || c.stdout).trim().slice(0, 300)}`, pr: url }));
+      if (i.autoMerge === true && cfg("pipeline.auto_merge_low_risk") === "true" && cls.risk_level === "low" && qa.status !== "failed") {
         const m = sh("gh", ["pr", "merge", url, "--auto", "--squash"], root);
         log({ kind: m.status === 0 ? "info" : "warn", text: m.status === 0 ? "auto-merge enabled (waits for CI)" : `auto-merge not enabled: ${(m.stderr || m.stdout).trim().slice(0, 200)}` });
       }
-      af(["worktree", "remove", String(N)]);
+      const removed = af(["worktree", "remove", String(N)]);
+      if (removed.status !== 0) log({ kind: "warn", text: `PR is open; worktree cleanup failed: ${(removed.stderr || removed.stdout).trim().slice(0, 200)}` });
       return done({ status: "pr", pr: url });
     }
   } catch (e) {

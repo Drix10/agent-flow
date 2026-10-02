@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,6 +62,19 @@ test("status: names the real cause when the notes are broken, not a generic comp
     const r = cli(dir, "status");
     assert.equal(r.status, 1);
     assert.match(r.stdout, /✗ CONTEXT_MANIFEST.json has a problem: .*os/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("status does not claim another harness guard is active from config-file presence alone", () => {
+  const dir = repo({ protected_paths: ["secret/**"] });
+  try {
+    mkdirSync(join(dir, ".codex"));
+    writeFileSync(join(dir, ".codex", "hooks.json"), "{}");
+    const r = cli(dir, "status");
+    assert.match(r.stdout, /guard configuration found for codex \(not verified active\)/);
+    assert.doesNotMatch(r.stdout, /guard hook wired for codex/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

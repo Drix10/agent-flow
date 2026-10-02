@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-02
+
+- **`agent-flow run` is the short path from task to checked work.** Give it a testable task or issue number. Claude Code runs implementation, mechanical risk classification, review, required gates and QA in separate processes. By default the result stays in a local worktree; `--pr` pushes and opens a PR, while `--auto-merge` is an additional opt-in gated by `pipeline.auto_merge_low_risk`. `--dry-run` shows the plan and setup gaps without launching roles. Invalid manifests, missing GitHub auth and invalid timeout values are caught before role calls.
+- **`agent-flow status` summarizes repository readiness** across protection, context, checks and work waiting on the user.
+- Task text is XML-escaped before it is placed inside the untrusted issue boundary. Auto-merge defaults off in the CLI, even when the repository allows it.
+- Updated Quickstart, README and orchestration skill to make the CLI the first path on Claude Code and keep the harness-specific skill procedure for other agents.
+- Added end-to-end fake-agent coverage for the run loop, resumptions, report correction, risk escalation, gate failures, protected paths, QA tree mutation and PR creation.
+
 ## [1.1.7] - 2026-10-02
 
 Found by asking how a vendored install ever learns about a newer version (it didn't).

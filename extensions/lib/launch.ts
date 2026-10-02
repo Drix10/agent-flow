@@ -47,6 +47,14 @@ export const quoteForCmd = (a: string): string => `"${String(a).replace(/"/g, '"
 export const realSpawner: Spawner = (spec) =>
   new Promise((resolve) => {
     const { argv, env, cwd, base, timeoutSec } = spec;
+    if (!Array.isArray(argv) || !argv.length || argv.some((a) => typeof a !== "string" || a.includes("\0"))) {
+      resolve({ exit: 127, seconds: 0 });
+      return;
+    }
+    if (!Number.isSafeInteger(timeoutSec) || timeoutSec < 1 || timeoutSec > 86_400) {
+      resolve({ exit: 127, seconds: 0 });
+      return;
+    }
     const win = process.platform === "win32";
     const exe = resolveExecutable(argv[0]);
     writeFileSync(`${base}.argv`, JSON.stringify(argv));
@@ -59,9 +67,17 @@ export const realSpawner: Spawner = (spec) =>
     let timedOut = false;
     let finished = false;
     const viaShell = win && /\.(cmd|bat)$/i.test(exe);
-    const child = viaShell
-      ? spawn(`${quoteForCmd(exe)} ${argv.slice(1).map(quoteForCmd).join(" ")}`, { cwd, env: childEnv, stdio, shell: true, windowsHide: true })
-      : spawn(exe, argv.slice(1), { cwd, env: childEnv, stdio, windowsHide: true });
+    let child;
+    try {
+      child = viaShell
+        ? spawn(`${quoteForCmd(exe)} ${argv.slice(1).map(quoteForCmd).join(" ")}`, { cwd, env: childEnv, stdio, shell: true, windowsHide: true })
+        : spawn(exe, argv.slice(1), { cwd, env: childEnv, stdio, windowsHide: true });
+    } catch {
+      closeSync(out);
+      closeSync(err);
+      resolve({ exit: 127, seconds: 0 });
+      return;
+    }
     if (child.pid) writeFileSync(`${base}.pid`, String(child.pid));
     const stop = () => {
       if (win && child.pid) spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
