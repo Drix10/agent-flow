@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- **`run` roles can read their issue folder and worktree.** An Implementer that `cd`s into its worktree lost Claude Code's permission to read `issue.md` (3 of 4 live runs on a real repository stopped with a permission error). `run` now passes `--add-dir` for the issue folder and the worktree to every role.
+
 ## [1.2.0] - 2026-10-02
 
 - **`agent-flow run` is the short path from task to checked work.** Give it a testable task or issue number. Claude Code runs implementation, mechanical risk classification, review, required gates and QA in separate processes. By default the result stays in a local worktree; `--pr` pushes and opens a PR, while `--auto-merge` is an additional opt-in gated by `pipeline.auto_merge_low_risk`. `--dry-run` shows the plan and setup gaps without launching roles. Invalid manifests, missing GitHub auth and invalid timeout values are caught before role calls.
