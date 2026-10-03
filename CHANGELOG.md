@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-03
+
 Found by running `agent-flow run` unattended on a real repository (Hypothesis Arena, Windows):
 
 - **Script files no longer bypass the guard.** The guard checked a command but not a script file the command ran, so an edit to a protected path could be put in a file and run from there. A script that differs from the default branch's copy (new, edited, committed only on the issue branch, or outside the repo) is now checked like the command it contains. The repo's unchanged scripts stay trusted, so gates and tests run as before.

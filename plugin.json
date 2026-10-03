@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-flow",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Keeps agent context true and agent pipelines honest: drift detection, guarded Implement \u2192 Review \u2192 QA, mechanical risk classification.",
   "author": {
     "name": "Drix10",
