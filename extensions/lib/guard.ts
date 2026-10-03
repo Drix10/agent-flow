@@ -1752,15 +1752,16 @@ function scriptsRun(src: string, cwd: string | null): ScriptRun[] {
  * contents would face as a command (the "put the edit in a file and run the file" bypass).
  */
 function reviewedScript(abs: string, branch: string | undefined): boolean {
+  // Ask git from the script's own directory: comparing paths would break wherever the repo is reached through an alias
+  // (macOS /var → /private/var, a Windows 8.3 short name, a symlinked checkout) and call every reviewed script new.
   const dir = dirname(abs);
-  const top = git(["rev-parse", "--show-toplevel"], dir, 10_000);
-  if (!top.ok || !top.stdout) return false;
-  const rel = toPosix(relative(resolve(top.stdout), abs));
-  if (!rel || escapesBase(rel)) return false;
-  const blob = git(["hash-object", `--path=${rel}`, "--", abs], top.stdout, 10_000);
+  const prefix = git(["rev-parse", "--show-prefix"], dir, 10_000);
+  if (!prefix.ok) return false;
+  const rel = `${prefix.stdout.trim()}${basename(abs)}`;
+  const blob = git(["hash-object", `--path=${basename(abs)}`, "--", basename(abs)], dir, 10_000);
   if (!blob.ok) return false;
   for (const ref of [...new Set([branch, "main", "master"].filter((b): b is string => !!b))].flatMap((b) => [b, `origin/${b}`])) {
-    const r = git(["rev-parse", "--verify", "--quiet", `${ref}:${rel}`], top.stdout, 10_000);
+    const r = git(["rev-parse", "--verify", "--quiet", `${ref}:${rel}`], dir, 10_000);
     if (r.ok) return r.stdout === blob.stdout;
   }
   return false;

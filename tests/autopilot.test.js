@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,6 +114,21 @@ test("guard: a new or edited script is checked like a command; the reviewed copy
       rmSync(scratch, { recursive: true, force: true });
     }
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("guard: a reviewed script is still trusted when the repo is reached through an alias (symlink, /var → /private/var)", () => {
+  const dir = repo("alias", { "tools/check.py": "print(open('STAGE').read())\n" });
+  const link = `${dir}-link`;
+  try {
+    symlinkSync(dir, link, "junction");
+    const d = (command) => decide({ role: "implementer", toolName: "Bash", input: { command }, cwd: link, root: link, manifest });
+    assert.equal(d("python3 tools/check.py"), null);
+    writeFileSync(join(dir, "tools/check.py"), "open('STAGE', 'w').write('x')\n");
+    assert.equal(d("python3 tools/check.py")?.rule, "protected-path", "an edit is still seen through the alias");
+  } finally {
+    rmSync(link, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });
