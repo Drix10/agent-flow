@@ -258,6 +258,7 @@ function cmdDoctor(args) {
     section("relative links resolve", rep.broken_links, (m) => [`${m.file}:${m.line}`, m.target]);
     section("cited commits exist", rep.unknown_commits, (m) => [`${m.file}:${m.line}`, m.sha]);
     reportCodeowners(rt, r.manifest, args);
+    reportGateCoverage(rt, r.manifest);
     reportUpdate(rt, args);
     if (discovered) console.log(dim(`note: ${r.manifest ? "the manifest lists no context files" : "no CONTEXT_MANIFEST.json"}, so only paths were checked — \`agent-flow init\` adds staleness tracking`));
     console.log(r.healthy ? c(32, "\nhealthy") : `\n${c(31, "unhealthy")} — ${doctorNextStep(rep, schema)}`);
@@ -265,6 +266,21 @@ function cmdDoctor(args) {
   // CI that runs on every push shouldn't go red because a calendar page turned: --allow-stale reports staleness
   // and fails only on what is actually broken (missing paths, schema, placeholders…).
   return none || r.healthy || (args["allow-stale"] && r.only_stale) ? 0 : 1;
+}
+
+/** Advisory: a test file in a directory whose gate lists its tests one by one, but which no gate lists. */
+function reportGateCoverage(rt, manifestPath) {
+  const loaded = manifestLib.loadManifest(rt, typeof manifestPath === "string" ? manifestPath : undefined);
+  const gates = loaded.ok ? gatesLib.gatesOf(loaded.value.manifest) : [];
+  if (!gates.length) return;
+  const ls = git.git(["ls-files", "-z"], rt);
+  if (!ls.ok) return;
+  const missing = gatesLib.unlistedTests(ls.stdout.split("\0").filter(Boolean), gates);
+  if (!missing.length) return ok("every test file in a gate's list is run by a gate");
+  warn(`${missing.length} test file${missing.length === 1 ? " is" : "s are"} next to tests a gate lists by name, but no gate runs ${missing.length === 1 ? "it" : "them"}:`);
+  for (const f of missing.slice(0, 15)) console.log(`    ${f}`);
+  if (missing.length > 15) console.log(dim(`    … ${missing.length - 15} more`));
+  console.log(dim("  Add each to a gate in CONTEXT_MANIFEST.json (or delete it). CI that keeps its own list drifts the same way: `agent-flow gates run` in CI keeps one list."));
 }
 
 /**

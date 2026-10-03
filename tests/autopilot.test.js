@@ -342,6 +342,58 @@ test("run: a usage limit further away than --limit-wait (or 0) goes to Needs Me,
   }
 });
 
+// ---- one list of tests ---------------------------------------------------------------------
+
+test("gate coverage: a test next to ones a gate lists by name, but not listed, is reported", async () => {
+  const { unlistedTests } = await import("../extensions/lib/gates.js");
+  const files = ["research/tests/test_a.py", "research/tests/test_b.py", "research/tests/test_costs_v3.py", "research/tests/helpers.py", "collector/tests/test_x.py", "web/a.test.js"];
+  const listed = [{ name: "r", command: "for t in test_a test_costs_v2; do python3 research/tests/$t.py || exit 1; done" }];
+  assert.deepEqual(unlistedTests(files, listed), ["research/tests/test_b.py", "research/tests/test_costs_v3.py"], "a near-miss name (v2 vs v3) doesn't count");
+  // A gate that hands the whole directory to a runner covers it; directories no gate lists by name aren't judged.
+  assert.deepEqual(unlistedTests(files, [...listed, { name: "p", command: "python3 -m pytest -q research/tests" }]), []);
+  assert.deepEqual(unlistedTests(files, [{ name: "n", command: "node --test" }]), []);
+  // argv gates and a gate's cwd count too.
+  assert.deepEqual(unlistedTests(["t/test_a.sh", "t/test_b.sh"], [{ name: "s", command: ["bash", "test_a.sh"], cwd: "t" }]), ["t/test_b.sh"]);
+});
+
+test("doctor names a test no gate runs", () => {
+  const dir = repo("cover", {
+    "CONTEXT_MANIFEST.json": JSON.stringify({ version: "2", context_files: [], gates: [{ name: "py", command: "python3 tests/test_a.py" }] }),
+    "tests/test_a.py": "",
+    "tests/test_new.py": "",
+  });
+  try {
+    const r = spawnSync(process.execPath, [BIN, "doctor", "--allow-stale"], { cwd: dir, encoding: "utf-8", env: { ...process.env, AGENT_FLOW_OFFLINE: "1", NO_COLOR: "1" } });
+    assert.match(r.stdout, /no gate runs it[\s\S]*tests\/test_new\.py/, r.stdout);
+    assert.equal(r.status, 0, "advisory, not a failure");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- the audit log is anchored where it can't be rewritten ----------------------------------
+
+test("run --pr: the pull request carries the audit log's head hash", async () => {
+  const dir = runRepo();
+  const remote = mkdtempSync(join(tmpdir(), "af-remote-"));
+  try {
+    git(remote, "init", "-q", "--bare");
+    git(dir, "remote", "add", "origin", remote);
+    git(dir, "push", "-q", "origin", "main");
+    const gh = (cmd, a, cwd) => (cmd === "gh" ? { status: 0, stdout: a[1] === "create" ? "https://example.test/pull/7\n" : "[]", stderr: "" } : sh(cmd, a, cwd));
+    const { result } = await runWith(dir, agent(0), { pr: true, sh: gh });
+    assert.equal(result.status, "pr", JSON.stringify(result));
+    const body = readFileSync(join(result.artifacts, "pr.md"), "utf-8");
+    const m = body.match(/audit head: `([0-9a-f]{64})`/);
+    assert.ok(m, body);
+    const v = spawnSync(process.execPath, [BIN, "audit", "verify", "--anchor", m[1]], { cwd: dir, encoding: "utf-8", env: { ...process.env, AGENT_FLOW_OFFLINE: "1" } });
+    assert.equal(v.status, 0, v.stdout + v.stderr);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
+  }
+});
+
 test("the CLI: --limit-wait takes hours from 0 to 168", () => {
   const dir = runRepo();
   try {

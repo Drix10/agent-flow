@@ -11,6 +11,7 @@ import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFi
 import { join } from "node:path";
 import { Spawner } from "./launch.js";
 import { issueCost } from "./state.js";
+import { verifyAudit } from "./audit.js";
 
 export type Role = "implementer" | "reviewer" | "qa";
 export interface CmdResult {
@@ -659,6 +660,9 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       }
       const flaky: any[] = qa.flaky ?? [];
       const stale: any[] = rev.context_stale_flags ?? [];
+      // The audit log lives only on this machine. Its head hash, published with the pull request, is what
+      // `audit verify --anchor` later checks the local log against: a rewrite of the chain no longer matches it.
+      const auditHead = verifyAudit(root).head;
       const body = [
         i.fromGitHub || existsSync(join(A, "from-github")) ? `Closes #${N}` : `Agent-flow run #${N}`,
         "",
@@ -666,6 +670,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         `**Review:** ${rev.status}: ${rev.summary ?? ""}`,
         `**QA:** ${qa.status}${flaky.length ? ` (flaky: ${flaky.map((x: any) => x.test ?? x.name ?? JSON.stringify(x)).join(", ")})` : ""}`,
         ...(stale.length ? ["", "**Context may be stale:**", ...stale.map((s: any) => `- ${s.file}: ${s.claim} → ${s.reality}`)] : []),
+        ...(auditHead ? ["", `<sub>audit head: \`${auditHead}\` (anchor for \`agent-flow audit verify --anchor <hash>\`)</sub>`] : []),
         "",
         "🤖 Opened by `agent-flow run`",
       ].join("\n");
