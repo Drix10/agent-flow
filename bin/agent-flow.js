@@ -67,7 +67,7 @@ function fixBools(args) {
   return args;
 }
 
-const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner", "timeout", "commands"];
+const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner", "timeout", "commands", "limit-wait"];
 const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
 
 /** Closest candidate within edit distance 2, or null. */
@@ -139,6 +139,7 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
   repair --yes              Refresh manifest timestamps after the prose was re-verified (Gardener)
   run "<task>" | run <issue>  Take one task from words to a reviewed, gated, tested change (Implementer → Reviewer → gates → QA) [--pr] [--auto-merge] [--dry-run]
                             without --pr it stops with the work ready locally; --pr pushes and opens the pull request
+                            a role that hits a usage limit is run again after the reset, if that is within --limit-wait <hours> (default 6; 0 never waits)
   update [--yes] [--check] [--force]  Bring installed skills, hooks and the vendored runtime up to this version; edited files are kept
                             run it as: npx @drix10/agent-flow@latest update --yes   (--check exits 10 when an update is available, for scheduled CI)
   codeowners [--yes] [--owner @x]  CODEOWNERS lines covering protected_paths; --yes appends the missing ones
@@ -267,13 +268,25 @@ function cmdDoctor(args) {
 }
 
 /**
+ * What CODEOWNERS should cover: the protected paths, and once there are any, the files that define them. A pull request
+ * that edits CONTEXT_MANIFEST.json can unprotect a path, drop a gate or turn on auto-merge; one that edits
+ * .risk-baseline.json accepts its own risks. Both take effect on merge, so they need the same owner review.
+ */
+function ownedPaths(rt, loaded) {
+  const prot = loaded.ok ? (loaded.value.manifest.protected_paths ?? []).filter((x) => typeof x === "string") : [];
+  if (!prot.length) return [];
+  const rules = [manifestLib.MANIFEST_FILE, ...(existsSync(join(rt, ".risk-baseline.json")) ? [".risk-baseline.json"] : [])];
+  return [...prot, ...rules.filter((f) => !prot.includes(f))];
+}
+
+/**
  * Advisory only, never fails doctor. The guard and the pre-commit hook already keep local agents off protected
  * paths; CODEOWNERS plus host review only matters for a pull request pushed from elsewhere. So: one quiet note
  * with the fix, and GitHub's real setting when a logged-in `gh` can tell us for free.
  */
 function reportCodeowners(rt, manifestPath, args = {}) {
   const loaded = manifestLib.loadManifest(rt, typeof manifestPath === "string" ? manifestPath : undefined);
-  const prot = loaded.ok ? (loaded.value.manifest.protected_paths ?? []).filter((x) => typeof x === "string") : [];
+  const prot = ownedPaths(rt, loaded);
   if (!prot.length) return;
   const missing = codeownersLib.uncoveredProtected(rt, prot);
   if (missing === null || missing.length) {
@@ -298,7 +311,7 @@ function reportCodeowners(rt, manifestPath, args = {}) {
 function cmdCodeowners(args) {
   const rt = root();
   const loaded = manifestLib.loadManifest(rt, args.manifest);
-  const prot = loaded.ok ? (loaded.value.manifest.protected_paths ?? []).filter((x) => typeof x === "string") : [];
+  const prot = ownedPaths(rt, loaded);
   if (!prot.length) throw new UserError("no protected_paths in the manifest — nothing for CODEOWNERS to cover");
   const missing = codeownersLib.uncoveredProtected(rt, prot) ?? prot;
   if (args.owner === true) throw new UserError("--owner needs a value, e.g. --owner @you or --owner @org/team");
@@ -318,7 +331,7 @@ function cmdCodeowners(args) {
     const eol = cur.includes("\r\n") ? "\r\n" : "\n";
     const head = cur ? `${cur.endsWith("\n") ? "" : eol}${eol}` : "";
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, `${cur}${head}# agent-flow: protected_paths from CONTEXT_MANIFEST.json${eol}${lines.join(eol)}${eol}`);
+    writeFileSync(path, `${cur}${head}# agent-flow: protected_paths from CONTEXT_MANIFEST.json, and the files that hold the rules${eol}${lines.join(eol)}${eol}`);
   }
   out(args, { file: toPosixPath(relative(rt, path)), owner, lines, written: write }, () => {
     if (!lines.length) return ok("CODEOWNERS already covers every protected path");
@@ -1184,7 +1197,7 @@ async function cmdRun(args) {
   const sh = shCaller();
   const text = args._.slice(1).join(" ").trim();
   if (!text) {
-    return usage('run "<what to do, and how to tell it is done>" | run <issue-number>   [--pr] [--auto-merge] [--dry-run] [--timeout <seconds>] [--commands "<tests>"]');
+    return usage('run "<what to do, and how to tell it is done>" | run <issue-number>   [--pr] [--auto-merge] [--dry-run] [--timeout <seconds>] [--commands "<tests>"] [--limit-wait <hours>]');
   }
   const harness = typeof args.harness === "string" ? args.harness : "claude";
   const wantPr = !!args.pr;
@@ -1234,6 +1247,10 @@ async function cmdRun(args) {
   if (args.timeout !== undefined && (typeof args.timeout !== "string" || !Number.isSafeInteger(timeoutSec) || timeoutSec < 1 || timeoutSec > 86_400)) {
     throw new UserError("`--timeout` must be a whole number from 1 to 86400 seconds");
   }
+  const limitWait = args["limit-wait"] === undefined ? 6 : Number(args["limit-wait"]);
+  if (args["limit-wait"] !== undefined && (typeof args["limit-wait"] !== "string" || !Number.isFinite(limitWait) || limitWait < 0 || limitWait > 168)) {
+    throw new UserError("`--limit-wait` must be a number of hours from 0 to 168 (0: don't wait for a usage limit to reset)");
+  }
   const commands = qaCommands(rt, args.commands);
   if (args["dry-run"]) {
     out(args, { issue, title, harness, pr: wantPr, timeout_s: timeoutSec, qa_commands: commands, ready: problems.length === 0, setup_issues: problems }, () => {
@@ -1275,7 +1292,7 @@ ${signal}: stopped ${stopped} running role${stopped === 1 ? "" : "s"}. Progress 
   interruptHook = interrupted;
   process.once("SIGINT", () => interrupted("SIGINT"));
   process.once("SIGTERM", () => interrupted("SIGTERM"));
-  const result = await orchestrateLib.runIssue({ root: rt, issue, title, body, fromGitHub, af, sh, spawner: launchLib.realSpawner, log, pr: wantPr, timeoutSec, commands, autoMerge: !!args["auto-merge"] && !args["no-auto-merge"] });
+  const result = await orchestrateLib.runIssue({ root: rt, issue, title, body, fromGitHub, af, sh, spawner: launchLib.realSpawner, log, pr: wantPr, timeoutSec, commands, autoMerge: !!args["auto-merge"] && !args["no-auto-merge"], limitWaitSec: Math.round(limitWait * 3600) });
 
   out(args, result, (r) => {
     console.log("");

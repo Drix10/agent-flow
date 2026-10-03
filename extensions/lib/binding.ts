@@ -10,9 +10,10 @@
  * have nothing to compare, and the pipeline that skips `report --harness` is FM-18, not something this can see.
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { git } from "./git.js";
+import { defaultBranch, git } from "./git.js";
 import { branchFor } from "./worktree.js";
 import { AUDIT_LOG } from "./state.js";
 import type { GateSpec } from "./gates.js";
@@ -22,6 +23,43 @@ export function branchTip(root: string, issue: number | undefined): string | nul
   if (!issue) return null;
   const r = git(["rev-parse", "--verify", "--quiet", `refs/heads/${branchFor(issue)}`], root, 10_000);
   return r.ok && /^[0-9a-f]{40,64}$/.test(r.stdout) ? r.stdout : null;
+}
+
+/**
+ * The default-branch ref that holds commit `head`'s change, or null. Either `head` is an ancestor (a merge or
+ * fast-forward), or a commit there has the same patch as `head` against its merge-base (a squash merge, which is
+ * what `run --pr --auto-merge` asks for). A rebase that changed the patch proves nothing and returns null.
+ */
+export function mergedInto(root: string, head: string): string | null {
+  if (!/^[0-9a-f]{40,64}$/.test(head) || !git(["cat-file", "-e", `${head}^{commit}`], root, 10_000).ok) return null;
+  const branch = (() => {
+    try {
+      return defaultBranch(root);
+    } catch {
+      return "main";
+    }
+  })();
+  const refs = [`refs/remotes/origin/${branch}`, `refs/heads/${branch}`].filter((r) => git(["rev-parse", "--verify", "--quiet", `${r}^{commit}`], root, 10_000).ok);
+  for (const ref of refs) {
+    if (git(["merge-base", "--is-ancestor", head, ref], root, 10_000).ok) return ref;
+  }
+  for (const ref of refs) {
+    const base = git(["merge-base", head, ref], root, 10_000);
+    if (!base.ok || !base.stdout) continue;
+    const [want] = patchIds(root, ["diff", "--no-color", "--full-index", "--binary", base.stdout, head]);
+    if (!want) continue;
+    // One pass over the commits merged since: `git log -p` piped through patch-id gives "<patch-id> <commit>" per commit.
+    if (patchIds(root, ["log", "-p", "--no-merges", "--no-color", "--full-index", "--binary", "--max-count=500", `${base.stdout}..${ref}`]).includes(want)) return ref;
+  }
+  return null;
+}
+
+/** The stable patch-ids of the patches `git <args>` prints. */
+function patchIds(root: string, args: string[]): string[] {
+  const d = git(args, root, 60_000);
+  if (!d.ok || !d.stdout.trim()) return [];
+  const r = spawnSync("git", ["patch-id", "--stable"], { cwd: root, input: `${d.stdout}\n`, encoding: "utf-8", timeout: 60_000, maxBuffer: 50 * 1024 * 1024 });
+  return r.status === 0 ? r.stdout.split("\n").map((l) => l.trim().split(/\s+/)[0]).filter(Boolean) : [];
 }
 
 interface AuditLine {
@@ -65,14 +103,21 @@ export function checkBinding(root: string, issue: number, round: number, gates: 
   const bound = lines.some((l) => (l.event === "role_run" || l.event === "gate_run") && "head" in l);
   if (!bound) return { enforced: false, ok: true, problems: [], tip: null };
 
-  const tip = branchTip(root, issue);
-  if (!tip) return { enforced: true, ok: false, tip, problems: [`the branch ${branchFor(issue)} does not exist, so the reviewed commit can't be compared with anything`] };
+  const latest = (pred: (l: AuditLine) => boolean) => [...lines].reverse().find(pred);
+  const review = latest((l) => l.event === "role_run" && l.role === "reviewer" && l.round === round && l.ok === true);
+
+  // A merged pull request usually takes its branch with it. The approved commit then stands in for the tip, but only
+  // once the default branch is shown to hold exactly that change: everything below must still name that commit.
+  let tip = branchTip(root, issue);
+  if (!tip) {
+    const merged = review?.verdict === "approved" && review.head ? mergedInto(root, review.head) : null;
+    if (!merged) return { enforced: true, ok: false, tip, problems: [`the branch ${branchFor(issue)} does not exist, and the approved commit${review?.head ? ` ${review.head.slice(0, 8)}` : ""} isn't on the default branch, so the reviewed commit can't be compared with anything`] };
+    tip = review!.head!;
+  }
 
   const problems: string[] = [];
   const short = (h?: string | null) => (h ? h.slice(0, 8) : "unrecorded");
-  const latest = (pred: (l: AuditLine) => boolean) => [...lines].reverse().find(pred);
 
-  const review = latest((l) => l.event === "role_run" && l.role === "reviewer" && l.round === round && l.ok === true);
   if (!review) problems.push(`no valid reviewer run recorded for round ${round}`);
   else if (review.verdict !== "approved") problems.push(`the round ${round} review is "${review.verdict ?? "unknown"}", not approved`);
   else if (review.head !== tip) problems.push(`the approved review judged ${short(review.head)}, but the branch tip is ${short(tip)}`);

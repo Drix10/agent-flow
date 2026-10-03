@@ -22,9 +22,10 @@
  * whoever launches the process. The model cannot change its own role.
  */
 
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, parse as parsePath, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, parse as parsePath, relative, resolve } from "node:path";
+import { git } from "./git.js";
 import { CASE_INSENSITIVE_FS, escapesBase, landingPath, toPosix, walk } from "./fsutil.js";
 import { denyCommandsOf, matchDenyCommand } from "./denycmd.js";
 import { ContextManifest, MANIFEST_FILE, contextFilePaths, denyReadPathsOf, matchAny, matchesPattern, protectedPathsOf } from "./manifest.js";
@@ -93,6 +94,8 @@ const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.
  * While protection is configured, no session edits these; a human does (AGENT_FLOW_ALLOW_PROTECTED=1).
  */
 const GUARD_WIRING = [".claude/settings.json", ".claude/settings.local.json", ".gemini/settings.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".opencode/plugins/agent-flow-guard.js", "node_modules/@drix10/agent-flow/", ".agent-flow-runtime/"];
+
+const GOVERNANCE_REASON = `${MANIFEST_FILE} holds the protected paths, the gates and the review policy; the Implementer doesn't change the rules it is checked by. Escalate to Needs Me instead.`;
 
 /** The tamper-proof pattern `rel` falls under, if any. */
 export const tamperProofMatch = (rel: string): string | null => underAny(rel, TAMPER_PROOF);
@@ -210,6 +213,12 @@ const INLINE_WRITE = /\[(?:System\.)?IO\.(?:File|Directory)\]::(?:Write|Append|C
 const EXTRACT = /(^|[\s;&|(])((?:bsd)?tar\s+(?:-?[a-zA-Z]*x[a-zA-Z]*\b|[^|;&\n]*\s(?:-[a-zA-Z]*x[a-zA-Z]*|--extract|--get)\b)|unzip\b(?![^|;&\n]*\s-[a-zA-Z]*[ltpvz]\b)|7z[a-z]?\s+[xe]|unrar\s+[xe]|gunzip|gzip\s+(-[a-zA-Z]*d|--decompress)|bunzip2|unxz|xz\s+(-[a-zA-Z]*d|--decompress))\b/i;
 /** A script fed on stdin can do anything; its text isn't in `command` to analyse. */
 const OPAQUE_SCRIPT = /\b(python3?|node|ruby|perl|php|deno|bun|bash|sh|zsh)\s+(-\s*)?<</i;
+/** A program (not a shell script) fed on stdin: its text is code, where a path is a string literal. */
+const CODE_STDIN = /\b(python3?|node|ruby|php|deno|bun)\s+(-\s*)?<</i;
+const SHELL_STDIN = /\b(perl|bash|sh|zsh)\s+(-\s*)?<</i;
+/** Interpreters whose `-c` / `-e` / `--eval` / `-r` argument is program text. */
+const CODE_INTERPRETERS = /^(python[\d.]*|py|node|nodejs|ruby|php|deno|bun)$/;
+const CODE_FLAG = /^(-c|-e|--eval|-p|--print|-r)$/;
 /** Formatters that rewrite files unless told only to check. */
 const FORMATTER = /^(prettier\b.*\s(-w|--write)\b|gofmt\s+.*-[a-z]*w|go\s+fmt\b|black\b|isort\b|cargo\s+fmt\b|rustfmt\b|ruff\s+format\b|clang-format\s+.*-i\b|terraform\s+fmt\b|dotnet\s+format\b|mix\s+format\b|swiftformat\b|ktlint\s+.*-F\b|rubocop\s+.*-[aA]\b|biome\s+(format|check)\s+.*--(write|apply))/i;
 const FORMATTER_CHECK_ONLY = /\s(--check|--diff|-check|-l|--list-different|--dry-run)(\s|$)/i;
@@ -422,18 +431,24 @@ function literalChunks(pattern: string): { text: string; whole: boolean; starts:
 const PATH_END = /^($|[\s/'"`;&|)<>])/;
 const PATH_START = /(^|[\s/'"`;&|(<>=:])$/;
 const ROOT_START = /(^|[\s'"`;&|(<>=:])(\.\/)?$/;
+// In program code a path is a string literal (`open('STAGE')`, `f"{root}/STAGE"`); a bare word is
+// an identifier, a comment or prose ("the stage's rules"), and must not read as the protected file STAGE.
+const CODE_END = /^[/'"`]/;
+const CODE_START = /['"`/]$/;
+const CODE_ROOT_START = /(['"`]\.?\/?|\}\/)$/; // 'STAGE', "./STAGE", root + "/STAGE", f"{root}/STAGE"
 
-function mentions(cmd: string, patterns: readonly string[]): string | null {
+function mentions(cmd: string, patterns: readonly string[], code = false): string | null {
   const hay = fold(cmd);
+  const [start, rootStart, end] = code ? [CODE_START, CODE_ROOT_START, CODE_END] : [PATH_START, ROOT_START, PATH_END];
   for (const p of patterns) {
     for (const { text, whole, starts, root } of literalChunks(p)) {
       const needle = fold(text);
       for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) {
-        if (starts && !PATH_START.test(hay.slice(Math.max(0, i - 1), i))) continue;
+        if (starts && !start.test(hay.slice(Math.max(0, i - 1), i))) continue;
         // `config/` means the repo's config/, not src/config/ (same as the file-tool check).
         // `./config/` still counts.
-        if (root && !ROOT_START.test(hay.slice(Math.max(0, i - 3), i))) continue;
-        if (!whole || PATH_END.test(hay.slice(i + needle.length, i + needle.length + 1))) return p;
+        if (root && !rootStart.test(hay.slice(Math.max(0, i - 3), i))) continue;
+        if (!whole || end.test(hay.slice(i + needle.length, i + needle.length + 1))) return p;
       }
     }
   }
@@ -452,9 +467,15 @@ const MESSAGE_OPT = /^(-m|--message|-t|--title|-b|--body|--subject)$/;
  * commit/PR messages, echo/printf text, search patterns and sed/awk scripts. A
  * commit message saying "load config/ lazily" writes nothing to config/.
  * Heredoc-fed interpreters keep their raw text: that body is code, not data.
+ * Given `code`, program text (a Python/Node heredoc, `python -c '…'`, `node -e '…'`) goes
+ * there instead, to be read as code (`mentions(…, true)`).
  */
-function pathWords(cmd: string): string {
-  if (OPAQUE_SCRIPT.test(cmd)) return cmd;
+function pathWords(cmd: string, code?: string[], raw = cmd): string {
+  if (OPAQUE_SCRIPT.test(cmd)) {
+    if (!code || !CODE_STDIN.test(cmd) || SHELL_STDIN.test(cmd)) return cmd;
+    // The text as typed: unquoting bare words would turn `open('STAGE')` back into a bare word.
+    code.push(raw);
+  }
   const out: string[] = [];
   for (const sc of lexShell(cmd)) {
     out.push(...sc.writes.map((w) => w.text));
@@ -473,6 +494,13 @@ function pathWords(cmd: string): string {
     } else {
       out.push(a[0] ?? "");
       a = a.slice(1);
+    }
+    if (code && CODE_INTERPRETERS.test(v)) {
+      const at = a.findIndex((w) => CODE_FLAG.test(w));
+      if (at >= 0 && a[at + 1] !== undefined) {
+        code.push(a[at + 1]);
+        a = [...a.slice(0, at), ...a.slice(at + 2)];
+      }
     }
     let patternTaken = !PATTERN_VERBS.has(v) || v === "perl";
     let endOpts = false;
@@ -1044,8 +1072,11 @@ function decideWrite(g: GuardInput, p: string, protectedPaths: string[], ctxFile
       if (t) return block("tamper-proof", `${wr} is written only by agent-flow tools.`);
       const prot = matchAny(protectedPaths, wr);
       if (prot && !g.allowProtected) return block("protected-path", `${wr} is protected (${prot}). Escalate instead of editing it.`);
+      if (fold(wr) === fold(MANIFEST_FILE)) return block("governance", GOVERNANCE_REASON);
       if (ctxFiles.some((f) => fold(f) === fold(wr))) return block("context-file", `${wr} is a context file — only the Gardener edits context. Flag [CONTEXT_STALE] instead.`);
     }
+  } else if (role === "implementer" && views.some((v) => !v.outside && fold(v.rel) === fold(MANIFEST_FILE))) {
+    return block("governance", GOVERNANCE_REASON);
   } else if (role === "implementer" && views.some((v) => !v.outside && ctxFiles.some((f) => fold(f) === fold(v.rel)))) {
     return block("context-file", `${shown} is a context file — only the Gardener edits context. Flag [CONTEXT_STALE] instead.`);
   }
@@ -1539,6 +1570,7 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
         const inside = t.destructive ? protectedInside(g, p, rel, protectedPaths) : null;
         if (inside) return block("protected-path", `command removes or moves ${rel}, which contains protected path ${inside} (${MANIFEST_FILE}). Escalate to Needs Me instead.`);
       }
+      if (role === "implementer" && fold(rel) === fold(MANIFEST_FILE)) return block("governance", GOVERNANCE_REASON);
       if (role === "implementer" && ctxFiles.some((f) => fold(f) === fold(rel))) return block("context-file", `command writes context file ${rel} — only the Gardener edits context.`);
     }
   }
@@ -1584,6 +1616,7 @@ function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFi
 
 function decideShellCore(g: GuardInput, cmd: string, protectedPaths: string[], ctxFiles: string[], top = true): GuardDecision | null {
   const { role, manifest } = g;
+  const raw = cmd;
   cmd = unquoteBareWords(cmd);
   const segs = segments(stripQuoted(cmd));
 
@@ -1628,6 +1661,11 @@ function decideShellCore(g: GuardInput, cmd: string, protectedPaths: string[], c
     return block("qa-no-autofix", "snapshot updates / --fix / --write change the code under test. Report the failure verbatim instead.");
   }
 
+  if (top) {
+    const script = decideScripts(g, cmd, protectedPaths, ctxFiles);
+    if (script) return script;
+  }
+
   const finding = analyzeShell(cmd);
   // Only the outermost command: `sh -c '…'` bodies are entered with the right cwd from here.
   const writes = top ? shellWrites(cmd, g.cwd).filter((t) => !DEVICE.test(t.word.text)) : [];
@@ -1650,19 +1688,134 @@ function decideShellCore(g: GuardInput, cmd: string, protectedPaths: string[], c
   const fullyResolved =
     writes.length > 0 && writes.every((t) => !t.word.dynamic && resolveShellPath(t.cwd, t.word.text)) && finding.why.every(resolvedWhy);
   if (!finding.mutating || fullyResolved) return null;
-  const hay = pathWords(cmd);
-  const tamper = mentions(hay, TAMPER_PROOF);
-  if (tamper && role) return block("tamper-proof", `command writes near ${tamper}, which only agent-flow tools may change.`);
+  const code: string[] = [];
+  const words = pathWords(cmd, code, raw);
+  return decideMentions(g, (patterns) => mentions(words, patterns) ?? mentions(code.join("\n"), patterns, true), protectedPaths, ctxFiles);
+}
+
+// ---------------------------------------------------------------------------
+// Script files
+// ---------------------------------------------------------------------------
+
+/** Shells that run a script file given as their first operand. */
+const SCRIPT_SHELLS = /^((ba|z|da|k)?sh|source|\.|pwsh|powershell)$/;
+/** Interpreter options that take a separate value, so the value isn't read as the script. */
+const SCRIPT_OPT_VALUE = /^(-W|-X|-r|--require|--import|--loader|-C|--conditions|-o|-O|-ExecutionPolicy|-WorkingDirectory)$/i;
+const SHELL_EXT = /\.(sh|bash|zsh|ksh|ps1)$/i;
+const MAX_SCRIPT_BYTES = 512 * 1024;
+let scriptDepth = 0;
+
+type ScriptRun = { path: string; shell: boolean };
+
+/** Script files a command line runs: `bash x.sh`, `python3 fix.py`, `node tool.js`, `pwsh -File x.ps1`, `./fix.sh`. */
+function scriptsRun(src: string, cwd: string | null): ScriptRun[] {
+  const out: ScriptRun[] = [];
+  for (const sc of lexShell(src)) {
+    const argv = effectiveArgv(sc.words);
+    const v = cmdName(argv[0]);
+    if (v === "cd" || v === "pushd" || v === "set-location") {
+      const t = argv[1];
+      cwd = !t || t.dynamic || t.glob ? null : resolveShellPath(cwd, t.text);
+      continue;
+    }
+    let script: ShWord | undefined;
+    const shell = SCRIPT_SHELLS.test(v);
+    if (shell || CODE_INTERPRETERS.test(v) || v === "perl") {
+      for (let i = 1; i < argv.length; i++) {
+        const t = argv[i].text;
+        // Inline code (`-c`, `-e`, `-Command`) is read where the command text is; `-m mod` runs a module, not a file.
+        if (CODE_FLAG.test(t) || /^(-m|-Command|-EncodedCommand|-)$/i.test(t)) break;
+        if (/^-File$/i.test(t)) {
+          script = argv[i + 1];
+          break;
+        }
+        if (t.startsWith("-")) {
+          if (SCRIPT_OPT_VALUE.test(t)) i++;
+          continue;
+        }
+        script = argv[i];
+        break;
+      }
+    } else if (argv[0] && /[\\/]/.test(argv[0].text) && !/^(\/usr)?\/bin\//.test(argv[0].text)) {
+      script = argv[0]; // `./fix.sh`, `scripts/tool.py`: run directly through its shebang
+    }
+    if (!script || script.dynamic || script.glob) continue;
+    const abs = resolveShellPath(cwd, script.text);
+    if (abs) out.push({ path: abs, shell: shell ? !/\.(py|js|mjs|cjs|ts|rb|pl|php)$/i.test(abs) : SHELL_EXT.test(abs) });
+  }
+  return out;
+}
+
+/**
+ * Is this script the reviewed copy from the default branch? Those are the repo's own tests and tools; a script that
+ * is new, edited or outside the repo is what an agent just wrote, and running it must not skip the checks its
+ * contents would face as a command (the "put the edit in a file and run the file" bypass).
+ */
+function reviewedScript(abs: string, branch: string | undefined): boolean {
+  const dir = dirname(abs);
+  const top = git(["rev-parse", "--show-toplevel"], dir, 10_000);
+  if (!top.ok || !top.stdout) return false;
+  const rel = toPosix(relative(resolve(top.stdout), abs));
+  if (!rel || escapesBase(rel)) return false;
+  const blob = git(["hash-object", `--path=${rel}`, "--", abs], top.stdout, 10_000);
+  if (!blob.ok) return false;
+  for (const ref of [...new Set([branch, "main", "master"].filter((b): b is string => !!b))].flatMap((b) => [b, `origin/${b}`])) {
+    const r = git(["rev-parse", "--verify", "--quiet", `${ref}:${rel}`], top.stdout, 10_000);
+    if (r.ok) return r.stdout === blob.stdout;
+  }
+  return false;
+}
+
+function decideScripts(g: GuardInput, cmd: string, protectedPaths: string[], ctxFiles: string[]): GuardDecision | null {
+  if (scriptDepth > 2) return null;
+  for (const s of scriptsRun(cmd, g.cwd)) {
+    let text: string;
+    try {
+      const st = statSync(s.path);
+      if (!st.isFile()) continue;
+      if (st.size > MAX_SCRIPT_BYTES) {
+        if (g.role === "implementer" && !reviewedScript(s.path, g.manifest?.default_branch)) return block("opaque-script", `${toPosix(s.path)} is too large to inspect (${st.size} bytes). Run smaller steps the guard can check.`);
+        continue;
+      }
+      text = readFileSync(s.path, "utf-8");
+    } catch {
+      continue; // nothing there to run
+    }
+    if (reviewedScript(s.path, g.manifest?.default_branch)) continue;
+    const shown = toPosix(relative(g.root, s.path)) || toPosix(s.path);
+    let d: GuardDecision | null;
+    scriptDepth++;
+    try {
+      d = s.shell
+        ? decideShell(g, text, protectedPaths, ctxFiles, true)
+        : decideMentions(g, (patterns) => mentions(text, patterns, true), protectedPaths, ctxFiles, `script ${shown}`);
+    } finally {
+      scriptDepth--;
+    }
+    if (d) return s.shell ? { ...d, reason: d.reason.replace("[agent-flow guard] ", `[agent-flow guard] ${shown} (a script that is not on the default branch, so it is checked like a command): `) } : d;
+  }
+  return null;
+}
+
+/** The text scan for writes no parser could resolve: does the command (or script) name something it must not change? */
+function decideMentions(g: GuardInput, named: (patterns: readonly string[]) => string | null, protectedPaths: string[], ctxFiles: string[], what = "command"): GuardDecision | null {
+  const { role } = g;
+  const tamper = named(TAMPER_PROOF);
+  if (tamper && role) return block("tamper-proof", `${what} writes near ${tamper}, which only agent-flow tools may change.`);
   // Not for the orchestrator: its launch prompts legitimately name `.claude/agents/…`.
   if (role && role !== "orchestrator") {
-    const cfg = mentions(hay, AGENT_CONFIG);
-    if (cfg) return block("agent-config", `mutating command references agent/CI configuration (${cfg}). Escalate to a human.`);
+    const cfg = named(AGENT_CONFIG);
+    if (cfg) return block("agent-config", `mutating ${what} references agent/CI configuration (${cfg}). Escalate to a human.`);
   }
-  const prot = mentions(hay, protectedPaths);
-  if (prot && !g.allowProtected) return block("protected-path", `this command changes files and also names the protected path ${prot}, and it can't be told which part touches what. If you only need to read or run ${prot}, do that in a separate command from the edit. If the task needs to change ${prot}, escalate to Needs Me instead.`);
   if (role === "implementer") {
-    const ctx = mentions(hay, ctxFiles.filter((f) => f.length >= 3));
-    if (ctx) return block("context-file", `mutating command references context file ${ctx} — only the Gardener edits context.`);
+    const gov = named([MANIFEST_FILE]);
+    if (gov) return block("governance", `${what} names ${MANIFEST_FILE}, which holds the protected paths and the gates; the Implementer doesn't change the rules it is checked by. Escalate to Needs Me instead.`);
+  }
+  const prot = named(protectedPaths);
+  if (prot && !g.allowProtected) return block("protected-path", `this ${what} changes files and also names the protected path ${prot}, and it can't be told which part touches what. If you only need to read or run ${prot}, do that in a separate command from the edit. If the task needs to change ${prot}, escalate to Needs Me instead.`);
+  if (role === "implementer") {
+    const ctx = named(ctxFiles.filter((f) => f.length >= 3));
+    if (ctx) return block("context-file", `mutating ${what} references context file ${ctx} — only the Gardener edits context.`);
   }
   return null;
 }

@@ -46,6 +46,12 @@ export interface RunInput {
   commands: string;
   /** Honor pipeline.auto_merge_low_risk after opening the PR. Explicit opt-in from the CLI. */
   autoMerge?: boolean;
+  /** Longest wait for a usage limit to reset before the role is run again; past it (or 0) the issue goes to Needs Me. Default 6 hours. */
+  limitWaitSec?: number;
+  /** For tests: how a wait happens. */
+  sleep?: (ms: number) => Promise<void>;
+  /** For tests: the clock. */
+  now?: () => number;
 }
 
 export type Outcome = "pr" | "ready" | "completed" | "needs_me" | "error";
@@ -296,6 +302,56 @@ export function retryArgs(argv: string[], sessionId: string | undefined, problem
   } else out[out.length - 1] = `${out[out.length - 1]}\n\n${sentence}`;
   return out;
 }
+
+/** Claude's account limits: "You've hit your session limit · resets 5:10pm (Asia/Kolkata)", and the older "usage limit reached|<epoch>". */
+const USAGE_LIMIT = /hit your (session |usage |weekly |daily |opus |sonnet )?limit|usage limit reached|rate limit reached for your (plan|account)/i;
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * Does `text` say the account hit a usage limit, and when does it reset? `reset_at` is epoch ms (a minute after the
+ * stated time, so the retry doesn't race the reset), or null when the limit was hit but no reset time could be read.
+ * Returns null when it isn't a usage limit at all.
+ */
+export function usageLimit(text: string, now = Date.now()): { reset_at: number | null; says: string } | null {
+  if (!USAGE_LIMIT.test(text)) return null;
+  const says = (text.match(/[^:]*(?:hit your|usage limit|rate limit)[^\n]*/i)?.[0] ?? text).trim().slice(0, 200);
+  const epoch = text.match(/usage limit reached\|(\d{9,13})/i);
+  if (epoch) {
+    const n = Number(epoch[1]);
+    return { reset_at: (n < 1e12 ? n * 1000 : n) + 60_000, says };
+  }
+  const m = text.match(/resets\s+(?:(?:at|on)\s+)?(?:([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)\b\s*(?:\(([^)]+)\))?/i);
+  if (!m) return { reset_at: null, says };
+  const [, mon, day, hh, mm, ampm, zone] = m;
+  const hour = (Number(hh) % 12) + (ampm.toLowerCase() === "pm" ? 12 : 0);
+  const target = hour * 60 + Number(mm ?? 0);
+  // Wall-clock "now" in the zone the message names (else this machine's), so "5:10pm (Asia/Kolkata)" means Kolkata time.
+  let parts: Record<string, number>;
+  try {
+    const f = new Intl.DateTimeFormat("en-US", { timeZone: zone?.trim() || undefined, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" });
+    parts = Object.fromEntries(f.formatToParts(new Date(now)).filter((p) => p.type !== "literal").map((p) => [p.type, Number(p.value)]));
+  } catch {
+    return { reset_at: null, says };
+  }
+  const nowMin = parts.hour * 60 + parts.minute + parts.second / 60;
+  let minutes: number;
+  if (mon && day) {
+    const mi = MONTHS.indexOf(mon.slice(0, 3).toLowerCase());
+    if (mi < 0) return { reset_at: null, says };
+    let days = (Date.UTC(parts.year, mi, Number(day)) - Date.UTC(parts.year, parts.month - 1, parts.day)) / 86_400_000;
+    if (days < -180) days = (Date.UTC(parts.year + 1, mi, Number(day)) - Date.UTC(parts.year, parts.month - 1, parts.day)) / 86_400_000;
+    minutes = days * 1440 + target - nowMin;
+    if (minutes < 0) return { reset_at: null, says };
+  } else {
+    minutes = target - nowMin;
+    if (minutes < 0) minutes += 1440;
+  }
+  return { reset_at: now + Math.round(minutes * 60_000) + 60_000, says };
+}
+
+/** Usage-limit waits one role run may sit through before it goes to Needs Me (a limit that keeps coming back is not a blip). */
+const MAX_LIMIT_WAITS = 3;
+const DEFAULT_LIMIT_WAIT_SEC = 6 * 3600;
 
 export async function runIssue(i: RunInput): Promise<RunOutcome> {
   const { root, issue: N, af, sh, log } = i;
@@ -552,6 +608,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       const env: Record<string, string> = { AGENT_FLOW_ROLE: role };
       if (role === "implementer") env.AGENT_FLOW_WORKTREE = WT;
       let argv = claudeArgs(role, { prompt: prompts[role], model: o.model, dirs: [A, WT] });
+      let waits = 0;
       for (let attempt = 0; attempt < 2; attempt++) {
         const res = await i.spawner({ argv, env, cwd: root, base: stem, timeoutSec: i.timeoutSec });
         const rep = af([
@@ -567,7 +624,25 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         if (res.exit === 124) escalate("role_timeout", `the ${role} ran out of time (${i.timeoutSec}s) in round ${rr}. Decide: raise the limit or split the issue.`);
         if (res.exit === 127) escalate("role_failed", `could not start \`claude\` for the ${role}. Decide: install it or fix PATH.`);
         const problems: string[] = chk.problems ?? [];
-        if (problems.some((p) => p.startsWith("harness error:"))) escalate("role_failed", `${role}: ${problems.find((p) => p.startsWith("harness error:"))}`);
+        const harnessError = problems.find((p) => p.startsWith("harness error:"));
+        const now = i.now ?? Date.now;
+        const limit = !chk.ok && harnessError ? usageLimit(harnessError, now()) : null;
+        if (limit) {
+          // Not the role's fault and not a decision for anyone: the account is out of quota until a known time.
+          const maxWait = (i.limitWaitSec ?? DEFAULT_LIMIT_WAIT_SEC) * 1000;
+          const wait = limit.reset_at === null ? null : Math.max(0, limit.reset_at - now());
+          const at = limit.reset_at === null ? "an unknown time" : new Date(limit.reset_at).toLocaleString();
+          if (wait === null || wait > maxWait || waits >= MAX_LIMIT_WAITS) {
+            const why = wait === null ? "the reset time couldn't be read" : waits >= MAX_LIMIT_WAITS ? `it came back ${waits} times` : `the reset is more than ${Math.round(maxWait / 360_000) / 10} h away (raise --limit-wait to wait for it)`;
+            escalate("usage_limit", `the ${role} hit a usage limit (${limit.says}) and ${why}. Decide: run \`agent-flow run ${N}\` again after ${at}.`);
+          }
+          waits++;
+          log({ kind: "warn", text: `${role}: usage limit reached (${limit.says}); waiting until ${at} to run it again` });
+          await (i.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(wait!);
+          attempt--; // a limit is not an invalid report: the retry for that stays available
+          continue;
+        }
+        if (harnessError) escalate("role_failed", `${role}: ${harnessError}`);
         if (chk.ok) return readJson(`${stem}.json`);
         if (attempt === 1) escalate("malformed_report", `the ${role}'s report was invalid twice: ${problems.slice(0, 3).join("; ")}.`);
         log({ kind: "warn", text: `${role} report invalid (${problems[0] ?? "unknown"}); asking once to correct it` });
