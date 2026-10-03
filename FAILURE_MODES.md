@@ -65,7 +65,10 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
 **Status:**
 - **Enforced** on Pi and on Claude Code (with the `guard` hook installed) for `write`/`edit`. **Best-effort** for shell commands.
 - **Enforced** on Claude Code for the reviewer subagent.
-- Read-only roles are also refused shell commands that extract archives, or that write through `awk`, `php -r`, `sqlite3` or `os.system`. Any interpreter running a script file is still invisible to the guard.
+- Read-only roles are also refused shell commands that extract archives, or that write through `awk`, `php -r`, `sqlite3` or `os.system`.
+- A script file run by an interpreter (`bash x.sh`, `python3 x.py`, `./x.sh`) is checked like the command it contains, unless it is byte-for-byte the copy on the default branch (the repo's own reviewed tests and tools). A script that is new, edited, committed only on the issue branch, or outside the repo is read: shell scripts get the full shell analysis, other languages the protected-path scan. This closed "write the edit into a file, then run the file". A script that writes another script, or builds a path at runtime, still is not seen.
+- In program text (a Python/Node heredoc, `python -c`, `node -e`, a script file) a protected name counts only as a path in a string (`'STAGE'`, `root + "/STAGE"`). Prose and comments ("the stage's rules") no longer block, which on a case-insensitive filesystem used to match the protected file `STAGE`.
+- The Implementer may not edit `CONTEXT_MANIFEST.json` (the protected paths, gates and auto-merge policy it is judged by). `.risk-baseline.json` was already writable only by agent-flow's own tool.
 - **Checked** at commit time everywhere else.
 
 **v1.0.x claimed:** "Implementer's worktree is sandboxed", "Protected paths are read-only in the Implementer's sandbox", "Pre-commit hook rejects changes to protected paths". None of these were implemented. The Claude Code reviewer also had `Bash`, which can write.
@@ -92,6 +95,7 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
 - `risk_audit` / `agent-flow audit-risk --fail-on-new` treats every dependency as a surface and parses six ecosystems.
 - It also flags auth, payment, destructive data, outbound-call, exec and secret patterns, line by line.
 - `risk_classify` sends any change to a dependency manifest to risk review.
+- Any change to `CONTEXT_MANIFEST.json` or `.risk-baseline.json` is classified **critical**: a pull request that unprotects a path, drops a gate, turns on auto-merge or accepts its own new risks needs a person, never auto-merge. `agent-flow codeowners` covers both files.
 
 **Status:** **Checked**.
 
@@ -192,6 +196,8 @@ Single repo only. Cross-repo dependencies are manual.
 ## FM-15: Model provider outage — **Open**
 
 If the provider is down, the pipeline stalls. State is persisted, so a run can resume. There is no fallback provider yet.
+
+An account usage limit is handled: `run` reads the reset time from the harness error, waits until a minute after it and runs the role again (at most 3 times, and only within `--limit-wait`, default 6 hours). Past that the issue goes to Needs Me as `usage_limit`, saying when to re-run it.
 
 ## FM-16: `allowed-tools` is not enforcement
 

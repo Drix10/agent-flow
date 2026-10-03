@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.2.2] - 2026-10-03
+
+Found by running `agent-flow run` unattended on a real repository (Hypothesis Arena, Windows):
+
+- **Script files no longer bypass the guard.** The guard checked a command but not a script file the command ran, so an edit to a protected path could be put in a file and run from there. A script that differs from the default branch's copy (new, edited, committed only on the issue branch, or outside the repo) is now checked like the command it contains. The repo's unchanged scripts stay trusted, so gates and tests run as before.
+- **Prose no longer looks like a protected path.** On Windows and macOS, a Python heredoc saying "the stage's rules" was blocked as a write to the protected file `STAGE`, which pushed agents toward the script-file workaround. In program text a protected name now counts only as a path in a string literal.
+- **The rule files are guarded.** The Implementer can't edit `CONTEXT_MANIFEST.json`. A diff that changes it or `.risk-baseline.json` is classified critical, so it needs a person and is never auto-merged. `agent-flow codeowners` and `doctor` now cover both files.
+- **Merged work can be marked done.** Once a pull request was merged and its branch deleted, `state update --state Completed` parked the issue in Needs Me (`unreviewed_commits`). The approved commit now counts as the tip when the default branch holds it, either as an ancestor or as a squash merge with the same patch. A different change merged under the issue still does not count.
+- **Usage limits wait instead of parking the issue.** A role that hits "You've hit your session limit · resets 5:10pm (…)" used to go to Needs Me and stay there. `run` now waits for the reset and runs the role again, up to three times and only within `--limit-wait <hours>` (default 6, 0 never waits). Further away than that, it escalates as `usage_limit` with the time to re-run.
+- **`doctor` names tests no gate runs.** Where a gate lists a directory's tests one by one (`for t in test_a test_b; do …`), a test file in that directory that no gate lists is reported. That is how a new test never ran and a deleted one stayed listed. A gate that hands the whole directory to a runner is not second-guessed.
+- **The audit log is anchored off the machine.** `.agent-flow/audit.jsonl` exists only where the pipeline runs, so anyone who could write it could rewrite the whole chain consistently. A pull request opened by `run --pr` now carries the log's head hash, and `audit verify --anchor <hash>` proves the local log still contains it.
+
 ## [1.2.1] - 2026-10-02
 
 - **`run` roles can read their issue folder and worktree.** An Implementer that `cd`s into its worktree lost Claude Code's permission to read `issue.md` (3 of 4 live runs on a real repository stopped with a permission error). `run` now passes `--add-dir` for the issue folder and the worktree to every role.

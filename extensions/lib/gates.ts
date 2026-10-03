@@ -106,6 +106,39 @@ export function gatesOf(man: ContextManifest | null | undefined): GateSpec[] {
   return out;
 }
 
+const TEST_FILE = /(^|\/)(test_[^/]+\.(py|sh)|[^/]+_test\.(py|sh|go)|[^/]+\.(test|spec)\.[cm]?[jt]sx?)$/;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Test files a gate should run but doesn't. Only where a gate lists a directory's tests one by one
+ * (`for t in test_a test_b; do python3 research/tests/$t.py`): that list drifts from the files on disk,
+ * which is how a new test never runs and a deleted one keeps being "listed". A gate that names the whole
+ * directory (`pytest research/tests`), or a runner that finds tests itself, is not second-guessed.
+ */
+export function unlistedTests(files: readonly string[], gates: readonly GateSpec[]): string[] {
+  const cwds = new Set(gates.map((g) => (g.cwd ? toPosix(g.cwd).replace(/^\.\/|\/+$/g, "") : "")).filter(Boolean));
+  const texts = gates.map((g) => describeCommand(g.command));
+  const all = texts.join("\n");
+  const named = (stem: string) => new RegExp(`(?<![\\w-])${escapeRe(stem)}(?![\\w-])`).test(all);
+  const byDir = new Map<string, string[]>();
+  for (const f of files) {
+    if (!TEST_FILE.test(f)) continue;
+    const dir = f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : "";
+    byDir.set(dir, [...(byDir.get(dir) ?? []), f]);
+  }
+  const out: string[] = [];
+  for (const [dir, tests] of byDir) {
+    if (!dir || !(cwds.has(dir) || texts.some((t) => t.includes(`${dir}/`)))) continue;
+    // The whole directory handed to a runner covers everything in it.
+    if (new RegExp(`(^|[\\s'"=])${escapeRe(dir)}/?(?=$|[\\s'";&|)])`, "m").test(all)) continue;
+    const stem = (f: string) => f.slice(f.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+    const listed = tests.filter((f) => named(stem(f)) || all.includes(f));
+    if (!listed.length) continue;
+    out.push(...tests.filter((f) => !listed.includes(f)));
+  }
+  return out.sort();
+}
+
 export function describeCommand(c: string | string[]): string {
   return Array.isArray(c) ? c.map((a) => (/[\s"']/.test(a) ? JSON.stringify(a) : a)).join(" ") : c;
 }

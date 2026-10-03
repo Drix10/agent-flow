@@ -32,6 +32,8 @@ const ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, critical: 2 };
 const HEURISTIC_CRITICAL = /(^|\/)(auth|authn|authz|login|oauth|payments?|billing|checkout|security|crypto|secrets?|credentials?|migrations?)(\/|[._-]|$)/i;
 const HEURISTIC_MEDIUM = /(^|\/)(core|kernel|infra|deploy|\.github\/workflows|docker|terraform|k8s|helm)(\/|[._-]|$)/i;
 
+const GOVERNANCE_FILES = new Set(["context_manifest.json", ".risk-baseline.json"]);
+
 /** agent-flow's own bookkeeping — never part of "the change". */
 const OWN_FILES = /^(\.agent-flow\/|\.worktrees\/|\.agent-state\.json$|AGENT_STATE\.md$)/;
 
@@ -51,6 +53,12 @@ export function classifyFiles(allFiles: string[], manifest: ContextManifest | nu
       protectedViolations.push(f);
       bump("critical", `${f} is under protected path ${hit}`);
     }
+  }
+
+  // The files that hold the rules themselves: protected paths, gates and auto-merge policy, and the accepted risks.
+  // A change to them is a change to what every later review is checked against, so a person approves it, never auto-merge.
+  for (const f of files) {
+    if (GOVERNANCE_FILES.has(f.toLowerCase())) bump("critical", `${f} holds agent-flow's own rules (protected paths, gates, accepted risks); a person approves changes to it`);
   }
 
   const boundaries = (manifest?.risk_boundaries ?? []).filter((b) => b && typeof b.path === "string");
