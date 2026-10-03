@@ -8,8 +8,8 @@ AGENT_STATE.md
 .risk-baseline.json
 
 # Local scratch and build clutter — never ship this to users
-todo*
-TODO*
+/todo*
+/TODO*
 *.log
 npm-debug.log*
 .env
