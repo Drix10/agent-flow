@@ -2,7 +2,7 @@
 
 Read this at `Lean level: full`, or whenever you are about to add a dependency or a hand-written helper. Before either, ask whether the platform, the standard library or the database already does it. This is a lookup table, not a rule to obey blindly: use the wrapper when it earns its place (an old browser, an edge case the built-in misses, ergonomics at scale) and say why in the report.
 
-The idea and the shape of these tables come from [ponytail](https://github.com/DietrichGebert/ponytail) (MIT); the entries are written for this repo's checks. Verify a name against the version the repo targets before relying on it.
+Written for this repo's checks. Verify a name against the version the repo targets before relying on it.
 
 ## Browser and CSS
 

@@ -170,3 +170,11 @@ test("each harness copy of a skill keeps the same invariants (no copy can drift 
     }
   }
 });
+
+test("check-versions on a release tag rejects any tag that isn't the version, shaped like a version or not", () => {
+  for (const tag of ["v1.2", "release-1", "v1.2.3-rc.1"]) {
+    const r = check(root, { GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: tag });
+    assert.equal(r.status, 1, tag);
+    assert.match(r.stderr, /does not match version/);
+  }
+});

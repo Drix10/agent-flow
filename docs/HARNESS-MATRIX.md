@@ -44,16 +44,16 @@ A ✅ from the CLI means the rule is enforced when the CLI is called. Whether th
 |---|---|---|---|
 | Claude Code | `SessionStart`, and `SubagentStart` (a subagent never sees the parent's context) | raw text at `SessionStart`, `hookSpecificOutput` JSON at `SubagentStart` | unit-tested here; not run live |
 | Codex CLI | `SessionStart` in `.codex/hooks.json` | `hookSpecificOutput.additionalContext` | unit-tested here; not run live |
-| Cursor | `sessionStart` in `.cursor/hooks.json` (fails open, unlike the guard) | `additional_context` | unit-tested here. Cursor's `sessionStart` injection was live-verified by the [ponytail](https://github.com/DietrichGebert/ponytail) project; its `subagentStart` cannot add context, so subagents don't get the brief |
+| Cursor | `sessionStart` in `.cursor/hooks.json` (fails open, unlike the guard) | `additional_context` | unit-tested here. not run live here. Its `subagentStart` is reported not to add context, so subagents don't get the brief |
 | Gemini CLI, Copilot, Windsurf, OpenCode, Pi | none wired | | the hook event names and output shapes are unverified, so nothing is installed that could print the wrong thing into a session |
 
-`agent-flow brief` recognises Copilot, Qoder and ZCode hook environments too (`COPILOT_PLUGIN_DATA`, `QODER_SESSION_ID`, `ZCODE_APP_VERSION`, taken from ponytail's notes) and answers in their shapes, but `install` doesn't wire those hosts.
+`agent-flow brief` recognises Copilot, Qoder and ZCode hook environments too (`COPILOT_PLUGIN_DATA`, `QODER_SESSION_ID`, `ZCODE_APP_VERSION`) and answers in their shapes, but `install` doesn't wire those hosts.
 
 Claude Code's `statusLine` can show `agent-flow statusline` (guard on or OFF, how many issues need you, are ready, are working). `install --harness claude --statusline` sets it when no `statusLine` exists; an existing one is never replaced.
 
 ## More hosts: skills folders and rules files
 
-Instruction-tier. The paths below come from the ponytail project's agent-portability notes, not from running these hosts here, and none has a hook agent-flow can use to block a call: enforcement is the pre-commit hook (`hook install`) and CI, so treat every row as ❌ instructed in the table above.
+Instruction-tier. The paths below are each host's documented convention, not checked by running these hosts here, and none has a hook agent-flow can use to block a call: enforcement is the pre-commit hook (`hook install`) and CI, so treat every row as ❌ instructed in the table above.
 
 | Host | `install --harness` | Writes | Notes |
 |---|---|---|---|

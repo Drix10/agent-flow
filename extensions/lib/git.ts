@@ -142,19 +142,19 @@ export function diffStats(cwd: string, base: string, head?: string): Map<string,
   return out;
 }
 
-/** Text of the lines a change adds to one file (untracked files: the whole file). */
-export function addedLines(cwd: string, file: string, base: string, head?: string): string[] {
+/** Text of the lines a change adds to one file (untracked files: the whole file); null when it can't be read (a diff past the buffer, a vanished file), which is not the same as nothing added. */
+export function addedLines(cwd: string, file: string, base: string, head?: string): string[] | null {
   const tracked = git(["ls-files", "--error-unmatch", "--", file], cwd).ok;
   if (!tracked && !head) {
     try {
       const buf = readFileSync(join(cwd, file));
       return buf.includes(0) ? [] : buf.toString("utf-8").split("\n");
     } catch {
-      return [];
+      return null;
     }
   }
   const r = git(["-c", "core.quotepath=off", "diff", "-U0", "--no-color", "--no-renames", ...diffRange(cwd, base, head), "--", file], cwd);
-  return r.ok ? r.stdout.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1)) : [];
+  return r.ok ? r.stdout.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).map((l) => l.slice(1)) : null;
 }
 
 /**

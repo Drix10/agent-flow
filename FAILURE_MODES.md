@@ -282,11 +282,11 @@ An account usage limit is handled: `run` reads the reset time from the harness e
 
 **Fix:** The guard reads stdin with a bound (10 s, `AGENT_FLOW_HOOK_STDIN_MS`) and, when nothing arrives, refuses wherever protection is configured: a role, a manifest on disk or committed, or `AGENT_FLOW_GUARD_STRICT=1`. The stop gate and the status badge bound their reads too and let the turn end or print nothing; the briefing never reads stdin.
 
-**Status:** **Enforced** for the guard (`tests/hook-stdin.test.js`). Found by reading how the ponytail project handled the same Windows failure (its #443 and #790).
+**Status:** **Enforced** for the guard (`tests/hook-stdin.test.js`).
 
 ## FM-23: A global plugin quietly changes a role
 
-**What happens:** A plugin or hook installed on the machine (not in the repo) adds context to every Claude Code session, including the Reviewer's and QA's. What the Reviewer judges, and what QA runs, then depends on whose machine it ran on. Ponytail's own benchmark was skewed this way: its baseline arm was running the skill.
+**What happens:** A plugin or hook installed on the machine (not in the repo) adds context to every Claude Code session, including the Reviewer's and QA's. What the Reviewer judges, and what QA runs, then depends on whose machine it ran on.
 
 **Fix:** `pipeline.isolate_roles: true` launches each role with `--setting-sources project,local`, so only the repository's own settings (the guard hook included) apply.
 

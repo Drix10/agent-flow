@@ -2,8 +2,6 @@
 
 A pipeline that checks code well still lets a model over-build it: a dependency where the standard library had a call, an abstraction with one user, a wrapper that only forwards. The Reviewer then reads more than there is to read, and a person reading the pull request does too. `pipeline.lean` tells the Implementer and the Reviewer to push the other way, without ever relaxing what makes the change safe.
 
-The idea, the ladder and the reviewer tags come from [ponytail](https://github.com/DietrichGebert/ponytail) (MIT, by Dietrich Gebert). The wording here is this project's own, and it is written around agent-flow's guard, report schemas and escalation, not copied.
-
 ## The setting
 
 ```json
@@ -40,12 +38,12 @@ At `lite` and `full` the Reviewer also hunts what could be deleted, as non-block
 
 ## What is and isn't claimed
 
-- The ruleset text and the report fields are tested (`tests/lean.test.js`, `tests/release-hygiene.test.js`). **Whether it makes a model write less code in your repo is not measured here.** Ponytail reports large reductions on its own agentic benchmark; those are its numbers, self-reported, on its tasks and models, and a different repo or model can differ (they note that a terse reasoning model can end up costing more). Turn it to `off` if a run shows it hurting.
+- The ruleset text and the report fields are tested (`tests/lean.test.js`, `tests/release-hygiene.test.js`). **Whether it makes a model write less code in your repo is not measured here**, and a terse reasoning model can end up costing more. Turn it to `off` if a run shows it hurting.
 - It is guidance, not enforcement: nothing blocks an over-built change. The guard, the classifier and the gates are what enforce; this makes the change smaller before they look at it.
 
 ## Keeping a role honest about its inputs
 
-A benchmark is only as good as its isolation. Ponytail found its own baseline arm had been running the skill all along, because a globally installed plugin's `SessionStart` hook fired in every session. The same thing can happen to a role here: a plugin or hook installed globally on the machine adds context to the Reviewer or to QA. `pipeline.isolate_roles: true` launches each role with `--setting-sources project,local`, so only the repository's own Claude Code settings apply. It is off by default because it also drops the user's own settings for roles (model defaults, user-level MCP servers); the project's guard hook is project-level and stays.
+Anything measuring a role is only as good as its isolation. A plugin or hook installed globally on the machine adds context to the Reviewer or to QA. `pipeline.isolate_roles: true` launches each role with `--setting-sources project,local`, so only the repository's own Claude Code settings apply. It is off by default because it also drops the user's own settings for roles (model defaults, user-level MCP servers); the project's guard hook is project-level and stays.
 
 ## Spending fewer tokens on the instructions themselves
 
@@ -53,8 +51,12 @@ Lean mode shrinks what a role writes. The other cost is what a session reads bef
 
 - **Skill descriptions** are loaded into every session that has the skill installed. The six went from 3,285 to 1,969 characters, and `tests/token-budget.test.js` keeps each under 450 and the total under 2,200.
 - **The orchestrator skill** was 15.2 KB, read by any session that invoked it. On Claude Code the CLI (`agent-flow run`) does the orchestrating, so it is now 3.9 KB with the manual procedure in `references/manual.md`, read only by a harness that needs it.
-- **Roles** are told to answer first and say nothing between tool calls, to give findings as one line each, and to keep code, paths and error text verbatim. QA's raw-output limit keeps the first 50 and last 100 lines of a long log, because the failure is usually at the end. This follows [caveman](https://github.com/JuliusBrussee/caveman)'s rules for output (MIT, Julius Brussee): the exemptions it makes (security warnings, irreversible actions, anything written to a commit, comment or document) apply here too, so terse never reaches a commit message or a code comment.
+- **Roles** are told to answer first and say nothing between tool calls, to give findings as one line each, and to keep code, paths and error text verbatim. QA's raw-output limit keeps the first 50 and last 100 lines of a long log, because the failure is usually at the end. Security warnings, irreversible actions and anything written to a commit, comment or document stay in plain prose, so terse never reaches a commit message or a code comment.
 - **Context files**: `agent-flow doctor` now warns, without failing, when an `.md` context file is over 150 lines or about 9 KB, since every task pays for it. The agent is told not to read `CONTEXT_MANIFEST.json` (tools read it; `agent-flow brief` says what an agent needs). The starter `DOCS_INDEX.md` lost its lifecycle list and its copy of the manifest.
 - **The MCP server** cuts a tool answer at 20,000 characters instead of 200,000.
 
-Not measured: how much less a model outputs with the terse rule in your repo. Caveman reports about 65% fewer output tokens on its own prompts; that is its figure for its setup, and thinking tokens are untouched by it.
+Not measured: how much less a model outputs with the terse rule in your repo. Thinking tokens are untouched by it.
+
+## Credits
+
+The idea, the ladder, the reviewer tags and the `lean:` marker come from [ponytail](https://github.com/DietrichGebert/ponytail) (MIT, Dietrich Gebert), and the terse-output rules from [caveman](https://github.com/JuliusBrussee/caveman) (MIT, Julius Brussee). The wording here is this project's own, written around agent-flow's guard, report schemas and escalation, not copied. Their benchmark figures are theirs, self-reported on their own tasks and models; none is claimed here.

@@ -1,6 +1,6 @@
 {
     "author": "Drix10",
-    "description": "Context-drift detection, guardrails & an Implement → Review → QA pipeline for AI coding agents (Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf, Pi).",
+    "description": "Run AI coding agents unattended, safely: Implement → Review → QA as separate agents, a guard that blocks edits they must never make, and context that stays true to the code.",
     "homepage": "https://github.com/Drix10/agent-flow",
     "license": "MIT",
     "name": "agent-flow",

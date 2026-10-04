@@ -553,3 +553,10 @@ test("gate logs: old ones are pruned once there are many, this run's and recent 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("added lines that can't be read are a violation, not an empty list", () => {
+  const c = classifyFiles([CI], withReview, stats({ [CI]: { added: 1, removed: 0 } }), () => null);
+  assert.equal(c.review_violations.length, 1);
+  assert.match(c.review_violations[0].why, /binary or unreadable/);
+  assert.equal(classifyFiles([CI], withReview, stats({ [CI]: { added: 1, removed: 0 } }), () => ["      - run: npm test"]).review_violations.length, 0);
+});

@@ -194,10 +194,12 @@ test("agent-flow mcp (CLI): a real session over stdio, stdout carries only proto
       child.stderr.on("data", (c) => (err += c));
       const timer = setTimeout(() => {
         child.kill();
+        clearInterval(wait);
         reject(new Error(`mcp did not exit: ${out} ${err}`));
       }, 60_000);
       child.on("exit", (code) => {
         clearTimeout(timer);
+        clearInterval(wait);
         resolve({ code, out, err });
       });
       for (const m of [

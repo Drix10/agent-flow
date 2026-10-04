@@ -72,7 +72,7 @@ export function riskyCiLine(line: string): string | null {
  * `stats` and `added` are optional: without a diff, the shape of a change to review-only paths isn't judged.
  * `added(file)` returns the lines the change adds to it.
  */
-export function classifyFiles(allFiles: string[], manifest: ContextManifest | null, stats?: FileStats, added?: (file: string) => string[]): Classification {
+export function classifyFiles(allFiles: string[], manifest: ContextManifest | null, stats?: FileStats, added?: (file: string) => string[] | null): Classification {
   const files = allFiles.filter((f) => !OWN_FILES.test(f));
   let level: RiskLevel = "low";
   const reasons: string[] = [];
@@ -110,11 +110,16 @@ export function classifyFiles(allFiles: string[], manifest: ContextManifest | nu
     if (stats && (s === null || s === undefined)) reviewViolations.push({ file: f, why: "binary or unreadable change; review-only paths take added text lines only" });
     else if (stats && s && s.removed > 0) reviewViolations.push({ file: f, why: `${s.removed} existing line(s) edited or removed; review-only paths take added lines only. Add a new line instead of changing one (a file that doesn't end in a newline counts its last line as edited, and a CRLF file edited with LF endings counts every line: keep the file's line endings and insert the new line above the last one)` });
     else if (added && CI_FILE.test(f)) {
-      for (const l of added(f)) {
-        const why = riskyCiLine(l);
-        if (why) {
-          reviewViolations.push({ file: f, why: `an added CI line ${why} (\`${l.trim().slice(0, 80)}\`); a person adds that` });
-          break;
+      const lines = added(f);
+      // Lines that couldn't be read are not lines that weren't added: nothing may pass unchecked.
+      if (lines === null) reviewViolations.push({ file: f, why: "binary or unreadable change; review-only paths take added text lines only" });
+      else {
+        for (const l of lines) {
+          const why = riskyCiLine(l);
+          if (why) {
+            reviewViolations.push({ file: f, why: `an added CI line ${why} (\`${l.trim().slice(0, 80)}\`); a person adds that` });
+            break;
+          }
         }
       }
     }
@@ -174,7 +179,7 @@ export function classifyDiff(cwd: string, root: string, manifest: ContextManifes
   const c = classifyFiles(files, manifest, reviewTouched ? diffStats(cwd, b, head) : undefined, (f) => addedLines(cwd, f, b, head));
   const policy = policyOf(manifest);
   const violations = policy
-    ? evaluatePolicy(policy, c.files, policy.max_diff_lines ? diffStats(cwd, b, head) : null, (f) => addedLines(cwd, f, b, head))
+    ? evaluatePolicy(policy, c.files, policy.max_diff_lines ? diffStats(cwd, b, head) : null, (f) => addedLines(cwd, f, b, head) ?? [])
     : [];
   return { ...c, policy_violations: violations, base: b, head: head ?? "(working tree)" };
 }

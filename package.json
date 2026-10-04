@@ -1,7 +1,7 @@
 {
   "name": "@drix10/agent-flow",
   "version": "1.2.3",
-  "description": "Agent Flow — self-healing context + an Implement → Review → QA pipeline with enforced guardrails (Pi) and a zero-dependency CLI for every other harness. Detects context drift, gates risky diffs, keeps the trust signals honest.",
+  "description": "Run AI coding agents unattended, safely: Implement → Review → QA as separate agents, a guard that blocks edits they must never make, and context that stays true to the code.",
   "type": "module",
   "main": "extensions/index.js",
   "types": "extensions/index.d.ts",

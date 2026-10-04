@@ -5,7 +5,7 @@
   <img src="assets/logo.svg" alt="Agent Flow" width="320">
 </picture>
 
-*Let the agent work while you're away. Review only what needs a person.*
+**Run AI coding agents unattended without letting them go loose: one implements, another reviews, a third tests, a guard blocks what they must never touch, and you only see what needs you.**
 
 [![npm version](https://img.shields.io/npm/v/@drix10/agent-flow?style=flat-square&logo=npm)](https://www.npmjs.com/package/@drix10/agent-flow)
 [![CI](https://img.shields.io/github/actions/workflow/status/Drix10/agent-flow/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
@@ -159,8 +159,6 @@ See [Security](SECURITY.md) and [known failure modes](FAILURE_MODES.md) for deta
 
 ## FAQ
 
-**Does it work with ponytail?** Yes, they do different jobs: ponytail shapes how much code a model writes, Agent Flow guards and sequences the work. `pipeline.lean` borrows the idea ([credit and scope](docs/LEAN.md)).
-
 **Will agents get stuck waiting for me?** Only on protected paths and critical changes. Everything else, including CI list additions, carries on and reaches you as a draft.
 
 **What if my harness has no hooks?** The skills and the pre-commit gate still apply; the guard's per-call blocking does not. The harness matrix says which is which.
@@ -178,4 +176,4 @@ The test suite exercises real temporary Git repositories and supported installat
 
 ## License
 
-MIT. The lean mode draws on [ponytail](https://github.com/DietrichGebert/ponytail) (MIT, Dietrich Gebert).
+MIT

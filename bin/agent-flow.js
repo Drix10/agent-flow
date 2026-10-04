@@ -1245,8 +1245,7 @@ const TARGETS = {
     plugin: true,
     note: "Wrote .opencode/plugins/agent-flow-guard.js: a tool.execute.before plugin that runs agent-flow's guard before every tool call and denies the call on a block. Restart opencode to load it. Live verification pending: run the probe in docs/HARNESS-MATRIX.md.",
   },
-  // Hosts whose skills folder or rules file the ponytail project documents (https://github.com/DietrichGebert/ponytail,
-  // docs/agent-portability.md). Not run live here: instruction-tier, so none of them is listed as enforcing in docs/HARNESS-MATRIX.md.
+  // Hosts whose skills folder or rules file follows a documented convention. Not run live here: instruction-tier, so none of them is listed as enforcing in docs/HARNESS-MATRIX.md.
   swival: { skills: ".swival/skills", agents: [], note: "Swival also reads AGENTS.md from the project root. It has no hook agent-flow can use to block a call, so enforcement here is the pre-commit hook and CI." },
   factory: { skills: ".factory/skills", agents: [], note: "Factory Droid reads AGENTS.md from the working directory up to the git root. It has no hook agent-flow can use to block a call, so enforcement here is the pre-commit hook and CI." },
   commandcode: { skills: ".commandcode/skills", agents: [], note: "Command Code reads AGENTS.md as project memory. It has no hook agent-flow can use to block a call, so enforcement here is the pre-commit hook and CI." },

@@ -63,7 +63,7 @@ if (shared) {
 
   if (process.env.GITHUB_REF_TYPE === "tag") {
     const tag = (process.env.GITHUB_REF_NAME || "").replace(/^v/, "");
-    if (PINNED.test(tag) && tag !== shared) fail(`release tag v${tag} does not match version ${shared}: bump the version files before tagging`);
+    if (tag !== shared) fail(`release tag v${tag} does not match version ${shared}: bump the version files before tagging`);
   }
 }
 
