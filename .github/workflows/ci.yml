@@ -22,6 +22,8 @@ jobs:
       - run: git config --global user.email ci@example.com && git config --global user.name ci
       - run: npm ci
       - run: npm run lint
+      - name: One version everywhere
+        run: node scripts/check-versions.mjs
       - name: Run npm test
         shell: bash
         run: |

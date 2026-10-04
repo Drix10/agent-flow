@@ -3,7 +3,7 @@
 import { spawnSync } from "node:child_process";
 
 const WANT = {
-  claude: { help: ["--help"], flags: ["-p", "--model", "--output-format", "--permission-mode", "--disallowedTools", "--resume"] },
+  claude: { help: ["--help"], flags: ["-p", "--model", "--output-format", "--permission-mode", "--disallowedTools", "--resume", "--add-dir", "--setting-sources"] },
   codex: { help: ["exec", "--help"], flags: ["--sandbox", "-C", "--add-dir", "-m"] },
   gemini: { help: ["--help"], flags: ["--approval-mode", "-m"] },
   pi: { help: ["--help"], flags: ["-p", "--tools", "--model"] },

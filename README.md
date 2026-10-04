@@ -1,19 +1,38 @@
 <div align="center">
 
-# Agent Flow
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+  <img src="assets/logo.svg" alt="Agent Flow" width="320">
+</picture>
 
-**Keep agent context accurate. Run code changes through separate implementation, review and QA steps.**
+*Let the agent work while you're away. Review only what needs a person.*
 
 [![npm version](https://img.shields.io/npm/v/@drix10/agent-flow?style=flat-square&logo=npm)](https://www.npmjs.com/package/@drix10/agent-flow)
 [![CI](https://img.shields.io/github/actions/workflow/status/Drix10/agent-flow/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)
 [![Node](https://img.shields.io/node/v/@drix10/agent-flow?style=flat-square&logo=node.js&logoColor=white&label=node)](https://nodejs.org/)
 
+**Zero runtime dependencies** · **tests run against real git repositories** · **every claim marked enforced, checked or instructed**
+
+[Quick start](#quick-start) · [How it works](#pipeline-behavior) · [Harnesses](docs/HARNESS-MATRIX.md) · [Lean mode](docs/LEAN.md) · [FAQ](#faq)
+
 </div>
 
-Agent Flow is a Node.js CLI and skills package for Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf, Pi and other tools that read `AGENTS.md`. It checks agent context against the repository, classifies code changes against repository policy, and provides a bounded implement-review-QA workflow.
+---
 
-It has no runtime dependencies and does not require a `package.json` in the repository being set up. Node.js 20 or later is required to run it.
+Give an agent a task and walk away. Agent Flow runs it through separate **implement, review and QA** steps in its own git worktree, blocks the edits an agent must never make, lets it fix its own failing tests and CI lists, and leaves you a short list of what needs a person.
+
+It is a Node.js CLI and skills package for Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf, Pi and other tools that read `AGENTS.md` (14 install targets plus Pi; see the [harness matrix](docs/HARNESS-MATRIX.md) for what each one enforces). It has no runtime dependencies and needs no `package.json` in the repository it sets up. Node.js 20 or later is required.
+
+### Before and after
+
+| Without | With Agent Flow |
+|---|---|
+| The agent edits CI, trust files or the manifest to make its own check pass. | Protected paths are refused by the guard on Claude Code and Pi, and classified on every harness. |
+| A new test can't get into the CI list without calling you back. | `review_paths` lets it add a line; the pull request is a draft that waits for you. |
+| The same agent writes, reviews and approves. | Each role is a separate process and sees files, not another role's reasoning. |
+| Context files drift from the code. | `agent-flow doctor` checks paths, commands, links and timestamps. |
+| "It's fine" with no record. | A hash-chained audit log of state changes, guard blocks and gates. |
 
 ## Quick start
 
@@ -75,7 +94,7 @@ Or use the [composite GitHub Action](action.yml), which also classifies pull req
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- uses: Drix10/agent-flow@v1.2.2
+- uses: Drix10/agent-flow@v1.2.3
 ```
 
 ## What it does
@@ -88,6 +107,9 @@ Or use the [composite GitHub Action](action.yml), which also classifies pull req
 | Pipeline | Runs implementation, mechanical classification, review, required gates and QA with a round cap. | `agent-flow run` on Claude Code; `invoking-agents` skill elsewhere |
 | Risk changes | Compares new dependencies, credentials, payment/auth code and other risk signals with a reviewed baseline. | `agent-flow audit-risk --fail-on-new` |
 | Audit trail | Records state changes, guard blocks, gate results and role runs in a hash-chained log. | `agent-flow audit verify` and `summary` |
+| Deferred shortcuts | Reads back every `lean:` comment (a ceiling and when to upgrade) and flags the ones that name no trigger. | `agent-flow debt`; [Lean](docs/LEAN.md) |
+| Token cost | Short skill descriptions, an orchestrator skill that a CLI run never loads, terse role output, and a warning when a context file is heavy. | `agent-flow doctor`; [what changed](docs/LEAN.md#spending-fewer-tokens-on-the-instructions-themselves) |
+| Other tools | A read-only MCP server and a status badge, so a host without our hook can still ask. | `agent-flow mcp`, `agent-flow statusline` |
 
 Useful commands:
 
@@ -96,6 +118,8 @@ npx @drix10/agent-flow status       # protection, checks, context and pending wo
 npx @drix10/agent-flow doctor       # read-only context report
 npx @drix10/agent-flow scan         # read-only repository reconnaissance
 npx @drix10/agent-flow hook install # install the pre-commit gate
+npx @drix10/agent-flow debt         # the shortcuts agents left, and which have no trigger to revisit them
+npx @drix10/agent-flow uninstall    # preview taking back out what install wrote (--yes to do it)
 npx @drix10/agent-flow state dismiss --issue 100000 --reason "did it by hand"   # drop an issue from the list
 ```
 
@@ -108,6 +132,10 @@ task -> worktree -> implement -> classify -> review -> gates -> QA -> optional P
 ```
 
 Each role is a separate process and receives files from `.agent-flow/artifacts/issue-N/`, not another role's reasoning. Issue text is escaped and treated as untrusted input. The state machine enforces transitions and the review-round cap. Repeated failures stop for a human. When you request a PR, critical changes create a draft and wait for human review. Local is the default; publishing needs `--pr`.
+
+`pipeline.lean` asks the Implementer and Reviewer for the smallest correct change and marks the shortcuts it takes ([Lean](docs/LEAN.md)).
+
+Protected paths stop a run; review-only paths (`review_paths`, usually `.github/workflows/`) don't. An agent may add a line there, such as a new test in the CI list, and the pull request waits as a draft for you. See [Adoption](docs/ADOPTION.md#review-only-paths-ci-and-test-lists-without-stopping-an-unattended-run).
 
 The loop is not equally enforced on every harness. The guard blocks tool calls directly on Claude Code and Pi. Other harnesses rely on their available sandbox and the pre-commit hook, which runs at commit time and can be bypassed by a human. Reviewer write restrictions vary by harness. See the [harness matrix](docs/HARNESS-MATRIX.md) before choosing a role setup.
 
@@ -129,6 +157,16 @@ When an agent repeats a mistake, prefer a mechanical fix: an invariant in code, 
 
 See [Security](SECURITY.md) and [known failure modes](FAILURE_MODES.md) for details. Agent Flow works one repository at a time and does not provide model-provider failover.
 
+## FAQ
+
+**Does it work with ponytail?** Yes, they do different jobs: ponytail shapes how much code a model writes, Agent Flow guards and sequences the work. `pipeline.lean` borrows the idea ([credit and scope](docs/LEAN.md)).
+
+**Will agents get stuck waiting for me?** Only on protected paths and critical changes. Everything else, including CI list additions, carries on and reaches you as a draft.
+
+**What if my harness has no hooks?** The skills and the pre-commit gate still apply; the guard's per-call blocking does not. The harness matrix says which is which.
+
+**How do I remove it?** `agent-flow uninstall` previews, `--yes` applies. Files you edited are kept.
+
 ## Development
 
 ```bash
@@ -140,4 +178,4 @@ The test suite exercises real temporary Git repositories and supported installat
 
 ## License
 
-MIT
+MIT. The lean mode draws on [ponytail](https://github.com/DietrichGebert/ponytail) (MIT, Dietrich Gebert).

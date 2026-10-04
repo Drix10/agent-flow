@@ -9,7 +9,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isoNow, resolveInside, toPosix } from "./fsutil.js";
 import { ContextManifest } from "./manifest.js";
@@ -88,6 +88,34 @@ export interface GateReport {
 
 export const DEFAULT_GATE_TIMEOUT_S = 600;
 const MAX_LOG = 5 * 1024 * 1024;
+/** Each run leaves a log of up to MAX_LOG per gate, and a stop gate runs on every stop: without a limit the folder only grows. */
+const KEEP_GATE_FILES = 500;
+const KEEP_GATE_DAYS = 30;
+
+/** Delete gate logs and reports older than KEEP_GATE_DAYS once the folder holds more than KEEP_GATE_FILES. Never this run's own. */
+export function pruneGateLogs(dir: string, keep: ReadonlySet<string> = new Set(), now = Date.now()): number {
+  let removed = 0;
+  try {
+    const names = readdirSync(dir);
+    if (names.length <= KEEP_GATE_FILES) return 0;
+    const cutoff = now - KEEP_GATE_DAYS * 86_400_000;
+    for (const n of names) {
+      const p = join(dir, n);
+      if (keep.has(p)) continue;
+      try {
+        if (statSync(p).mtimeMs < cutoff) {
+          unlinkSync(p);
+          removed++;
+        }
+      } catch {
+        /* gone, or in use: leave it */
+      }
+    }
+  } catch {
+    /* no folder, nothing to prune */
+  }
+  return removed;
+}
 
 /** The valid gates of a manifest; malformed entries are dropped here and reported by validateManifest. */
 export function gatesOf(man: ContextManifest | null | undefined): GateSpec[] {
@@ -230,5 +258,6 @@ export function runGates(root: string, gates: GateSpec[], opts: RunOptions = {})
   const report = results.length ? toPosix(join(".agent-flow", "gates", `${tag}-report-${stamp}.json`)) : null;
   const environmentError = results.some((r) => r.required && !r.ok && !!r.error);
   if (report) writeFileSync(join(root, report), JSON.stringify({ ok, environment_error: environmentError, results }, null, 2) + "\n", "utf-8");
+  pruneGateLogs(dir, new Set([...results.map((r) => (r.log ? join(root, r.log) : "")), ...(report ? [join(root, report)] : [])]));
   return { ok, environment_error: environmentError, results, report };
 }

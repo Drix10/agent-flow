@@ -119,6 +119,11 @@
         "type": "string"
       }
     },
+    "net_lines_removable": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Lines the simplification findings (tags delete, stdlib, native, reuse, yagni, shrink) would remove. Informational: it never blocks."
+    },
     "permission_violations": {
       "type": "array",
       "items": {

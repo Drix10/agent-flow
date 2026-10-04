@@ -1,7 +1,7 @@
 ---
 name: gardener
 tags: [maintenance, context-drift, audit, docs]
-description: Maintenance agent for agent-flow. Keeps context files true — runs /doctor, /sync-context, /audit-risk, /repair-docs and /garden, re-verifies context claims against code before refreshing timestamps, and turns recurring agent mistakes into mechanical checks. Use on a schedule, after merges that were flagged [CONTEXT_STALE], or when the user runs any of those commands. Also use whenever the user asks to check if AGENTS.md is stale or out of date, wants a health check on their context files, mentions a renamed/deleted file that context docs still point to, or wants to review the risk-audit baseline — even without naming a specific command.
+description: Maintenance for agent-flow context. Runs /doctor, /sync-context, /audit-risk, /repair-docs, /garden, /debt and /audit-lean; re-verifies context claims against the code before refreshing timestamps; turns repeated agent mistakes into mechanical checks. Use on a schedule, after merges flagged [CONTEXT_STALE], or when asked whether AGENTS.md is stale or the risk baseline needs review.
 ---
 
 # Gardener
@@ -24,6 +24,7 @@ Outside Pi the tools have CLI twins (`AF` = `npx @drix10/agent-flow`):
 | `risk_audit` | `AF audit-risk` |
 | `risk_baseline_update` | `AF baseline accept <keys…> --yes` |
 | `stale_repair` | `AF repair --yes` |
+| (deferred shortcuts) | `AF debt [--json]` |
 | (references follow the prose) | `AF manifest sync --yes` |
 
 Never hand-edit `last_verified` timestamps in the manifest: `AF repair` is the only thing that should refresh them, and only after step 2 of /repair-docs.
@@ -60,6 +61,18 @@ Never hand-edit `last_verified` timestamps in the manifest: `AF repair` is the o
    Group them by type and keep it short.
 3. After the human decides, call `risk_baseline_update` with `acceptKeys` set to exactly the surfaces they accepted. A **secret** surface is never "accepted". The human must remove the secret from the repo and rotate it.
 
+## /debt — report only
+
+Run `AF debt` (add `--json` to parse it). It lists every `lean:` comment in the code: a deliberate shortcut, its ceiling and the condition for revisiting it, with `[no-trigger]` on the ones that name none. Those rot, so for each one:
+- if the code now shows the trigger has happened (the lock is contended, the scan is slow, the heuristic misses), open an issue for the Implementer to do the upgrade;
+- if the comment is just missing its trigger, say what trigger it should name (read the code; don't guess), and open an issue to add it.
+
+To keep the ledger, write it to `DEBT.md` (you may edit `*.md`): one row per marker, `file:line, ceiling, upgrade`. Don't edit the code or the comments yourself.
+
+## /audit-lean — report only
+
+The whole-repo version of the reviewer's lean lens: what could be deleted, reused or replaced with something the repo, the standard library or the platform already has. Ranked, biggest cut first, one line each: `<tag> <what to cut>. <replacement>. [path]` with the tags `delete`, `stdlib`, `native`, `reuse`, `yagni`, `shrink` (see `skills/reviewer/SKILL.md`, "Lean lens"). Before a `delete:`, grep the whole tree for the symbol: tests, fixtures, strings and dynamic references. Look for dependencies the standard library or platform ships, interfaces with one implementation, factories with one product, wrappers that only delegate, flags and config nobody sets, and helpers that duplicate one already in the repo. End with `net: -N lines, -M dependencies possible.` Never remove validation, error handling, security or accessibility code, or the small runnable checks. You report; an Implementer issue does the cutting.
+
 ## /repair-docs — the order matters
 
 1. Run `stale_detect` and collect the flagged files, plus any `context_stale_flags` from recent reviews.
@@ -70,7 +83,7 @@ Never hand-edit `last_verified` timestamps in the manifest: `AF repair` is the o
 
 ## /garden
 
-Run /sync-context → /audit-risk → /doctor → /repair-docs, in that order. End with one health summary: what was fixed, what needs a human, and what issues you opened.
+Run /sync-context → /audit-risk → /debt → /doctor → /repair-docs, in that order (/audit-lean is its own, heavier pass: run it when asked). End with one health summary: what was fixed, what needs a human, and what issues you opened.
 
 ## Turning mistakes into mechanisms
 

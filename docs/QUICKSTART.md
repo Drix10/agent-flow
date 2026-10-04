@@ -18,12 +18,12 @@ npx @drix10/agent-flow init          # preview; add --yes to write
 
 ```bash
 npx @drix10/agent-flow install --harness claude    # Node repos: `npm i -D @drix10/agent-flow` first (optional). Other repos: the hook runs from a vendored .agent-flow-runtime/.
-# or codex | gemini | cursor | copilot | windsurf | agents
+# or codex | gemini | cursor | copilot | windsurf | opencode | cline | kiro | qoder | swival | factory | commandcode | agents
 pi install npm:@drix10/agent-flow                                         # Pi, additionally gets tool-level enforcement
 npx @drix10/agent-flow hook install                                               # everyone
 ```
 
-`install --harness claude` also adds `@AGENTS.md` to `CLAUDE.md` (creating it if needed) so Claude Code loads the root context.
+`install --harness claude` also adds `@AGENTS.md` to `CLAUDE.md` (creating it if needed) so Claude Code loads the root context, and a short `SessionStart` briefing so a session knows the rules before it hits the guard (`--no-brief` leaves it out). To take it all back out: `npx @drix10/agent-flow uninstall` previews, `--yes` does it, and your own files and settings stay.
 
 ## 2. Bootstrap
 

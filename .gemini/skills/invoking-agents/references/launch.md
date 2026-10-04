@@ -12,6 +12,7 @@ mkdir -p ".agent-flow/artifacts/issue-$N"
 npx --no-install @drix10/agent-flow config get version >/dev/null || { echo "agent-flow isn't installed in this project, or there is no CONTEXT_MANIFEST.json: stop and tell the user"; exit 1; }
 model() { npx --no-install @drix10/agent-flow config get "pipeline.models.$1" 2>/dev/null; }
 harness() { npx --no-install @drix10/agent-flow config get "pipeline.harness_by_role.$1" 2>/dev/null; }
+lean() { v="$(npx --no-install @drix10/agent-flow config get pipeline.lean 2>/dev/null)"; case "$v" in off|lite|full) echo "$v" ;; *) echo lite ;; esac; }
 cat > ".agent-flow/artifacts/issue-$N/env.sh" <<EOF
 N=$N
 ROOT="$PWD"                                   # main checkout: state, guard hook and node_modules live here
@@ -26,6 +27,7 @@ HARNESS_REVIEWER="$(harness reviewer)"
 HARNESS_QA="$(harness qa)"
 FAST_MODEL="$(model fast)"
 HIGH_MODEL="$(model high_reasoning)"
+LEAN="$(lean)"                                # off | lite | full: how hard the Implementer and Reviewer push for the smallest correct change
 COMMANDS="npm test; npm run typecheck"        # from AGENTS.md, or none
 ROLE_TIMEOUT=3600                             # wall-clock seconds per launch; the runner enforces it on every harness
 CODEX_NET=                                    # 1 = network for Codex's Implementer/QA (lockfile installs)
@@ -36,6 +38,7 @@ What each one means, and why:
 
 - **Models.** `pipeline.models.fast` and `pipeline.models.high_reasoning` in `CONTEXT_MANIFEST.json` are optional model IDs for the harness you run (`sonnet`/`opus` for Claude, a Codex or Gemini model name, a Pi pattern). When a key is missing the variable is empty, and every command below uses `${FAST_MODEL:+--model "$FAST_MODEL"}`, which drops the flag entirely. An empty `--model ""` would be an error; no flag means the harness's own default.
 - **Harness per role.** `pipeline.harness_by_role` (optional) runs a role on a different harness than yours, for example `{"reviewer": "codex"}` so the Reviewer doesn't share the Implementer's model family and blind spots. For each launch use the section below for `HARNESS_<ROLE>` when it is set, otherwise the harness you run on, and pass that name to `report --harness`. The read-only launch of each section still applies to the Reviewer, so check the [harness matrix](https://github.com/Drix10/agent-flow/blob/main/docs/HARNESS-MATRIX.md) before pointing the Reviewer at a harness whose read-only cell isn't ✅. A value that isn't `claude`, `codex`, `gemini` or `pi`, a missing CLI or a failed login is `role_failed` → Needs Me, never a silent fallback to the Implementer's harness. On the last allowed round (`R` = `LIMIT`) the Implementer uses `HIGH_MODEL` when it is set.
+- **`LEAN`** is `pipeline.lean` (`lite` when unset): the Implementer and Reviewer prompts end with `Lean level: $LEAN.`, which their skills read. It is read from the default branch, so a branch can't switch it off for its own review.
 - **`MODEL`** for a launch: `FAST_MODEL` for the Implementer and QA; for the Reviewer, `FAST_MODEL` when `reviewer_tier` is `fast` and `HIGH_MODEL` when it is `high-reasoning`.
 - **`COMMANDS`**: the test, typecheck and lint commands exactly as `AGENTS.md` lists them, `;`-separated, or `none` when it lists none. QA reports `no_commands_defined` rather than invent one.
 - **`FINDINGS`** (set per round, not in `env.sh`): `none` in round 1. Otherwise the absolute path of the report that ended the previous round: `$A/qa-r$((R-1)).json` if it exists (QA failed), else `$A/review-r$((R-1)).json`. It is absolute because the Implementer works from the worktree, not the repo root.
@@ -137,7 +140,7 @@ node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- \
   claude -p ${FAST_MODEL:+--model "$FAST_MODEL"} \
   --permission-mode acceptEdits --allowedTools Bash,PowerShell,Skill \
   --output-format json \
-  "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS"
+  "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS. Lean level: $LEAN."
 ```
 
 **Reviewer.** `plan` mode plus a deny-list: no edits, no shell, no skill-loading (the prompt points at the skill file, which it reads). Both are enforced by Claude Code itself, and the guard hook blocks anything they miss.
@@ -148,7 +151,7 @@ node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- \
   claude -p ${MODEL:+--model "$MODEL"} \
   --permission-mode plan --disallowedTools Write,Edit,MultiEdit,NotebookEdit,Bash,PowerShell,Skill \
   --output-format json \
-  "Round $R of $LIMIT. Read .claude/skills/reviewer/SKILL.md and follow it. Packet: $A/ (issue.md, diff.patch, classification.json, implementer-r$R.json, and review-r$((R-1)).json if it exists). Worktree for reading context: $WT"
+  "Round $R of $LIMIT. Read .claude/skills/reviewer/SKILL.md and follow it. Packet: $A/ (issue.md, diff.patch, classification.json, implementer-r$R.json, and review-r$((R-1)).json if it exists). Worktree for reading context: $WT. Lean level: $LEAN."
 ```
 
 **QA.** A shell and read tools, no file-writing tools. Unlisted tools need an approval nobody is there to grant in `-p` mode, so they are denied; the guard blocks mutating commands (best effort), and SKILL.md's tree check catches anything that gets through.
@@ -177,14 +180,14 @@ node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- \
   codex exec ${FAST_MODEL:+-m "$FAST_MODEL"} -C "$WT" --sandbox workspace-write --add-dir "$GIT_COMMON" \
   ${CODEX_NET:+-c sandbox_workspace_write.network_access=true} \
   --output-schema "$A/implementer.strict.schema.json" -o "$A/implementer-r$R.last" \
-  "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT. Findings to address: $FINDINGS"
+  "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT. Findings to address: $FINDINGS. Lean level: $LEAN."
 
 # Reviewer: read-only sandbox, enforced by the OS, not a prompt
 node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- \
   AGENT_FLOW_ROLE=reviewer \
   codex exec ${MODEL:+-m "$MODEL"} -C "$WT" --sandbox read-only \
   --output-schema "$A/review.strict.schema.json" -o "$A/review-r$R.last" \
-  "Use the reviewer skill. Round $R of $LIMIT. Packet: $A/"
+  "Use the reviewer skill. Round $R of $LIMIT. Packet: $A/. Lean level: $LEAN."
 
 # QA: workspace-write, because test runners write caches, coverage and node_modules; read-only
 # turns those into false failures. The before/after tree check in SKILL.md catches real mutation.
@@ -207,10 +210,10 @@ Headless Gemini exits with a fatal error in an untrusted folder. Have the user t
 ```bash
 node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=implementer AGENT_FLOW_WORKTREE="$WT" \
   gemini ${FAST_MODEL:+-m "$FAST_MODEL"} --approval-mode yolo \
-  -p "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS"
+  -p "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS. Lean level: $LEAN."
 node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=reviewer \
   gemini ${MODEL:+-m "$MODEL"} \
-  -p "Use the reviewer skill. Round $R of $LIMIT. Packet: $A/. Worktree for reading context: $WT"
+  -p "Use the reviewer skill. Round $R of $LIMIT. Packet: $A/. Worktree for reading context: $WT. Lean level: $LEAN."
 node "$A/run-role.mjs" "$A/qa-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=qa \
   gemini ${FAST_MODEL:+-m "$FAST_MODEL"} --approval-mode yolo \
   -p "Use the qa skill. Issue $N. Worktree: $WT (cd into it first). Commands: $COMMANDS"
@@ -224,9 +227,9 @@ The guard extension is active in every Pi process. `--tools` is an allowlist: to
 
 ```bash
 node "$A/run-role.mjs" "$A/implementer-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=implementer AGENT_FLOW_WORKTREE="$WT" \
-  pi -p ${FAST_MODEL:+--model "$FAST_MODEL"} "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS"
+  pi -p ${FAST_MODEL:+--model "$FAST_MODEL"} "Use the implementer skill. Round $R. Issue: $A/issue.md. Worktree: $WT (cd into it first). Findings to address: $FINDINGS. Lean level: $LEAN."
 node "$A/run-role.mjs" "$A/review-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=reviewer \
-  pi -p --tools read,grep,find,ls ${MODEL:+--model "$MODEL"} "Use the reviewer skill. Round $R of $LIMIT. Packet: $A/. Worktree for reading context: $WT"
+  pi -p --tools read,grep,find,ls ${MODEL:+--model "$MODEL"} "Use the reviewer skill. Round $R of $LIMIT. Packet: $A/. Worktree for reading context: $WT. Lean level: $LEAN."
 node "$A/run-role.mjs" "$A/qa-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=qa \
   pi -p --tools read,grep,find,ls,bash ${FAST_MODEL:+--model "$FAST_MODEL"} "Use the qa skill. Issue $N. Worktree: $WT (cd into it first). Commands: $COMMANDS"
 ```

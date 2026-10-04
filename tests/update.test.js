@@ -153,7 +153,7 @@ test("latestVersion asks the registry once, caches for a day, and returns null i
   // The registry runs in its own process: latestVersion blocks while it asks, so a server in this one could never answer.
   const server = spawn(process.execPath, ["-e", `
     const s = require("node:http").createServer((req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ "dist-tags": { latest: "7.8.9" } })); });
-    s.listen(0, "127.0.0.1", () => console.log(s.address().port));`], { stdio: ["ignore", "pipe", "ignore"] });
+    s.listen(0, "127.0.0.1", () => process.stdout.write(String(s.address().port)));`], { stdio: ["ignore", "pipe", "ignore"] });
   const port = await new Promise((resolve) => server.stdout.once("data", (d) => resolve(String(d).trim())));
   const prev = { reg: process.env.AGENT_FLOW_REGISTRY, home: process.env.AGENT_FLOW_HOME };
   try {

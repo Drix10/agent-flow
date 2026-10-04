@@ -16,6 +16,9 @@ Agent Flow runs next to autonomous agents that can edit your repository. This pa
 | Writes stay inside the repo: no `..`, absolute paths or symlink escapes. `bootstrap_write` also refuses trust files and manifest `protected_paths` | `extensions/lib/fsutil.ts#resolveInside` | `tests/tools.test.js` |
 | No shell-string execution; git revisions and branches are validated | `extensions/lib/git.ts` (`execFile` + `check-ref-format`) | `tests/tools.test.js` |
 | Review round cap and legal state transitions | `extensions/lib/state.ts` | `tests/tools.test.js`, `tests/cli.test.js` |
+| A pre-tool hook that never receives its input refuses the call (where protection is configured) instead of hanging until the harness kills it | `bin/agent-flow.js` (`readHookInput`) | `tests/hook-stdin.test.js` |
+| `agent-flow mcp` changes nothing: every tool is one of a short list of read-only CLI commands, arguments are validated first, no option can reach the CLI | `extensions/lib/mcp.ts` | `tests/mcp.test.js` |
+| `agent-flow uninstall` removes only files still equal to what install wrote, only agent-flow's own hook entries, and never a file that isn't valid JSON; a pipeline role can't run it | `bin/agent-flow.js`, `extensions/lib/uninstall.ts`, guard `roleMayRunCli` | `tests/uninstall.test.js` |
 | Secret values are never printed or written | `extensions/lib/risk.ts#findSecrets` (kind + line only) | `tests/tools.test.js`, `tests/cli.test.js` |
 
 ## Your files stay yours

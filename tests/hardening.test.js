@@ -1432,8 +1432,13 @@ test("init suggests protected_paths from what exists, but writes none", () => {
     writeFileSync(join(dir, "migrations", "001.sql"), "x\n");
     const r = run(dir, ["init", "--yes"]);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /Worth protecting here: migrations\/, \.github\/workflows\//);
-    assert.deepEqual(JSON.parse(readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8")).protected_paths, []);
+    // CI workflows are suggested as review-only, not as protected: protected would stop an unattended run on every CI change.
+    assert.match(r.stdout, /Worth protecting here: migrations\/ —/);
+    assert.doesNotMatch(r.stdout, /Worth protecting here:[^\n]*workflows/);
+    assert.match(r.stdout, /"review_paths": \[".github\/workflows\/"\]/);
+    const written = JSON.parse(readFileSync(join(dir, "CONTEXT_MANIFEST.json"), "utf-8"));
+    assert.deepEqual(written.protected_paths, []);
+    assert.equal(written.review_paths, undefined, "suggested, never written");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -80,6 +80,29 @@
         "type": "string"
       }
     },
+    "shortcuts": {
+      "type": "array",
+      "description": "Deliberate simplifications that cut a real corner, each marked in the code with a `lean:` comment. They go into the pull request and `agent-flow debt`, so a deferral can't quietly become permanent.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "where": {
+            "type": "string"
+          },
+          "ceiling": {
+            "type": "string"
+          },
+          "upgrade": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "where",
+          "ceiling",
+          "upgrade"
+        ]
+      }
+    },
     "context_stale": {
       "type": "array",
       "items": {

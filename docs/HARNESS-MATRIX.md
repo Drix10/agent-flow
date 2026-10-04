@@ -36,6 +36,36 @@ A ✅ from the CLI means the rule is enforced when the CLI is called. Whether th
 
 **OS sandbox:** bubblewrap 0.9.0 is installed in WSL Ubuntu 24.04 and a read-only bind test blocked a write. `agent-flow sandbox -- <cmd>` now wraps a command in bubblewrap (read-only filesystem except the worktree; options for a fully read-only tree, no network, a hidden home directory and extra writable directories are listed in the changelog). It is tested on Linux; not yet run on a Windows machine's WSL.
 
+## Session briefing and the status badge
+
+`install` also wires a short briefing so a session knows the rules before it runs into the guard (`agent-flow brief`: what is protected, what is review-only, what is always blocked, which checks must pass, how many issues wait on a person; facts only, never the free text of an issue). `--no-brief` leaves it out.
+
+| Host | Hook | Output shape | Status |
+|---|---|---|---|
+| Claude Code | `SessionStart`, and `SubagentStart` (a subagent never sees the parent's context) | raw text at `SessionStart`, `hookSpecificOutput` JSON at `SubagentStart` | unit-tested here; not run live |
+| Codex CLI | `SessionStart` in `.codex/hooks.json` | `hookSpecificOutput.additionalContext` | unit-tested here; not run live |
+| Cursor | `sessionStart` in `.cursor/hooks.json` (fails open, unlike the guard) | `additional_context` | unit-tested here. Cursor's `sessionStart` injection was live-verified by the [ponytail](https://github.com/DietrichGebert/ponytail) project; its `subagentStart` cannot add context, so subagents don't get the brief |
+| Gemini CLI, Copilot, Windsurf, OpenCode, Pi | none wired | | the hook event names and output shapes are unverified, so nothing is installed that could print the wrong thing into a session |
+
+`agent-flow brief` recognises Copilot, Qoder and ZCode hook environments too (`COPILOT_PLUGIN_DATA`, `QODER_SESSION_ID`, `ZCODE_APP_VERSION`, taken from ponytail's notes) and answers in their shapes, but `install` doesn't wire those hosts.
+
+Claude Code's `statusLine` can show `agent-flow statusline` (guard on or OFF, how many issues need you, are ready, are working). `install --harness claude --statusline` sets it when no `statusLine` exists; an existing one is never replaced.
+
+## More hosts: skills folders and rules files
+
+Instruction-tier. The paths below come from the ponytail project's agent-portability notes, not from running these hosts here, and none has a hook agent-flow can use to block a call: enforcement is the pre-commit hook (`hook install`) and CI, so treat every row as ❌ instructed in the table above.
+
+| Host | `install --harness` | Writes | Notes |
+|---|---|---|---|
+| Cline | `cline` | `.clinerules/agent-flow.md`, skills in `.agents/skills` | the rules file restates the guard's list and asks |
+| Kiro | `kiro` | `.kiro/steering/agent-flow.md` (`inclusion: always`), skills in `.agents/skills` | |
+| Qoder | `qoder` | `.qoder/rules/agent-flow.md`, skills in `.agents/skills` | Qoder also loads `AGENTS.md` on its own |
+| Swival | `swival` | `.swival/skills/` | also reads `AGENTS.md` |
+| Factory Droid | `factory` | `.factory/skills/` | also reads `AGENTS.md` up to the git root |
+| Command Code | `commandcode` | `.commandcode/skills/` | also reads `AGENTS.md` |
+
+`install` never writes a harness's files unless you named it, and `update` and `uninstall` act only on the harnesses that are installed (the install record names them; a hook file or rules file in place counts too).
+
 ## Everything else that reads `AGENTS.md`
 
 The CLI rows above (`doctor`, `classify`, `audit-risk`, `state`, the pre-commit hook) don't care which harness is running — they read your repo, your manifest and your git history, not the agent. So they already work, unmodified, with every other tool that has adopted the [AGENTS.md](https://agents.md) convention: Aider, Zed, Warp, Amp, opencode, goose, JetBrains Junie, RooCode, Kilo Code, Devin, Jules, Factory, and Augment Code among them. `npx @drix10/agent-flow install --harness agents` gives any of these a conventional `.agents/skills/` folder to point their own instructions at; only the harness-specific rows above (skill auto-discovery, a locked-down reviewer subagent) need a name in the table.

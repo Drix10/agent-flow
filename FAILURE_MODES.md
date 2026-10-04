@@ -176,8 +176,9 @@ v1.0.x marked most of these "Addressed" when they were only *instructed*. A self
 - Needs Me is for decisions, and it carries a brief built to be read in 60 seconds.
 - Low-risk changes can auto-merge when you opt in (`pipeline.auto_merge_low_risk`), using `gh pr merge --auto`, which still waits for CI.
 - Critical changes always get a human.
+- CI and test-list edits don't stop the run: `review_paths` lets agents add lines there, the pull request is a draft that waits for a person, and an edited line, or an added CI line that reaches secrets, goes back to the Implementer.
 
-**Status:** **Instructed**. Opt-in.
+**Status:** **Instructed**. Opt-in. The review-only paths are **Enforced** (guard, classifier and the `run` loop; `tests/review-paths.test.js`); the secrets check on added CI lines is a heuristic.
 
 **v1.0.x claimed** low-risk changes "auto-merge after QA". Nothing implemented that.
 
@@ -274,6 +275,22 @@ An account usage limit is handled: `run` reads the reset time from the harness e
 **Status:** **Enforced**. The test runs 12 processes in parallel.
 
 ---
+
+## FM-22: A hook that never gets its input fails open
+
+**What happens:** A harness wrapper swallows the JSON piped to a hook (a PowerShell `if {}` around the command did, on Windows). The hook waits for an end of input that never comes, the harness's own watchdog kills it, and a killed pre-tool hook lets the call through.
+
+**Fix:** The guard reads stdin with a bound (10 s, `AGENT_FLOW_HOOK_STDIN_MS`) and, when nothing arrives, refuses wherever protection is configured: a role, a manifest on disk or committed, or `AGENT_FLOW_GUARD_STRICT=1`. The stop gate and the status badge bound their reads too and let the turn end or print nothing; the briefing never reads stdin.
+
+**Status:** **Enforced** for the guard (`tests/hook-stdin.test.js`). Found by reading how the ponytail project handled the same Windows failure (its #443 and #790).
+
+## FM-23: A global plugin quietly changes a role
+
+**What happens:** A plugin or hook installed on the machine (not in the repo) adds context to every Claude Code session, including the Reviewer's and QA's. What the Reviewer judges, and what QA runs, then depends on whose machine it ran on. Ponytail's own benchmark was skewed this way: its baseline arm was running the skill.
+
+**Fix:** `pipeline.isolate_roles: true` launches each role with `--setting-sources project,local`, so only the repository's own settings (the guard hook included) apply.
+
+**Status:** **Enforced when set** (`tests/lean.test.js`); **opt-in**, because it also drops the user's own settings for roles. Not verified live against a machine with a global plugin.
 
 ## Report one
 
