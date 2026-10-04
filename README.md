@@ -24,23 +24,17 @@ Give an agent a task and walk away. Agent Flow runs it through separate **implem
 
 It is a Node.js CLI and skills package for Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf, Pi and other tools that read `AGENTS.md` (14 install targets plus Pi; see the [harness matrix](docs/HARNESS-MATRIX.md) for what each one enforces). It has no runtime dependencies and needs no `package.json` in the repository it sets up. Node.js 20 or later is required.
 
-### The same task, without and with Agent Flow
+### You hand off *"add a `--json` flag"* and leave
 
-You hand an agent *"add a `--json` flag so CI can parse the output"* and leave.
-
-**Without Agent Flow**
-
-- It writes the code, writes the tests and judges both itself, with one context and one set of blind spots.
-- CI fails because the new test isn't in the workflow's list. To get green it edits the workflow, or loosens the check.
-- Nothing stops it from pushing to `main`, force-pushing or skipping the commit hook.
-- You come back to a diff you have to read in full, and `AGENTS.md` still describes the old behaviour.
-
-**With Agent Flow**
-
-- One agent implements, a second reviews and a third runs the checks, each a separate process in its own git worktree that sees files, not the others' reasoning.
-- The new test goes into the CI list as an added line (`review_paths`). Anything else in CI, a protected path, `--no-verify` and a push to `main` are refused by the guard on Claude Code and Pi, and caught by the classifier and the pre-commit hook elsewhere.
-- A failing check goes back to the Implementer for another round, up to a cap, not to you.
-- You come back to a draft pull request and a short list from `agent-flow status` of what needs a person. `agent-flow doctor` flags context that no longer matches the code, and a hash-chained audit log records what happened.
+| | ❌ Without Agent Flow | ✅ With Agent Flow |
+|---|---|---|
+| **Who checks the work** | The agent that wrote it | A second agent reviews, a third runs the checks |
+| **The new test isn't in the CI list** | It edits the workflow or loosens the check to get green | It adds one line; every other CI change is refused |
+| **Push to `main`, force-push, `--no-verify`** | Nothing stops it | Refused by the guard (Claude Code, Pi) or caught by the pre-commit hook |
+| **A check fails** | You find out when you're back | It goes back to the Implementer, up to a round cap |
+| **When you're back** | A whole diff to read | A draft pull request and a short list of what needs you |
+| **Docs and context** | `AGENTS.md` describes the old behaviour | `agent-flow doctor` flags it |
+| **What happened** | Ask the agent | A hash-chained audit log |
 
 ## Quick start
 
