@@ -273,13 +273,16 @@ test("launch commands: Codex uses the strict schemas, Gemini shell roles can run
 });
 
 test("orchestrator skill: resume path, HEAD check, QA environment routing, idempotent PR, size", () => {
-  assert.match(skill, /`Working` → .*Resuming/);
-  assert.match(skill, /rev-parse HEAD/);
-  assert.match(skill, /qa_environment/);
-  assert.match(skill, /gh pr list --head agent\/issue-N --state open/);
-  assert.match(skill, /role_timeout/);
-  assert.ok(!/classify both first/.test(skill), "classify can't run before implementation");
-  assert.ok(skill.split("\n").length <= 250, `SKILL.md is ${skill.split("\n").length} lines`);
+  // The procedure lives in references/manual.md so a session that uses the CLI never loads it.
+  const procedure = `${skill}
+${read("skills/invoking-agents/references/manual.md")}`;
+  assert.match(procedure, /`Working` → .*Resuming/);
+  assert.match(procedure, /rev-parse HEAD/);
+  assert.match(procedure, /qa_environment/);
+  assert.match(procedure, /gh pr list --head agent\/issue-N --state open/);
+  assert.match(procedure, /role_timeout/);
+  assert.ok(!/classify both first/.test(procedure), "classify can't run before implementation");
+  assert.ok(skill.split("\n").length <= 80, `SKILL.md is ${skill.split("\n").length} lines`);
   assert.ok(!/enableAgents/.test(read(".gemini/agents/reviewer.md")), "subagents are on by default in Gemini CLI");
   assert.match(read(".claude/agents/reviewer.md"), /^skills:\n\s+- reviewer$/m);
 });

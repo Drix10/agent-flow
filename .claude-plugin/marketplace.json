@@ -1,5 +1,5 @@
 {
-    "description": "Plugins for AGENTS.md coding agents: context-drift detection, guardrails, and enforced Implement → Review → QA (agent-flow).",
+    "description": "Run AI coding agents unattended, safely: Implement → Review → QA as separate agents, a guard that blocks edits they must never make, and context that stays true to the code.",
     "name": "agent-flow-marketplace",
     "owner": {
         "name": "Drix10",
@@ -7,11 +7,11 @@
     },
     "plugins": [
         {
-            "description": "Keeps agent context true and agent pipelines honest: drift detection, guarded Implement → Review → QA, mechanical risk classification.",
+            "description": "Run AI coding agents unattended, safely: Implement → Review → QA as separate agents, a guard that blocks edits they must never make, and context that stays true to the code.",
             "homepage": "https://github.com/Drix10/agent-flow",
             "name": "agent-flow",
             "source": "./",
-            "version": "1.2.2"
+            "version": "1.2.3"
         }
     ]
 }

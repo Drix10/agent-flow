@@ -1,57 +1,28 @@
 # Docs Index
 
-> **Last full scan:** {{TIMESTAMP}}
-> **Total docs:** {{DOC_COUNT}}
-> **Stale docs:** {{STALE_COUNT}} ({{STALE_PERCENT}}%)
+Last full scan: {{TIMESTAMP}} · {{DOC_COUNT}} docs · {{STALE_COUNT}} stale ({{STALE_PERCENT}}%)
 
----
+## Active
 
-## Active Docs
+| Doc | Path | Status | Updated |
+|---|---|---|---|
+| {{DOC_1_TITLE}} | `{{DOC_1_PATH}}` | {{DOC_1_STATUS}} | {{DOC_1_DATE}} |
+| {{DOC_2_TITLE}} | `{{DOC_2_PATH}}` | {{DOC_2_STATUS}} | {{DOC_2_DATE}} |
 
-| Doc | Path | Status | Last Updated | Issue Wins |
-|-----|------|--------|-------------|-----------|
-| {{DOC_1_TITLE}} | `{{DOC_1_PATH}}` | {{DOC_1_STATUS}} | {{DOC_1_DATE}} | {{DOC_1_WINS}} |
-| {{DOC_2_TITLE}} | `{{DOC_2_PATH}}` | {{DOC_2_STATUS}} | {{DOC_2_DATE}} | {{DOC_2_WINS}} |
-| {{DOC_3_TITLE}} | `{{DOC_3_PATH}}` | {{DOC_3_STATUS}} | {{DOC_3_DATE}} | {{DOC_3_WINS}} |
+## Stale
 
----
-
-## Stale Docs (Needs Update)
-
-| Doc | Path | Stale Since | Reason |
-|-----|------|------------|--------|
+| Doc | Path | Since | Reason |
+|---|---|---|---|
 | {{STALE_1_TITLE}} | `{{STALE_1_PATH}}` | {{STALE_1_DATE}} | {{STALE_1_REASON}} |
 
-**Action:** Run `/repair-docs` (re-verifies the prose against code, then refreshes the manifest).
+Fix with `/repair-docs`: it re-verifies the prose against the code, then refreshes the manifest.
 
----
+## Missing
 
-## Missing Docs
+Code with no design doc:
 
-The following areas have code but no design doc:
+- `{{MISSING_1_PATH}}`: {{MISSING_1_DESCRIPTION}}
 
-- `{{MISSING_1_PATH}}` — {{MISSING_1_DESCRIPTION}}
-- `{{MISSING_2_PATH}}` — {{MISSING_2_DESCRIPTION}}
+## Archived
 
----
-
-## Doc Lifecycle
-
-1. **Draft** — created by agent during implementation
-2. **Active** — reviewed and merged
-3. **Stale** — code has changed, doc has not
-4. **Archived** — no longer relevant
-
----
-
-## Manifest
-
-```json
-{
-  "last_scan": "{{TIMESTAMP}}",
-  "docs": [
-    {"path": "{{DOC_1_PATH}}", "status": "{{DOC_1_STATUS}}", "last_updated": "{{DOC_1_DATE}}"}
-  ],
-  "stale_threshold_days": 30
-}
-```
+Superseded docs: marked here, not deleted.

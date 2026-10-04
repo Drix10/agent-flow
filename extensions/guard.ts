@@ -32,11 +32,15 @@ export default function (pi: ExtensionAPI) {
   const { role, warning } = parseRole(process.env.AGENT_FLOW_ROLE);
   const allowProtected = process.env.AGENT_FLOW_ALLOW_PROTECTED === "1";
   const allowSecretRead = process.env.AGENT_FLOW_ALLOW_SECRET_READ === "1";
-  let cache: { root: string; mtime: number; manifest: ContextManifest | null; error?: string } | null = null;
+  let cache: { root: string; mtime: number; at: number; manifest: ContextManifest | null; error?: string } | null = null;
   const roots = new Map<string, string>(); // cwd → main repo root (avoids a git spawn per tool call)
   const rootOf = (cwd: string) => {
     let r = roots.get(cwd);
-    if (!r) roots.set(cwd, (r = findRepoRoot(cwd)));
+    if (!r) {
+      // A session that wanders through many directories must not grow this for its whole life.
+      if (roots.size >= 256) roots.clear();
+      roots.set(cwd, (r = findRepoRoot(cwd)));
+    }
     return r;
   };
 
@@ -47,7 +51,10 @@ export default function (pi: ExtensionAPI) {
     } catch {
       /* no manifest */
     }
-    if (!cache || cache.root !== root || cache.mtime !== mtime) cache = { root, mtime, ...loadManifestForGuard(root) };
+    // The disk copy's mtime misses what the guard also reads from git (the committed floor, the default branch's
+    // review_paths), which changes on a commit or merge without touching the file: so the cache is short-lived too.
+    const now = Date.now();
+    if (!cache || cache.root !== root || cache.mtime !== mtime || now - cache.at > 5_000) cache = { root, mtime, at: now, ...loadManifestForGuard(root) };
     return cache;
   }
 
@@ -105,6 +112,7 @@ export default function (pi: ExtensionAPI) {
         read_only: role ? READ_ONLY_ROLES.includes(role) : false,
         worktree: process.env.AGENT_FLOW_WORKTREE ?? null,
         protected_paths: m.manifest?.protected_paths ?? [],
+        review_paths: m.manifest?.review_paths ?? [],
         manifest_error: m.error ?? null,
         allow_protected_override: allowProtected,
         enforcement: {

@@ -1,8 +1,8 @@
 ---
 name: bootstrap
 tags: [setup, scaffolding, agents-md, context-drift]
-description: Interactive agent-flow setup for a repository. Scans the repo read-only, proposes AGENTS.md (root + per module), DOCS_INDEX.md and CONTEXT_MANIFEST.json with a confidence marker on every claim, calibrates protected paths and risk boundaries with the user, and writes each file only after the human approves it. Use when setting up agent-flow, when context files are missing, or when migrating from Root_AGENT.md. Also use whenever the user wants an AGENTS.md (or CLAUDE.md/GEMINI.md) written for a repo that doesn't have one, says their coding agents keep getting confused about the codebase, asks to "onboard" or "document" a repo for AI agents, or wants to set protected paths / risk boundaries — even if they don't say "agent-flow" or "bootstrap" by name.
-compatibility: Requires git and Node 20+; runs through `npx @drix10/agent-flow`, so no package.json or node_modules is needed (any language). Pi gets the bootstrap_scan/bootstrap_write tools; other harnesses use `npx @drix10/agent-flow scan`/`template`/`schema` plus normal file edits with the user's approval.
+description: Interactive agent-flow setup. Scans the repo read-only, proposes AGENTS.md, DOCS_INDEX.md and CONTEXT_MANIFEST.json with a confidence marker per claim, asks the user for protected paths and risk boundaries, writes each file only after approval. Use when setting up agent-flow, when context files are missing, or when asked to write an AGENTS.md, onboard a repo for AI agents or set protected paths.
+compatibility: Needs git and Node 20+; runs through `npx @drix10/agent-flow` (no package.json needed). Pi has bootstrap_scan/bootstrap_write; elsewhere use `agent-flow scan`/`template`/`schema` and file edits the user approves.
 ---
 
 # Bootstrap
@@ -41,7 +41,7 @@ Commands
 ```
 
 Rules for the proposal:
-- **Keep it short.** Aim for under 150 lines at the root. Agents pay for every line on every task.
+- **Keep it short.** Under 150 lines at the root, under 60 per module (`agent-flow doctor` warns past 150). Agents pay for every line on every task: rules and traps only, detail goes in `docs/` and gets linked. Say each thing once; no tutorials, no restating what the code or `README.md` shows.
 - **No directory-tree dumps.** They go stale on the first rename. Describe what each module is *for*.
 - **Paths go in `backticks`.** `/doctor` checks every backticked path against the filesystem, so a wrong path gets caught. For a path you mention on purpose even though it no longer exists (history, a warning), add `<!-- agent-flow:ignore-refs -->` on that line.
 - **Only real commands.** Only commands that exist in `package.json`, the `Makefile`, or CI.
@@ -54,7 +54,7 @@ For monorepos: propose `<package>/AGENTS.md` for each package that has its own r
 
 Ask these one at a time. Never pre-fill the answers.
 
-1. **Protected paths.** "Which paths must agents never modify?" These are usually migrations, lockfiles, CI, security modules, and vendored code. They go into `protected_paths`, and the guard and pre-commit hook enforce them (directories included: `rm`, `mv` and whole-tree git rewrites that reach them are refused). Also ask which files an agent must never read (credentials, key material beyond `.env*`, which is always denied): those go into `deny_read`. Never invent either list; the human owns it.
+1. **Protected paths.** "Which paths must agents never modify?" These are usually migrations, lockfiles, security modules, and vendored code. (CI workflows are better review-only, below: protected stops an unattended run, review-only doesn't.) They go into `protected_paths`; the guard and pre-commit hook enforce them, directories included. Also ask which files an agent must never read (credentials, key material beyond `.env*`, always denied): `deny_read`. Never invent either list; the human owns it. Then, for CI: "Should agents be able to add a check to your CI workflows (a new test in the list), with you reviewing the pull request, instead of every CI change stopping an unattended run?" If yes, that is `review_paths` (usually `.github/workflows/`): agents may only add lines, an edited or removed line or one that reaches `secrets.*` goes back to them, and the pull request is a draft that waits for the human. Never list the same path in `protected_paths` (protected wins). Default is none.
 2. **Critical paths.** "Where are money, auth, contracts or PII?" These become `risk_boundaries` with `risk_level: critical`. Changes there get high-reasoning review, a draft PR, and human approval.
 3. **Low-risk paths.** "What is safe for mechanical edits?" (docs, tests, generated code). These become `risk_level: low`.
 4. **Auto-merge.** "Should low-risk changes that pass QA auto-merge?" Recommend **no** until the pipeline has shipped about 10 clean PRs in this repo. This sets `pipeline.auto_merge_low_risk`.
@@ -67,16 +67,16 @@ Ask these one at a time. Never pre-fill the answers.
 
 Patterns match with globs from the repo root: `*` stays inside one directory level only when it has a `/` before it (`src/*.ts`); `*.md` and `**/*.md` match at any depth, and `docs/` covers everything under it. When a diff matches several boundaries, the highest level wins, so a `low` test folder inside a `critical` tree stays critical. A context file that sits in a critical tree (`kernel/AGENTS.md` under `kernel/**`) makes its edits critical too: say so, and let the human choose.
 
-Show the resulting `risk_boundaries`, `protected_paths` and `gates` back to the human and get a yes.
+Show the resulting `risk_boundaries`, `protected_paths`, `review_paths` and `gates` back to the human and get a yes.
 
 ## Phase 4: Write (one confirmation per file)
 
-Call `bootstrap_write` once per file. It shows the human a confirmation dialog, refuses paths outside the repo, refuses an invalid manifest, and refuses secret-shaped content. It will not overwrite an existing file unless you pass `overwrite: true`, and it asks again when you do. On an overwrite it keeps the file's line endings, BOM and (for the manifest) indentation, saves the old file under `.agent-flow/backups/`, tells the human how many existing lines the new content removes, and refuses a manifest that drops any `protected_paths` / `risk_boundaries` entry or top-level key the current one has. Read the current file and carry everything over.
+Call `bootstrap_write` once per file. It asks the human to confirm, and refuses paths outside the repo, an invalid manifest and secret-shaped content. It won't overwrite unless you pass `overwrite: true` (and asks again); an overwrite keeps line endings, BOM and manifest indentation, backs up the old file under `.agent-flow/backups/`, says how many lines it removes, and refuses a manifest that drops a `protected_paths` / `risk_boundaries` entry or top-level key. Read the current file and carry everything over.
 
 1. `AGENTS.md`, plus one `AGENTS.md` per module.
 2. `CLAUDE.md` containing `@AGENTS.md`, if the user uses Claude Code (template: `CLAUDE.md`). If a `CLAUDE.md` already exists, propose adding the import line to it.
 3. `DOCS_INDEX.md` (template: `DOCS_INDEX.md`).
-4. `CONTEXT_MANIFEST.json`. You write the keys the human decided: `protected_paths`, `deny_read`, `secret_scan`, `risk_boundaries`, `gates`, `pipeline`, plus `version: "2"`, `repo` and `default_branch` from the scan (`npx @drix10/agent-flow schema manifest` is the contract). Don't build `context_files` by hand: write the context files first, then run `npx @drix10/agent-flow manifest sync` to preview and `… manifest sync --yes` to fill `context_files` from them. It records every path the prose names (and warns about named paths that don't exist), counts the confidence markers, and never touches the keys above. With no manifest yet, `npx @drix10/agent-flow init --yes` writes a starter you then edit. Don't leave any `{{PLACEHOLDER}}` in any file. `/doctor` fails on them.
+4. `CONTEXT_MANIFEST.json`. You write the keys the human decided: `protected_paths`, `review_paths`, `deny_read`, `secret_scan`, `risk_boundaries`, `gates`, `pipeline`, plus `version: "2"`, `repo` and `default_branch` from the scan (`npx @drix10/agent-flow schema manifest` is the contract). Don't build `context_files` by hand: write the context files first, then run `npx @drix10/agent-flow manifest sync` to preview and `… manifest sync --yes` to fill `context_files` from them. It records every path the prose names (and warns about named paths that don't exist), counts the confidence markers, and never touches the keys above. With no manifest yet, `npx @drix10/agent-flow init --yes` writes a starter you then edit. Don't leave any `{{PLACEHOLDER}}` in any file. `/doctor` fails on them.
 
 Outside Pi, show each file's full content and write it only after the human says yes.
 

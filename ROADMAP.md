@@ -23,7 +23,7 @@ The guard reads command text, so it has documented limits (`tests/redteam/corpus
 
 ## Later
 
-- MCP server exposing state, classify, doctor, audit and worktrees to every MCP client.
+- MCP: `agent-flow mcp` ships read-only (status, state, classify, debt, doctor, audit summary, gates, brief). Still to do: worktree tools and anything that writes, which would need the guard's judgement behind each call.
 - FM-13: multi-repo coordination.
 - FM-15: model-provider fallback and resumable runs.
 

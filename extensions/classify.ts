@@ -20,8 +20,9 @@ export default function (pi: ExtensionAPI) {
     label: "Risk classify",
     description:
       "Classify a change set by what it actually touches: protected paths (→ critical + violation), manifest risk_boundaries, " +
-      "dependency manifests (→ medium, needs risk review), path-segment heuristics when no boundaries are set. Returns risk_level, " +
-      "reviewer_tier, human_approval_required and reasons. Use after implementation; its result overrides any earlier guess.",
+      "dependency manifests (→ medium, needs risk review), manifest review_paths (→ medium, human_approval_required; review_violations when " +
+      "more than harmless added lines changed), path-segment heuristics when no boundaries are set. Returns risk_level, " +
+      "reviewer_tier, human_approval_required, review_required, review_violations and reasons. Use after implementation; its result overrides any earlier guess.",
     parameters: Type.Object({
       issue: Type.Optional(Type.Integer({ minimum: 1, description: "Classify .worktrees/issue-N (working tree + commits vs base)" })),
       base: Type.Optional(Type.String({ description: "Base revision (default: manifest default_branch or detected default branch)" })),

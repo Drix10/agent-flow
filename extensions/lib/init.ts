@@ -27,6 +27,8 @@ export interface InitPlan {
   existing_rules?: string[];
   /** Paths on disk that usually deserve `protected_paths`; suggested, never written — that call is the owner's. */
   suggested_protected_paths: string[];
+  /** CI workflows that suit `review_paths` (agents add lines, a person reviews); suggested, never written. */
+  suggested_review_paths: string[];
   /** Prose references that don't exist today — left out of the manifest; `doctor` reports them. */
   missing_references: { file: string; path: string }[];
 }
@@ -126,8 +128,12 @@ function suggestProtectedPaths(root: string): string[] {
       /* not there */
     }
   }
-  if (existsSync(join(root, ".github", "workflows"))) out.push(".github/workflows/");
   return out;
+}
+
+/** Paths agents can usefully add lines to while a person reviews: CI workflows. Suggested, never written. */
+function suggestReviewPaths(root: string): string[] {
+  return existsSync(join(root, ".github", "workflows")) ? [".github/workflows/"] : [];
 }
 
 export function planInit(root: string, opts: { version: string; now?: string }): InitPlan {
@@ -168,7 +174,7 @@ export function planInit(root: string, opts: { version: string; now?: string }):
   if (problems.length) throw new Error(`init built an invalid manifest (bug): ${problems.join("; ")}`);
   files.push({ path: MANIFEST_FILE, content: `${JSON.stringify(manifest, null, 2)}\n`, exists: existsSync(join(root, MANIFEST_FILE)) });
   const suggested = suggestProtectedPaths(root);
-  return { files, context_files: contextFiles, suggested_protected_paths: suggested, references: refCount, missing_references: missing, ...(existingRules.length && !existsSync(join(root, "AGENTS.md")) ? { existing_rules: existingRules } : {}) };
+  return { files, context_files: contextFiles, suggested_protected_paths: suggested, suggested_review_paths: suggestReviewPaths(root), references: refCount, missing_references: missing, ...(existingRules.length && !existsSync(join(root, "AGENTS.md")) ? { existing_rules: existingRules } : {}) };
 }
 
 /** The `$schema` pointer for an editor: the project's npm install, else the vendored runtime, else none. */

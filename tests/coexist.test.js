@@ -58,7 +58,11 @@ test("install merges the guard next to another pack's hooks and keeps every one 
     assert.ok(cmds("PreToolUse").some((c) => /agent-flow.*guard$/.test(c)));
     assert.ok(cmds("Stop").includes("node .claude/hooks/verify-gate.js"));
     assert.ok(cmds("Stop").some((c) => /gates stop$/.test(c)));
-    assert.deepEqual(cmds("SessionStart"), ["node .claude/hooks/start.js"]);
+    // Theirs stays first, untouched; the one thing install adds there is the briefing.
+    const starts = cmds("SessionStart");
+    assert.equal(starts[0], "node .claude/hooks/start.js");
+    assert.equal(starts.length, 2);
+    assert.match(starts[1], /agent-flow\.js" brief --event SessionStart$/);
     assert.deepEqual(s.permissions, THEIR_HOOKS.permissions);
     const before = readFileSync(join(dir, ".claude", "settings.json"), "utf-8");
     af(dir, "install", "--harness", "claude", "--stop-gate");

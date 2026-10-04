@@ -169,10 +169,11 @@ export function readJson<T = unknown>(path: string): JsonResult<T> {
 export function atomicWrite(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, content, "utf-8");
   try {
+    writeFileSync(tmp, content, "utf-8");
     renameSync(tmp, path);
   } catch (e) {
+    // A full disk fails the write halfway: don't leave the partial file behind.
     try {
       unlinkSync(tmp);
     } catch {

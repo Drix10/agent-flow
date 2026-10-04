@@ -15,10 +15,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib;
+let launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib, debtLib, uninstallLib, briefLib, statuslineLib, mcpLib;
 try {
-  [launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib] = await Promise.all(
-    ["launch", "orchestrate", "update", "fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners"].map(lib),
+  [launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib, debtLib, uninstallLib, briefLib, statuslineLib, mcpLib] = await Promise.all(
+    ["launch", "orchestrate", "update", "fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners", "debt", "uninstall", "brief", "statusline", "mcp"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -55,7 +55,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline"]);
+const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline", "fail-on-no-trigger", "keep-runtime", "keep-hook", "no-brief", "statusline"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -67,7 +67,7 @@ function fixBools(args) {
   return args;
 }
 
-const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner", "timeout", "commands", "limit-wait"];
+const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner", "timeout", "commands", "limit-wait", "event"];
 const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
 
 /** Closest candidate within edit distance 2, or null. */
@@ -112,6 +112,8 @@ Checks (CI-safe, read-only):
   config get <key>          One manifest value (e.g. pipeline.models.fast) as the pipeline reads it: the default branch's copy for pipeline, gates and policy
   gates [list|run|stop]     Run the manifest's gates (tests, lint, build); records exit codes, logs and hashes
                             run [--name a,b] [--issue <n>] [--json]; exit 1 if a required gate fails, 2 if one couldn't run
+  debt                      Ledger of deferred shortcuts: every \`lean:\` comment (a ceiling and when to upgrade), [no-trigger] where it names none
+      --fail-on-no-trigger  Exit 1 while any shortcut names no condition for revisiting it
   audit-risk                Diff risk surfaces against .risk-baseline.json
       --baseline <path>  --include-tests  --fail-on-new
   classify                  Mechanical risk level of a diff (vs the merge-base, so later commits on the base don't count)
@@ -142,16 +144,25 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
                             a role that hits a usage limit is run again after the reset, if that is within --limit-wait <hours> (default 6; 0 never waits)
   update [--yes] [--check] [--force]  Bring installed skills, hooks and the vendored runtime up to this version; edited files are kept
                             run it as: npx @drix10/agent-flow@latest update --yes   (--check exits 10 when an update is available, for scheduled CI)
+  uninstall [--harness <name>] [--yes] [--keep-runtime] [--keep-hook]
+                            Remove what install wrote and nothing else: unedited skills, agents and the vendored runtime, agent-flow's own
+                            hook entries (your other hooks stay), the pre-commit gate. Previews unless --yes. AGENTS.md, the manifest and your state are never touched
   codeowners [--yes] [--owner @x]  CODEOWNERS lines covering protected_paths; --yes appends the missing ones
   manifest sync [--yes]     Rebuild context_files from the AGENTS.md/CLAUDE.md files on disk; keeps protected paths, risk boundaries and gates
   sandbox [--ro] [--no-net] [--hide-home] [--allow <dir>] -- <cmd>
                             Run <cmd> under bubblewrap: read-only filesystem except this worktree (Linux/WSL)
+  brief [--event SessionStart|SubagentStart]
+                            What an agent should know about this repo's guard, in the output shape of the harness running the hook (the SessionStart hook install wires)
+  mcp                       A read-only MCP server on stdio (status, state, classify, debt, doctor, audit summary, gates, brief) for any MCP client; changes nothing
+  statusline                One short line for Claude Code's statusLine: guard on or OFF, how many issues need you, are ready, are working
   guard                     Claude Code PreToolUse hook: reads the hook JSON on stdin, exit 2 = blocked
   guard --check             Exit 1 unless the Claude Code hook is installed and its target exists
 
 Setup (writes files; run by a human):
   baseline accept --all --yes | baseline accept <key>... --yes
-  install --harness <claude|codex|gemini|cursor|copilot|windsurf|agents> [--dry-run] [--force] [--stop-gate] [--vendor]
+  install --harness <claude|codex|gemini|cursor|copilot|windsurf|opencode|cline|kiro|qoder|swival|factory|commandcode|agents> [--dry-run] [--force] [--stop-gate] [--vendor] [--no-brief] [--statusline]
+                            --statusline also sets Claude Code's statusLine to "agent-flow statusline", only if none is set
+                            --no-brief leaves out the SessionStart briefing hook (Claude Code, Codex, Cursor)
                             --vendor copies the runtime to .agent-flow-runtime/ for the hook (automatic outside an npm install; no package.json needed)
   hook install [--force]    Install the pre-commit hook (runs check-staged)
 
@@ -219,7 +230,8 @@ function cmdDoctor(args) {
   }
   const rep = r.report;
   const none = r.mode === "discovered" && r.context_files.length === 0 && !r.manifest;
-  out(args, { healthy: r.healthy, mode: r.mode, context_files: r.context_files, report: rep, manifest: r.manifest, legacy_schema: r.legacy_schema }, () => {
+  const weight = contextWeight(rt, r.context_files);
+  out(args, { healthy: r.healthy, mode: r.mode, context_files: r.context_files, context_weight: weight, report: rep, manifest: r.manifest, legacy_schema: r.legacy_schema }, () => {
     // A fresh repo isn't broken: nothing to drift yet, so this is a note and exit 0 (CI stays green).
     if (none) {
       warn(`no agent context files found (${CONTEXT_FILE_NAMES})`);
@@ -257,6 +269,11 @@ function cmdDoctor(args) {
     section("commands exist", rep.dead_commands, (m) => [`${m.file}${m.line ? `:${m.line}` : ""}`, `${m.command}${m.reason ? ` — ${m.reason}` : ""}${m.suggestion ? `  → did you mean ${c(1, m.suggestion)}?` : ""}`]);
     section("relative links resolve", rep.broken_links, (m) => [`${m.file}:${m.line}`, m.target]);
     section("cited commits exist", rep.unknown_commits, (m) => [`${m.file}:${m.line}`, m.sha]);
+    const heavy = weight.filter((w) => w.heavy);
+    if (heavy.length) {
+      warn(`context files over ${CONTEXT_MAX_LINES} lines: an agent pays for each one on every task`);
+      for (const w of heavy) console.log(`    ${w.file}  ${w.lines} lines, about ${w.tokens} tokens  ${dim("→ keep rules here; move detail to docs/ and link it")}`);
+    }
     reportCodeowners(rt, r.manifest, args);
     reportGateCoverage(rt, r.manifest);
     reportUpdate(rt, args);
@@ -266,6 +283,27 @@ function cmdDoctor(args) {
   // CI that runs on every push shouldn't go red because a calendar page turned: --allow-stale reports staleness
   // and fails only on what is actually broken (missing paths, schema, placeholders…).
   return none || r.healthy || (args["allow-stale"] && r.only_stale) ? 0 : 1;
+}
+
+/** A context file an agent reads on every task costs tokens on every task: past this size, say so (never fails the run). */
+const CONTEXT_MAX_LINES = 150;
+const CONTEXT_MAX_BYTES = 9_000;
+function contextWeight(rt, files) {
+  const rows = [];
+  for (const f of files) {
+    // The manifest is read by tools, not by agents; only the prose files are loaded into a session.
+    if (!/\.md$/i.test(f)|| escapesBaseDir(rt, join(rt, f))) continue;
+    let text;
+    try {
+      text = readFileSync(join(rt, f), "utf-8");
+    } catch {
+      continue;
+    }
+    const lines = text.split("\n").length;
+    const bytes = Buffer.byteLength(text);
+    rows.push({ file: f, lines, tokens: Math.round(bytes / 4), heavy: lines > CONTEXT_MAX_LINES || bytes > CONTEXT_MAX_BYTES });
+  }
+  return rows;
 }
 
 /** Advisory: a test file in a directory whose gate lists its tests one by one, but which no gate lists. */
@@ -470,6 +508,82 @@ function cmdAudit(args) {
   return 0;
 }
 
+/**
+ * `mcp`: a read-only Model Context Protocol server on stdio. Every tool runs this same CLI's `--json` command in the repo
+ * the server was started in. Only protocol messages ever go to stdout; diagnostics would go to stderr.
+ */
+async function cmdMcp() {
+  const rt = fsutil.findRepoRoot(process.cwd());
+  const run = (a) => {
+    const r = spawnSync(process.execPath, [SELF_BIN, ...a], { cwd: rt, encoding: "utf-8", env: { ...process.env, NO_COLOR: "1", AGENT_FLOW_OFFLINE: "1" }, timeout: 60_000, maxBuffer: 32 * 1024 * 1024 });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr || (r.error ? String(r.error.message) : "") };
+  };
+  await mcpLib.serve(process.stdin, process.stdout, { root: rt, version: VERSION, run });
+  return 0;
+}
+
+/**
+ * `statusline`: the badge for Claude Code's statusLine. Claude pipes a JSON description of the session on stdin; its
+ * workspace names the repo. Quick and silent: a failure prints nothing rather than an error in someone's status bar.
+ */
+async function cmdStatusline(args) {
+  try {
+    let dir = process.cwd();
+    if (!process.stdin.isTTY) {
+      const raw = await readHookInput(500);
+      try {
+        const ev = JSON.parse((raw ?? "").replace(/^\uFEFF/, "") || "{}");
+        dir = ev.workspace?.project_dir || ev.workspace?.current_dir || ev.cwd || dir;
+      } catch {
+        /* no usable input: use the working directory */
+      }
+    }
+    const text = statuslineLib.buildStatusline(fsutil.findRepoRoot(dir), { color: color || (!NO_COLOR && !process.stdout.isTTY) });
+    if (text) process.stdout.write(args.json ? JSON.stringify({ statusline: text }) : text);
+  } catch {
+    /* see above */
+  }
+  return 0;
+}
+
+/**
+ * `brief`: print what an agent should know about this repo's guard, shaped for the harness that runs the hook. Wired as a
+ * SessionStart (and, on Claude Code, SubagentStart) hook by `install`. It never reads stdin, never blocks and never fails:
+ * a briefing that errors must not stop a session from starting, so every problem prints nothing and exits 0.
+ */
+function cmdBrief(args) {
+  try {
+    const rt = fsutil.findRepoRoot(process.cwd());
+    const event = args.event === "SubagentStart" ? "SubagentStart" : "SessionStart";
+    const text = briefLib.formatForHost(briefLib.hostOf(), event, briefLib.buildBrief(rt, { role: guardLib.parseRole(process.env.AGENT_FLOW_ROLE).role }));
+    if (text) process.stdout.write(process.stdout.isTTY && !text.startsWith("{") ? `${text}\n` : text);
+  } catch {
+    /* see above */
+  }
+  return 0;
+}
+
+/** `debt`: the `lean:` shortcuts in the code, one row each, so a deferral can't quietly become permanent. */
+function cmdDebt(args) {
+  const rt = root();
+  const r = debtLib.scanDebt(rt);
+  const noTrigger = r.rows.filter((x) => x.no_trigger);
+  out(args, { markers: r.rows.length, no_trigger: noTrigger.length, truncated: r.truncated, rows: r.rows }, () => {
+    if (!r.rows.length) return ok("no lean: debt. Clean ledger.");
+    let file = "";
+    for (const x of r.rows) {
+      if (x.file !== file) {
+        file = x.file;
+        console.log(c(1, file));
+      }
+      console.log(`  :${x.line}  ${x.ceiling}${x.upgrade ? `  ${dim("→")} ${x.upgrade}` : ""}${x.no_trigger ? c(33, "  [no-trigger]") : ""}`);
+    }
+    console.log(`\n${r.rows.length} marker${r.rows.length === 1 ? "" : "s"}, ${noTrigger.length} with no trigger.${r.truncated ? " (file list truncated)" : ""}`);
+    if (noTrigger.length) console.log(dim("  A shortcut that names no condition for revisiting it is the one that rots: add `; when <trigger>` to its comment."));
+  });
+  return args["fail-on-no-trigger"] && noTrigger.length ? 1 : 0;
+}
+
 function cmdAuditLog(args) {
   const rt = root();
   const sub_ = args._[1];
@@ -556,13 +670,40 @@ function cmdGates(args) {
 }
 
 /**
+ * What a harness pipes to a hook, or null when it never ends. A wrapper can swallow the piped JSON (a PowerShell
+ * `if {}` around the command did), and `readFileSync(0)` then waits for an EOF that never comes: the hook hangs until
+ * the harness's own watchdog kills it, and a killed hook lets the tool call through. So the wait is bounded.
+ * AGENT_FLOW_HOOK_STDIN_MS overrides the bound (tests, slow machines).
+ */
+function readHookInput(defaultMs = 10_000) {
+  const ms = Number(process.env.AGENT_FLOW_HOOK_STDIN_MS) > 0 ? Number(process.env.AGENT_FLOW_HOOK_STDIN_MS) : defaultMs;
+  return new Promise((resolveInput) => {
+    let text = "";
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.stdin.pause();
+      resolveInput(value);
+    };
+    const timer = setTimeout(() => finish(null), ms);
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => (text += chunk));
+    process.stdin.on("end", () => finish(text));
+    process.stdin.on("error", () => finish(null));
+  });
+}
+
+/**
  * Claude Code Stop hook: exit 2 + reason on stderr keeps the session working, exit 0 lets it stop. Never traps a
  * session: bounded per turn (see stopgate.ts), and an error in the hook itself lets the stop through.
  */
-function gatesStop(rt, man) {
+async function gatesStop(rt, man) {
   let ev = {};
   try {
-    ev = JSON.parse(readFileSync(0, "utf-8").replace(/^\uFEFF/, "") || "{}"); // Cursor on Windows prefixes stdin with a BOM
+    const raw = await readHookInput(5_000);
+    ev = JSON.parse((raw ?? "").replace(/^\uFEFF/, "") || "{}"); // Cursor on Windows prefixes stdin with a BOM
   } catch {
     /* no hook input: treat as a fresh stop */
   }
@@ -634,6 +775,8 @@ function cmdClassify(args) {
     console.log(`risk: ${c(col, r.risk_level)}  reviewer: ${r.reviewer_tier}  human approval: ${r.human_approval_required ? "required" : "no"}  ${dim(`${r.files.length} files vs ${r.base}`)}`);
     for (const reason of r.reasons) console.log(`  - ${reason}`);
     if (r.protected_violations.length) bad(`protected paths touched: ${r.protected_violations.join(", ")}`);
+    if (r.review_required.length) warn(`review-only paths changed (a person reviews the pull request): ${r.review_required.join(", ")}`);
+    for (const v of r.review_violations) bad(`review-only path ${v.file}: ${v.why}`);
     for (const v of r.policy_violations) bad(`policy (${v.rule}): ${v.message}`);
     if (r.used_heuristics) warn("no risk_boundaries in the manifest: the level above is a path-name guess");
   });
@@ -1015,7 +1158,7 @@ function guardCheck(args) {
   return okay ? 0 : 1;
 }
 
-function cmdGuard(args) {
+async function cmdGuard(args) {
   if (args.check) return guardCheck(args);
   // A guard that broke must not become a way past it: refuse whenever a role, a manifest (on disk or
   // committed) or AGENT_FLOW_GUARD_STRICT=1 says protection is wanted. Only an unconfigured session is left alone.
@@ -1026,7 +1169,10 @@ function cmdGuard(args) {
   const env = guardLib.parseRole(process.env.AGENT_FLOW_ROLE);
   let ev;
   try {
-    ev = JSON.parse(readFileSync(0, "utf-8").replace(/^\uFEFF/, "") || "{}"); // Cursor on Windows prefixes stdin with a BOM
+    const raw = await readHookInput();
+    // Nothing arrived and the pipe never closed: not an allow. Refuse wherever protection is wanted (same rule as a guard error).
+    if (raw === null) return fail(env.role, "no hook input arrived on stdin (a wrapper may be swallowing it), so this call can't be checked");
+    ev = JSON.parse(raw.replace(/^\uFEFF/, "") || "{}"); // Cursor on Windows prefixes stdin with a BOM
   } catch (e) {
     return fail(env.role, `unreadable hook input: ${e.message}`);
   }
@@ -1074,6 +1220,8 @@ function cmdGuard(args) {
 
 // --- install --------------------------------------------------------------
 
+const RULE_NOTE = "has no hook agent-flow can use to block a call, so enforcement here is the pre-commit hook (`agent-flow hook install`) and CI; the rules file only asks.";
+
 const TARGETS = {
   claude: { skills: ".claude/skills", agents: [[".claude/agents/reviewer.md", ".claude/agents/reviewer.md"]], note: "" },
   codex: {
@@ -1097,8 +1245,43 @@ const TARGETS = {
     plugin: true,
     note: "Wrote .opencode/plugins/agent-flow-guard.js: a tool.execute.before plugin that runs agent-flow's guard before every tool call and denies the call on a block. Restart opencode to load it. Live verification pending: run the probe in docs/HARNESS-MATRIX.md.",
   },
+  // Hosts whose skills folder or rules file follows a documented convention. Not run live here: instruction-tier, so none of them is listed as enforcing in docs/HARNESS-MATRIX.md.
+  swival: { skills: ".swival/skills", agents: [], note: "Swival also reads AGENTS.md from the project root. It has no hook agent-flow can use to block a call, so enforcement here is the pre-commit hook and CI." },
+  factory: { skills: ".factory/skills", agents: [], note: "Factory Droid reads AGENTS.md from the working directory up to the git root. It has no hook agent-flow can use to block a call, so enforcement here is the pre-commit hook and CI." },
+  commandcode: { skills: ".commandcode/skills", agents: [], note: "Command Code reads AGENTS.md as project memory. It has no hook agent-flow can use to block a call, so enforcement here is the pre-commit hook and CI." },
+  cline: { skills: ".agents/skills", agents: [["templates/rules/agent-flow.md", ".clinerules/agent-flow.md"]], note: `Wrote .clinerules/agent-flow.md. Cline ${RULE_NOTE}` },
+  kiro: { skills: ".agents/skills", agents: [["templates/rules/agent-flow.kiro.md", ".kiro/steering/agent-flow.md"]], note: `Wrote .kiro/steering/agent-flow.md (always included). Kiro ${RULE_NOTE}` },
+  qoder: { skills: ".agents/skills", agents: [["templates/rules/agent-flow.md", ".qoder/rules/agent-flow.md"]], note: `Wrote .qoder/rules/agent-flow.md; Qoder also loads AGENTS.md on its own. Qoder ${RULE_NOTE}` },
   agents: { skills: ".agents/skills", agents: [], note: ".agents/skills is the cross-client convention — also the right target for Aider, Zed, Warp, Amp, opencode, goose, JetBrains Junie, RooCode, and anything else that reads AGENTS.md but has no harness-specific integration below." },
 };
+
+/**
+ * Which harnesses are installed in `rt`. Several share one skills folder (.agents/skills), so the folder alone can't say
+ * which: a harness counts when the install record names it, or its own wiring (a hook file, the OpenCode plugin, a rules
+ * file) is in place. `update` and `uninstall` both ask this, so neither treats a harness nobody installed as installed
+ * (which would write its rules file on update and report it on uninstall).
+ */
+function installedHarnesses(rt) {
+  const everything = Object.keys(TARGETS);
+  const wired = (rel) => {
+    try {
+      return readFileSync(join(rt, rel), "utf-8").includes("agent-flow");
+    } catch {
+      return false;
+    }
+  };
+  const ownWiring = (h) => (h === "claude" ? wired(".claude/settings.json") : TARGETS[h].hook ? wired(HOOK_FILES[TARGETS[h].hook].path) : TARGETS[h].plugin ? wired(".opencode/plugins/agent-flow-guard.js") : TARGETS[h].agents.some(([, to]) => wired(to)));
+  const present = (h) => existsSync(join(rt, TARGETS[h].skills, "bootstrap")) || !!updateLib.readRecord(rt, TARGETS[h].skills);
+  const installed = everything.filter((h) => present(h) && (updateLib.readRecord(rt, TARGETS[h].skills)?.harness === h || ownWiring(h)));
+  const byDir = (dir) => everything.filter((h) => TARGETS[h].skills === dir && present(h));
+  // An install from before the record existed: the folder is there, but nothing names whose it is.
+  for (const dir of new Set(everything.map((h) => TARGETS[h].skills))) {
+    const owners = byDir(dir);
+    // The generic `agents` target is the one that owns a shared folder when nothing says otherwise.
+    if (owners.length && !owners.some((h) => installed.includes(h))) installed.push(owners.includes("agents") ? "agents" : owners[0]);
+  }
+  return installed;
+}
 
 function sameTree(a, b) {
   if (!existsSync(b)) return false;
@@ -1318,6 +1501,7 @@ ${signal}: stopped ${stopped} running role${stopped === 1 ? "" : "s"}. Progress 
       ok(`Done and checked, not pushed. Branch ${r.branch}${cost}`);
       console.log(dim(`  risk:     ${r.risk ?? "unknown"}`));
       if (r.risk === "critical") warn(`This touches a critical area. Read the diff yourself before publishing: \`run ${r.issue} --pr\` opens a draft pull request that waits for your review`);
+      else if (r.human_review) warn(`This changes CI or test configuration (review-only paths). Read the diff before publishing: \`run ${r.issue} --pr\` opens a draft pull request that waits for your review`);
       console.log(dim(`  look:     git -C ${relative(rt, r.worktree) || r.worktree} log --oneline -5 && git -C ${relative(rt, r.worktree) || r.worktree} diff --stat`));
       console.log(dim(`  publish:  agent-flow run ${r.issue} --pr`));
     } else if (r.status === "completed") ok(`Already finished: ${r.reason ?? ""}`);
@@ -1328,6 +1512,9 @@ ${signal}: stopped ${stopped} running role${stopped === 1 ? "" : "s"}. Progress 
       if (r.category === "protected_path") {
         // A protected path is a person's to change; the Implementer is told to stop, with or without the guard override.
         console.log(dim("  then:     change it yourself: agents may not edit protected paths"));
+      } else if (r.category === "review_required" || r.category === "critical_change_needs_human") {
+        // The work is done and pushed; what is left is a person reading the diff.
+        console.log(dim(`  then:     read the diff and merge the pull request${r.pr ? `: ${r.pr}` : ""}`));
       } else {
         const raise = r.category === "max_rounds_exceeded" ? "raise pipeline.max_review_rounds in CONTEXT_MANIFEST.json, then " : r.category === "budget_exceeded" ? "raise pipeline.max_cost_usd in CONTEXT_MANIFEST.json, then " : r.category === "SPEC_ERROR" ? `fix the criteria in ${relative(rt, r.artifacts)}/issue.md, then ` : "";
         console.log(dim(`  then:     ${raise}to go on: ${sendBack}; agent-flow run ${r.issue}`));
@@ -1370,6 +1557,8 @@ function cmdStatus(args) {
     const crit = (man.risk_boundaries ?? []).filter((b) => b.risk_level === "critical").length;
     if (prot) add("Protection", "ok", `${prot} protected path${prot === 1 ? "" : "s"}, ${crit} critical area${crit === 1 ? "" : "s"}`);
     else add("Protection", "warn", "no protected paths set: only secrets and git internals are guarded", "ask Claude to use the bootstrap skill and answer the risk questions");
+    const reviewOnly = manifestLib.reviewPathsOf(man).length;
+    if (reviewOnly) add("Protection", "ok", `${reviewOnly} review-only path${reviewOnly === 1 ? "" : "s"}: agents may add lines (a new CI test), a person reviews the pull request`);
     if (crit && !man.pipeline?.models?.high_reasoning) {
       add("Protection", "warn", `${crit} critical area${crit === 1 ? "" : "s"}, but no stronger model is set for reviewing them, so a critical change is reviewed by the same model as any other`, 'add "models": { "high_reasoning": "<model>" } under "pipeline" in CONTEXT_MANIFEST.json');
     }
@@ -1406,12 +1595,29 @@ function cmdStatus(args) {
   const sessions = state.readState(rt).sessions ?? [];
   const waiting = sessions.filter((s) => s.state === "Needs Me");
   const working = sessions.filter((s) => s.state === "Working");
-  if (waiting.length) for (const s of waiting) add("Work", "warn", `#${s.issue} needs you: ${String(s.reason ?? "").slice(0, 160)}`, `decide, then: agent-flow state update --issue ${s.issue} --state Working --phase implement --round ${Math.max(1, Number(s.round) || 1)}; agent-flow run ${s.issue}`);
+  if (waiting.length) for (const s of waiting) {
+    // Finished work waiting for a person to read the diff isn't a decision to send back: merge it, then close the issue.
+    const review = /^(review_required|critical_change_needs_human):/.test(String(s.reason ?? ""));
+    add("Work", "warn", `#${s.issue} needs you: ${String(s.reason ?? "").slice(0, 160)}`, review
+      ? `read the pull request and merge it, then: agent-flow state update --issue ${s.issue} --state Completed --reason "merged"`
+      : `decide, then: agent-flow state update --issue ${s.issue} --state Working --phase implement --round ${Math.max(1, Number(s.round) || 1)}; agent-flow run ${s.issue}`);
+  }
   else add("Work", "ok", "nothing is waiting on you");
   for (const s of working) {
     // The publish checkpoint is recorded once review, gates and QA have passed: finished, waiting for a person to publish.
     if (s.phase === "publish") add("Work", "info", `#${s.issue} is ready: reviewed, checked, not pushed`, `agent-flow run ${s.issue} --pr  to open the pull request`);
     else add("Work", "info", `#${s.issue} in progress (round ${s.round ?? 1}, ${s.phase ?? "?"})`, `agent-flow run ${s.issue}  to resume`);
+  }
+
+  // Deferred shortcuts (`lean:` comments): quiet unless there are some.
+  try {
+    const debt = debtLib.scanDebt(rt, { maxFiles: 20_000, budgetMs: 1_500 });
+    if (debt.rows.length) {
+      const noTrigger = debt.rows.filter((x) => x.no_trigger).length;
+      add("Work", noTrigger ? "warn" : "info", `${debt.rows.length} deferred shortcut${debt.rows.length === 1 ? "" : "s"} (lean: comments)${noTrigger ? `, ${noTrigger} with no trigger to revisit them` : ""}`, "agent-flow debt");
+    }
+  } catch {
+    /* a scan that fails must not take the status screen with it */
   }
 
   // Updates
@@ -1439,7 +1645,8 @@ function cmdStatus(args) {
 /** What install wrote, as hashes, so `update` can tell an older agent-flow file from one you edited. */
 function recordInstall(rt, harness, t, plan, opts = {}) {
   const prev = updateLib.readRecord(rt, t.skills);
-  const files = {};
+  // Several harnesses can share one skills folder, hence one record: what another of them wrote stays listed.
+  const files = { ...(prev?.files ?? {}) };
   // A file is recorded only if it is exactly what this agent-flow writes. One the user edited (install refused to
   // overwrite it, update kept it) keeps its old record or none, so a later update still sees it as edited.
   for (const [src, dst, label] of plan) {
@@ -1475,7 +1682,7 @@ function cmdUpdate(args) {
     });
     return args.check && available ? 10 : 0;
   }
-  const installed = Object.keys(TARGETS).filter((h) => updateLib.readRecord(rt, TARGETS[h].skills) || existsSync(join(rt, TARGETS[h].skills, "bootstrap")));
+  const installed = installedHarnesses(rt);
   if (!installed.length && !vendored) throw new UserError("nothing to update: run `agent-flow install --harness <name>` first");
   const items = [];
   const add = (harness, label, src, dst, recorded, extra = {}) => {
@@ -1583,6 +1790,187 @@ function cmdUpdate(args) {
   ok(`updated to ${VERSION}${kept.length && !args.force ? `; ${kept.length} edited file(s) kept` : ""}`);
   console.log(dim("review with git diff, then commit"));
   return 0;
+}
+
+/**
+ * `uninstall [--harness <name>] [--yes] [--keep-runtime] [--keep-hook]`: take out what `install` wrote and nothing else.
+ * A skill, agent or plugin file is removed only if it is still exactly what install (or this version) writes; one
+ * you edited is kept and listed. In the hook files install merged into, only agent-flow's own entries go; everything
+ * else in them stays. Previews unless given --yes. Context you wrote or approved (AGENTS.md, the manifest, CODEOWNERS,
+ * the risk baseline, the pipeline's state) is never touched: those are yours.
+ */
+function cmdUninstall(args) {
+  const rt = root();
+  const everything = Object.keys(TARGETS);
+  if (typeof args.harness === "string" && !Object.hasOwn(TARGETS, args.harness)) return unknown("harness", args.harness, everything, `usage: agent-flow uninstall [--harness <${everything.join("|")}>]`);
+  const vendorDir = join(rt, VENDOR_DIR);
+  const installed = installedHarnesses(rt);
+  if (!installed.length && !existsSync(vendorDir)) throw new UserError("nothing to uninstall: `agent-flow install` has not been run here");
+  const chosen = typeof args.harness === "string" ? installed.filter((h) => h === args.harness) : installed;
+  if (!chosen.length) throw new UserError(`${args.harness} is not installed here (installed: ${installed.join(", ") || "none"})`);
+  const remaining = installed.filter((h) => !chosen.includes(h));
+  const fullUninstall = remaining.length === 0;
+  const stillUsed = new Map(remaining.map((h) => [TARGETS[h].skills, h]));
+  const items = [];
+  const add = (item) => items.push(item);
+  const doneDirs = new Set();
+  const doneHooks = new Set();
+  const records = new Map();
+
+  for (const h of chosen) {
+    const t = TARGETS[h];
+    const rec = updateLib.readRecord(rt, t.skills);
+    if (!records.has(t.skills)) records.set(t.skills, rec);
+    const check = (label, src, dst) => {
+      const onDisk = updateLib.hashTree(dst);
+      if (onDisk === null) return;
+      const mine = onDisk === rec?.files[label] || (src !== null && onDisk === updateLib.hashTree(src));
+      add({ harness: h, label, action: mine ? "remove" : "keep_edited", path: dst, note: mine ? undefined : "edited since install" });
+    };
+    // Several harnesses can share one skills folder (.agents/skills): it goes only when none of them still needs it.
+    // What is this harness's alone (its agent definitions, its rules file, its plugin) goes either way.
+    if (!doneDirs.has(t.skills)) {
+      doneDirs.add(t.skills);
+      if (stillUsed.has(t.skills)) {
+        add({ harness: h, label: `${t.skills}/`, action: "keep_shared", note: `still used by ${stillUsed.get(t.skills)}` });
+      } else {
+        for (const name of readdirSync(join(pkgRoot, "skills")).sort()) {
+          const src = join(pkgRoot, "skills", name);
+          if (statSync(src).isDirectory()) check(`${t.skills}/${name}`, src, join(rt, t.skills, name));
+        }
+      }
+    }
+    for (const [from, to] of t.agents) check(to, join(pkgRoot, from), join(rt, to));
+    if (t.plugin) {
+      const label = ".opencode/plugins/agent-flow-guard.js";
+      const binRel = existsSync(vendorDir) ? join(VENDOR_DIR, "bin", "agent-flow.js") : relative(rt, join(pkgRoot, "bin", "agent-flow.js"));
+      const body = readFileSync(join(pkgRoot, "templates/opencode/agent-flow-guard.js"), "utf-8").replace("__AGENT_FLOW_BIN__", () => binRel.replace(/\\/g, "/"));
+      const dst = join(rt, label);
+      const onDisk = updateLib.hashTree(dst);
+      if (onDisk !== null) {
+        const mine = onDisk === rec?.files[label] || onDisk === updateLib.hashContent(body);
+        add({ harness: h, label, action: mine ? "remove" : "keep_edited", path: dst, note: mine ? undefined : "edited since install" });
+      }
+    }
+  }
+
+  // The hook files install merged into: only our entries leave.
+  for (const h of chosen) {
+    const t = TARGETS[h];
+    const files = [];
+    if (h === "claude") files.push({ rel: ".claude/settings.json", flat: false });
+    if (t.hook) files.push({ rel: HOOK_FILES[t.hook].path, flat: !HOOK_FILES[t.hook].wrap });
+    for (const { rel, flat } of files) {
+      if (doneHooks.has(rel) || !existsSync(join(rt, rel))) continue;
+      doneHooks.add(rel);
+      const path = join(rt, rel);
+      const raw = readFileSync(path, "utf-8");
+      let settings;
+      try {
+        settings = JSON.parse(raw.replace(/^\uFEFF/, ""));
+      } catch {
+        add({ harness: h, label: rel, action: "keep_unreadable", note: "not valid JSON, so left exactly as it is: remove agent-flow's hook entries by hand" });
+        continue;
+      }
+      if (!settings || typeof settings !== "object" || Array.isArray(settings)) continue;
+      const r = uninstallLib.stripOurHooks(settings, flat);
+      if (!r.removed) continue;
+      add({ harness: h, label: rel, action: r.empty ? "delete_file" : "strip_hooks", path, removed: r.removed, config: r.config, raw, note: r.empty ? "nothing else was in it" : "your other settings and hooks stay" });
+    }
+  }
+
+  // Beyond the harnesses: the pre-commit gate and the vendored runtime go with the last harness.
+  if (fullUninstall) {
+    const hooksDir = git.git(["rev-parse", "--git-path", "hooks"], rt);
+    const hookPath = hooksDir.ok ? join(resolve(rt, hooksDir.stdout.trim()), "pre-commit") : null;
+    if (hookPath && !args["keep-hook"] && existsSync(hookPath)) {
+      if (readFileSync(hookPath, "utf-8").includes(HOOK_MARKER)) add({ harness: "-", label: relative(rt, hookPath).replace(/\\/g, "/"), action: "remove", path: hookPath, note: "agent-flow's pre-commit gate (a backup of an earlier hook, pre-commit.bak-*, is kept)" });
+      else add({ harness: "-", label: relative(rt, hookPath).replace(/\\/g, "/"), action: "keep_edited", note: "not agent-flow's hook" });
+    }
+    if (existsSync(vendorDir) && !args["keep-runtime"]) {
+      const recorded = [...records.values()].map((r) => r?.files[VENDOR_DIR]).find(Boolean);
+      const onDisk = updateLib.hashTree(vendorDir);
+      if (recorded && onDisk === recorded) add({ harness: "-", label: `${VENDOR_DIR}/`, action: "remove", path: vendorDir, note: "the vendored runtime, unmodified since install" });
+      else add({ harness: "-", label: `${VENDOR_DIR}/`, action: "keep_edited", note: recorded ? "modified since install" : "no install record to compare it with: delete it yourself once nothing needs it" });
+    }
+  } else if (existsSync(vendorDir)) {
+    add({ harness: "-", label: `${VENDOR_DIR}/`, action: "keep_shared", note: `still used by ${remaining.join(", ")}` });
+  }
+
+  const apply = !!args.yes && !args["dry-run"];
+  const leftAlone = ["AGENTS.md", "CLAUDE.md (its @AGENTS.md import)", "CONTEXT_MANIFEST.json", "DOCS_INDEX.md", "CODEOWNERS", ".risk-baseline.json", ".agent-state.json and AGENT_STATE.md", ".agent-flow/ (audit log, artifacts)", ".git/info/exclude entries"];
+  if (apply) {
+    const dirsTouched = new Set();
+    for (const it of items) {
+      if (it.action === "remove") {
+        rmSync(it.path, { recursive: true, force: true });
+        dirsTouched.add(dirname(it.path));
+      } else if (it.action === "delete_file") {
+        rmSync(it.path, { force: true });
+        dirsTouched.add(dirname(it.path));
+      } else if (it.action === "strip_hooks") {
+        const text = `${JSON.stringify(it.config, null, mergeLib.detectJsonIndent(it.raw))}\n`;
+        writeFileSync(it.path, it.raw.startsWith("\uFEFF") ? `\uFEFF${text}` : text);
+      }
+    }
+    // The runtime's hash lives in a record; if the one that held it is leaving, hand it to a harness that stays, so a later
+    // full uninstall can still tell an untouched runtime from a patched one.
+    const vendorHash = [...records.values()].map((r) => r?.files[VENDOR_DIR]).find(Boolean);
+    if (vendorHash && existsSync(vendorDir) && !items.some((i) => i.label === `${VENDOR_DIR}/` && i.action === "remove")) {
+      for (const h of remaining) {
+        const other = updateLib.readRecord(rt, TARGETS[h].skills);
+        if (other && !other.files[VENDOR_DIR]) updateLib.writeRecord(rt, TARGETS[h].skills, { ...other, files: { ...other.files, [VENDOR_DIR]: vendorHash } });
+      }
+    }
+    // The install record lists what was written; drop what is gone, and the record itself once nothing is left.
+    for (const [skills, rec] of records) {
+      if (!rec) continue;
+      const kept = Object.fromEntries(Object.entries(rec.files).filter(([label]) => {
+        // The runtime is shared: a harness that leaves stops listing it, one that stays keeps listing it.
+        if (label === VENDOR_DIR) return stillUsed.has(skills) && !items.some((i) => i.label === `${VENDOR_DIR}/` && i.action === "remove");
+        return !items.some((i) => i.label === label && i.action === "remove");
+      }));
+      const path = updateLib.recordPath(rt, skills);
+      // A folder another harness still uses keeps its record, now naming that harness (it holds one name, the last installed).
+      const owner = stillUsed.get(skills);
+      if (Object.keys(kept).length) updateLib.writeRecord(rt, skills, { ...rec, ...(owner ? { harness: owner } : {}), files: kept });
+      else {
+        rmSync(path, { force: true });
+        dirsTouched.add(dirname(path));
+      }
+    }
+    // Empty folders install created go too, innermost first; a folder with anything of yours in it stays.
+    for (const start of dirsTouched) {
+      for (let d = start; d !== rt && !escapesBaseDir(rt, d); d = dirname(d)) {
+        try {
+          if (readdirSync(d).length) break;
+          rmSync(d, { recursive: true }); // empty (checked above); a non-recursive rmSync can't remove a directory
+        } catch {
+          break;
+        }
+      }
+    }
+    state.appendAudit(rt, { event: "uninstall", via: "cli", harnesses: chosen, removed: items.filter((i) => i.action === "remove" || i.action === "delete_file").map((i) => i.label), stripped: items.filter((i) => i.action === "strip_hooks").map((i) => i.label), kept: items.filter((i) => i.action.startsWith("keep")).map((i) => i.label) });
+  }
+
+  out(args, { applied: apply, harnesses: chosen, items: items.map(({ config, raw, path, ...rest }) => rest), left_alone: leftAlone }, () => {
+    const verb = { remove: "remove", delete_file: "delete", strip_hooks: "strip ", keep_edited: "keep  ", keep_shared: "keep  ", keep_unreadable: "keep  " };
+    for (const it of items) {
+      const tag = it.action.startsWith("keep") ? warn : (s) => console.log(`  ${s}`);
+      const extra = it.action === "strip_hooks" ? `${it.removed} agent-flow hook entr${it.removed === 1 ? "y" : "ies"}; ${it.note}` : it.note ?? "";
+      tag(`${verb[it.action]}  ${it.label}${extra ? ` ${dim(`(${extra})`)}` : ""}`);
+    }
+    if (!items.length) console.log(dim("  nothing of agent-flow's was found to remove"));
+    console.log(dim(`left alone (yours): ${leftAlone.join(", ")}`));
+    if (!apply) console.log(dim("nothing changed: re-run with --yes to apply"));
+    else ok(`uninstalled ${chosen.join(", ")}`);
+  });
+  return 0;
+}
+
+/** Does `d` lie outside `base`? (for walking up from a removed file without leaving the repository) */
+function escapesBaseDir(base, d) {
+  return fsutil.escapesBase(relative(base, d));
 }
 
 function cmdInstall(args) {
@@ -1757,7 +2145,8 @@ function installClaudeHook(rt, args) {
   const before = JSON.stringify(settings);
   settings.hooks ??= {};
   settings.hooks.PreToolUse ??= [];
-  const looseOurs = (h) => /agent-flow/.test(h?.command ?? "") && /\bguard\b/.test(h?.command ?? "");
+  // Ours = runs agent-flow's own binary. A user's `agent-flow-guard.sh` shares the words, not the program, and must come through untouched.
+  const looseOurs = (h) => OUR_BIN.test(h?.command ?? "") && /\sguard\b/.test(h?.command ?? "");
   // `update` only refreshes a hook in exactly the shape install writes. One someone customized (a wrapper, an extra
   // flag) is theirs: left as it is, with a note, unless --force.
   const canonicalOurs = (h) => /^node\s+"[^"]*agent-flow(-runtime)?\/bin\/agent-flow\.js"\s+guard\s*$/.test(h?.command ?? "");
@@ -1790,6 +2179,28 @@ function installClaudeHook(rt, args) {
     if (g) g.hooks = g.hooks.map((h) => (isStop(h) ? { ...h, type: "command", command: stopCmd, timeout: STOP_HOOK_TIMEOUT_S } : h));
     else settings.hooks.Stop.push({ hooks: [{ type: "command", command: stopCmd, timeout: STOP_HOOK_TIMEOUT_S }] });
   }
+  if (args.statusline) {
+    if (settings.statusLine === undefined) settings.statusLine = { type: "command", command: `node "$CLAUDE_PROJECT_DIR/${binRel.split("\\").join("/")}" statusline` };
+    else if (!/agent-flow/.test(settings.statusLine?.command ?? "")) warn(`${label}: a statusLine is already set, so it was left as it is; to show agent-flow's, run \`agent-flow statusline\` from it`);
+  }
+  // The briefing: SessionStart for the session, SubagentStart because a subagent never sees the parent's context.
+  const isBrief = (h) => OUR_BIN.test(h?.command ?? "") && /\sbrief\b/.test(h?.command ?? "");
+  for (const ev of ["SessionStart", "SubagentStart"]) {
+    if (settings.hooks[ev] !== undefined && !Array.isArray(settings.hooks[ev])) {
+      bad(`${label}: existing "hooks.${ev}" has an unexpected shape — not touched. Fix it and re-run.`);
+      return false;
+    }
+    const list = (settings.hooks[ev] ??= []);
+    // Drop ours first so a re-run refreshes the entry (or, with --no-brief, removes it) instead of stacking another.
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (!Array.isArray(list[i]?.hooks) || !list[i].hooks.some(isBrief)) continue;
+      const rest = list[i].hooks.filter((h) => !isBrief(h));
+      if (rest.length) list[i] = { ...list[i], hooks: rest };
+      else list.splice(i, 1);
+    }
+    if (!args["no-brief"]) list.push({ ...(ev === "SessionStart" ? { matcher: "startup|resume|clear|compact" } : {}), hooks: [{ type: "command", command: `node "$CLAUDE_PROJECT_DIR/${binRel.split("\\").join("/")}" brief --event ${ev}`, timeout: 5 }] });
+    if (!list.length) delete settings.hooks[ev];
+  }
   if (JSON.stringify(settings) === before) {
     console.log(dim(`= ${label} (up to date)`));
     return true;
@@ -1805,8 +2216,8 @@ function installClaudeHook(rt, args) {
 // Harnesses whose hooks speak (nearly) Claude Code's protocol: JSON on stdin, exit 2 blocks.
 const HOOK_FILES = {
   gemini: { path: ".gemini/settings.json", event: "BeforeTool", matcher: "", wrap: true, dir: "$GEMINI_PROJECT_DIR/" },
-  codex: { path: ".codex/hooks.json", event: "PreToolUse", matcher: "", wrap: true, dir: "./" },
-  cursor: { path: ".cursor/hooks.json", event: ["beforeShellExecution", "beforeReadFile", "preToolUse"], wrap: false, dir: "./" },
+  codex: { path: ".codex/hooks.json", event: "PreToolUse", brief: "SessionStart", matcher: "", wrap: true, dir: "./" },
+  cursor: { path: ".cursor/hooks.json", event: ["beforeShellExecution", "beforeReadFile", "preToolUse"], brief: "sessionStart", wrap: false, dir: "./" },
 };
 
 /** Wire `agent-flow guard` into Gemini CLI, Codex or Cursor without touching anyone else's hooks. Unverified live: see docs/HARNESS-MATRIX.md. */
@@ -1838,14 +2249,27 @@ function installGuardHook(rt, args, name) {
     bad(`${label}: existing "hooks" has an unexpected shape — not touched. Fix it and re-run.`);
     return false;
   }
-  if (events.some((e) => settings.hooks?.[e] !== undefined && !Array.isArray(settings.hooks[e]))) {
+  if ([...events, ...(cfg.brief ? [cfg.brief] : [])].some((e) => settings.hooks?.[e] !== undefined && !Array.isArray(settings.hooks[e]))) {
     bad(`${label}: an existing hook event has an unexpected shape — not touched. Fix it and re-run.`);
     return false;
   }
   const before = JSON.stringify(settings);
   settings.hooks ??= {};
   if (!cfg.wrap) settings.version ??= 1;
-  const isOurs = (h) => /node\s+"[^"]*agent-flow\/bin\/agent-flow\.js"\s+guard\s*$/.test(h?.command ?? "");
+  // Ours = a command that runs agent-flow's guard or brief, wherever the runtime lives (node_modules/@drix10/agent-flow, or the
+  // vendored .agent-flow-runtime). Matching only the first path let every re-install add another copy for a vendored runtime.
+  const looseOurs = (h) => OUR_BIN.test(h?.command ?? "") && /\s(guard|brief)\b/.test(h?.command ?? "");
+  const canonicalOurs = (h) => /^node\s+"[^"]*agent-flow(-runtime)?\/bin\/agent-flow\.js"\s+(guard|brief --event \w+)\s*$/.test(h?.command ?? "");
+  const isOurs = args["keep-custom"] ? canonicalOurs : looseOurs;
+  // `update` replaces only a hook in exactly the shape install writes; a customised one is the user's, left alone with a note.
+  const hooksOf = (e) => (cfg.wrap ? (Array.isArray(e?.hooks) ? e.hooks : []) : [e]);
+  // Judged on the guard's own events: the briefing hook beside it must not make a customised guard look untouched.
+  const guardCommands = events.flatMap((e) => (Array.isArray(settings.hooks?.[e]) ? settings.hooks[e].flatMap(hooksOf) : []));
+  const canonicalGuard = (h) => canonicalOurs(h) && /\sguard\s*$/.test(h?.command ?? "");
+  if (args["keep-custom"] && !guardCommands.some(canonicalGuard) && guardCommands.some(looseOurs)) {
+    warn(`${label}: the guard hook was customized, so update left it alone (--force to replace it)`);
+    return true;
+  }
   for (const ev of events) {
     const list = (settings.hooks[ev] ??= []);
     const flat = (e) => (cfg.wrap ? (Array.isArray(e?.hooks) ? e.hooks : []) : [e]);
@@ -1856,6 +2280,19 @@ function installGuardHook(rt, args, name) {
       else list.splice(i, 1);
     }
     list.push(cfg.wrap ? { ...(cfg.matcher ? { matcher: cfg.matcher } : {}), hooks: [{ type: "command", command }] } : { command, failClosed: true });
+  }
+  if (cfg.brief) {
+    // The briefing hook fails open (it only adds context), unlike the guard.
+    const bcommand = `node "${cfg.dir}${binRel.split("\\").join("/")}" brief --event SessionStart`;
+    const list = (settings.hooks[cfg.brief] ??= []);
+    for (let i = list.length - 1; i >= 0; i--) {
+      const kept = hooksOf(list[i]).filter((h) => !(looseOurs(h) && /\sbrief\b/.test(h?.command ?? "")));
+      if (kept.length === hooksOf(list[i]).length) continue;
+      if (cfg.wrap && kept.length) list[i] = { ...list[i], hooks: kept };
+      else list.splice(i, 1);
+    }
+    if (!args["no-brief"]) list.push(cfg.wrap ? { hooks: [{ type: "command", command: bcommand, timeout: 5 }] } : { command: bcommand, timeout: 5 });
+    if (!list.length) delete settings.hooks[cfg.brief];
   }
   if (JSON.stringify(settings) === before) {
     console.log(dim(`= ${label} (up to date)`));
@@ -1871,6 +2308,8 @@ function installGuardHook(rt, args, name) {
 
 const toPosixPath = (p) => p.replace(/\\/g, "/");
 const HOOK_MARKER = "# agent-flow pre-commit";
+/** A hook command that runs agent-flow's own binary (project copy or vendored runtime): what makes a hook ours, not a name that happens to contain `agent-flow`. */
+const OUR_BIN = /agent-flow(?:-runtime)?[\\/]bin[\\/]agent-flow\.js/;
 
 function cmdHook(args) {
   if (args._[1] !== "install") return sub("hook", args._[1], ["install"], "hook install [--force]");
@@ -1930,7 +2369,7 @@ async function cmdInit(args) {
   const dry = !!args["dry-run"];
   const interactive = !args.json && !!process.stdin.isTTY && !!process.stdout.isTTY;
   if (args.json && !args.yes) {
-    console.log(JSON.stringify({ written: [], plan: plan.files.map((f) => ({ path: f.path, action: f.exists ? "skip_exists" : "write", content: f.content })), references: plan.references, missing_references: plan.missing_references, suggested_protected_paths: plan.suggested_protected_paths }, null, 2));
+    console.log(JSON.stringify({ written: [], plan: plan.files.map((f) => ({ path: f.path, action: f.exists ? "skip_exists" : "write", content: f.content })), references: plan.references, missing_references: plan.missing_references, suggested_protected_paths: plan.suggested_protected_paths, suggested_review_paths: plan.suggested_review_paths }, null, 2));
     return 0;
   }
   if (!args.json) {
@@ -1979,6 +2418,7 @@ async function cmdInit(args) {
       ok(`wrote ${p}${p === manifestLib.MANIFEST_FILE ? ` — ${plan.references} reference(s) from ${plan.context_files.length} context file(s)` : ""}`);
     }
     if (plan.suggested_protected_paths.length) console.log(dim(`  protected_paths is empty. Worth protecting here: ${plan.suggested_protected_paths.join(", ")} — add what applies to CONTEXT_MANIFEST.json (nothing is protected until you do).`));
+    if (plan.suggested_review_paths.length) console.log(dim(`  CI workflows: add \`"review_paths": ${JSON.stringify(plan.suggested_review_paths)}\` so agents can add a check there (added lines only) and a person reviews the pull request, instead of every CI change stopping an unattended run. Not protected_paths: that stops them.`));
     if (plan.missing_references.length) warn(`${plan.missing_references.length} referenced path(s) don't exist, so they weren't recorded — \`agent-flow doctor\` lists them`);
     if (written.includes("AGENTS.md") && manifestSkipped) warn("add AGENTS.md to context_files in your existing CONTEXT_MANIFEST.json");
     console.log(dim(`\nnext: ${written.includes("AGENTS.md") ? "replace the [NEEDS VERIFICATION] lines in AGENTS.md, then " : ""}\`agent-flow doctor\` (and add it to CI)`));
@@ -2071,6 +2511,10 @@ const table = {
   "audit-risk": cmdAudit,
   audit: cmdAuditLog,
   gates: cmdGates,
+  debt: cmdDebt,
+  brief: cmdBrief,
+  statusline: cmdStatusline,
+  mcp: cmdMcp,
   config: cmdConfig,
   baseline: cmdBaseline,
   classify: cmdClassify,
@@ -2086,6 +2530,7 @@ const table = {
   repair: cmdRepair,
   manifest: cmdManifest,
   update: cmdUpdate,
+  uninstall: cmdUninstall,
   run: cmdRun,
   status: cmdStatus,
   codeowners: cmdCodeowners,
@@ -2104,7 +2549,10 @@ if (!cmd || args.help || cmd === "help") {
 }
 if (!Object.hasOwn(table, cmd)) process.exit(unknown("command", cmd, Object.keys(table), "run `agent-flow --help` for the list"));
 try {
-  process.exit(roleRefusal() || (await table[cmd](args)));
+  const code = roleRefusal() || (await table[cmd](args));
+  // Let piped output drain first: process.exit() can cut a large write short when stdout is a pipe.
+  await new Promise((done) => process.stdout.write("", done));
+  process.exit(code);
 } catch (e) {
   const msg = String(e.message ?? e).split("\n")[0];
   const friendly = /not a git repository/i.test(msg) ? "not a git repository — run this inside a git checkout (or `git init` first)" : msg;

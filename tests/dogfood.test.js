@@ -16,11 +16,9 @@ test("each harness's skill copy equals skills/", () => {
     for (const skill of SKILLS) {
       assert.equal(read(`${harness}/skills/${skill}/SKILL.md`), read(`skills/${skill}/SKILL.md`), `${harness}/skills/${skill} drifted from skills/${skill}`);
     }
-    assert.equal(
-      read(`${harness}/skills/invoking-agents/references/launch.md`),
-      read("skills/invoking-agents/references/launch.md"),
-      `${harness}/skills/invoking-agents/references/launch.md drifted`
-    );
+    for (const ref of ["invoking-agents/references/launch.md", "invoking-agents/references/manual.md", "implementer/references/native-first.md"]) {
+      assert.equal(read(`${harness}/skills/${ref}`), read(`skills/${ref}`), `${harness}/skills/${ref} drifted`);
+    }
   }
 });
 

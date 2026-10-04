@@ -17,6 +17,8 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - run: npm ci
+      - name: Version files, CHANGELOG and docs match the release tag
+        run: node scripts/check-versions.mjs
       - run: npm run build
       - run: npm test
       - run: npm pack --dry-run

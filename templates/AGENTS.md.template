@@ -44,7 +44,7 @@ Things that look right and are wrong here.
 
 ## Rules
 
-- Never modify protected paths (see `CONTEXT_MANIFEST.json` → `protected_paths`). Escalate instead.
+- Never modify protected paths (`agent-flow brief` lists them; don't read the manifest). Escalate instead.
 - All changes land via PR from `agent/issue-N`; never push to `{{DEFAULT_BRANCH}}`.
 - New dependencies need risk review (`agent-flow audit-risk`).
 - If code contradicts this file, trust the code and flag `[CONTEXT_STALE]`.

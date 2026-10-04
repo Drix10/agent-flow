@@ -96,6 +96,14 @@
         "minLength": 1
       }
     },
+    "review_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Paths agents may change by adding lines (CI workflows, test lists): a pull request that touches them is a draft that waits for a person and is never auto-merged. An edited or deleted line, or an added CI line that reaches secrets, is sent back to the Implementer. Same syntax as protected_paths; a path in both is protected. `.github/workflows/` is the only agent-configuration path this can open; skills, hooks and harness settings never open. Read from the default branch, so a branch can't widen it."
+    },
     "gates": {
       "type": "array",
       "description": "Commands the pipeline runs itself (`agent-flow gates run`): the exit code is observed, not reported by a model. Read from the main checkout, so a branch can't edit the gate that judges it. Put a user switch in the command if it must run as another user (`sudo -u ci \u2026`).",
@@ -226,6 +234,14 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 5
+        },
+        "lean": {
+          "enum": ["off", "lite", "full"],
+          "description": "How hard the Implementer and Reviewer push for the smallest correct change. lite (default): reuse what the repo has, fix the root cause, leave one runnable check, mark deliberate shortcuts with a `lean:` comment, name a lazier alternative in the report. full: also climb the ladder strictly (nothing new if the repo, the standard library, the platform or an installed dependency does it) and block an avoidable new dependency. off: neither role is told. Never relaxes validation, security, accessibility or data-loss handling."
+        },
+        "isolate_roles": {
+          "type": "boolean",
+          "description": "Launch each role with --setting-sources project,local so a global plugin or hook on this machine can't add context to a role (it would change what the Reviewer judges and what QA runs). Off by default: it also drops the user's own Claude Code settings for roles."
         },
         "harness_by_role": {
           "type": "object",
