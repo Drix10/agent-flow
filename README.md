@@ -24,15 +24,23 @@ Give an agent a task and walk away. Agent Flow runs it through separate **implem
 
 It is a Node.js CLI and skills package for Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf, Pi and other tools that read `AGENTS.md` (14 install targets plus Pi; see the [harness matrix](docs/HARNESS-MATRIX.md) for what each one enforces). It has no runtime dependencies and needs no `package.json` in the repository it sets up. Node.js 20 or later is required.
 
-### Before and after
+### The same task, without and with Agent Flow
 
-| Without | With Agent Flow |
-|---|---|
-| The agent edits CI, trust files or the manifest to make its own check pass. | Protected paths are refused by the guard on Claude Code and Pi, and classified on every harness. |
-| A new test can't get into the CI list without calling you back. | `review_paths` lets it add a line; the pull request is a draft that waits for you. |
-| The same agent writes, reviews and approves. | Each role is a separate process and sees files, not another role's reasoning. |
-| Context files drift from the code. | `agent-flow doctor` checks paths, commands, links and timestamps. |
-| "It's fine" with no record. | A hash-chained audit log of state changes, guard blocks and gates. |
+You hand an agent *"add a `--json` flag so CI can parse the output"* and leave.
+
+**Without Agent Flow**
+
+- It writes the code, writes the tests and judges both itself, with one context and one set of blind spots.
+- CI fails because the new test isn't in the workflow's list. To get green it edits the workflow, or loosens the check.
+- Nothing stops it from pushing to `main`, force-pushing or skipping the commit hook.
+- You come back to a diff you have to read in full, and `AGENTS.md` still describes the old behaviour.
+
+**With Agent Flow**
+
+- One agent implements, a second reviews and a third runs the checks, each a separate process in its own git worktree that sees files, not the others' reasoning.
+- The new test goes into the CI list as an added line (`review_paths`). Anything else in CI, a protected path, `--no-verify` and a push to `main` are refused by the guard on Claude Code and Pi, and caught by the classifier and the pre-commit hook elsewhere.
+- A failing check goes back to the Implementer for another round, up to a cap, not to you.
+- You come back to a draft pull request and a short list from `agent-flow status` of what needs a person. `agent-flow doctor` flags context that no longer matches the code, and a hash-chained audit log records what happened.
 
 ## Quick start
 
