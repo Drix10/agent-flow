@@ -1,5 +1,5 @@
-name: agent-flow
-description: Fail a pull request when agent context has drifted, a new risk surface appeared, a protected path changed, or a manifest policy rule is broken.
+name: Agent Flow Context and Risk Check
+description: Fail a PR when agent context drifts, a new risk surface appears, a protected path changes or a policy rule breaks.
 author: Drix10
 branding:
   icon: shield
