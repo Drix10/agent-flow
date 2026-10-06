@@ -23,6 +23,7 @@ const SOURCES = [
   ["plugin.json", (j) => j.version],
   [".claude-plugin/plugin.json", (j) => j.version],
   [".claude-plugin/marketplace.json", (j) => j.plugins?.find((p) => p.name === "agent-flow")?.version],
+  ["plugins/agent-flow/plugin.json", (j) => j.version],
   ["gemini-extension.json", (j) => j.version],
 ];
 const DOCS_WITH_ACTION_TAG = ["README.md", "docs/ADOPTION.md"];

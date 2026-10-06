@@ -140,6 +140,20 @@ test("versions agree in every shipped manifest, and the README advertises no unl
   for (const p of JSON.parse(readFileSync(join(root, ".claude-plugin", "marketplace.json"), "utf-8")).plugins) {
     assert.equal(p.version, v, `marketplace plugin ${p.name} drifted`);
   }
+  assert.equal(JSON.parse(readFileSync(join(root, "plugins", "agent-flow", "plugin.json"), "utf-8")).version, v, "codex plugin.json drifted");
+});
+
+test("codex repo marketplace points at a versioned plugin whose skills equal skills/", () => {
+  // `codex plugin marketplace add Drix10/agent-flow` reads .agents/plugins/marketplace.json and loads
+  // ./plugins/agent-flow: a stale path, a nameless entry or a drifted skill copy breaks the install.
+  const market = JSON.parse(readFileSync(join(root, ".agents", "plugins", "marketplace.json"), "utf-8"));
+  assert.equal(market.plugins.length, 1, "one plugin, one name to keep");
+  const [entry] = market.plugins;
+  assert.equal(entry.source.path, "./plugins/agent-flow");
+  assert.ok(entry.policy.installation && entry.policy.authentication && entry.category, "marketplace entry needs policy + category");
+  const manifest = JSON.parse(readFileSync(join(root, entry.source.path, "plugin.json"), "utf-8"));
+  assert.equal(manifest.name, entry.name, "manifest name must match the marketplace entry");
+  assert.equal(manifest.version, pkg.version, "plugin version tracks the release");
 });
 
 test("launch.md commands only use harness flags that exist (checked via --help)", () => {

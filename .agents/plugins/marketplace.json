@@ -1,0 +1,20 @@
+{
+  "name": "agent-flow-marketplace",
+  "interface": {
+    "displayName": "Agent Flow"
+  },
+  "plugins": [
+    {
+      "name": "agent-flow",
+      "source": {
+        "source": "local",
+        "path": "./plugins/agent-flow"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

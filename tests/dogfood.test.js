@@ -20,6 +20,13 @@ test("each harness's skill copy equals skills/", () => {
       assert.equal(read(`${harness}/skills/${ref}`), read(`skills/${ref}`), `${harness}/skills/${ref} drifted`);
     }
   }
+  // The Codex plugin bundles the same skills (portable plugin.json + skills/ auto-discovery).
+  for (const skill of SKILLS) {
+    assert.equal(read(`plugins/agent-flow/skills/${skill}/SKILL.md`), read(`skills/${skill}/SKILL.md`), `plugins/agent-flow/skills/${skill} drifted from skills/${skill}`);
+  }
+  for (const ref of ["agent-flow-invoking-agents/references/launch.md", "agent-flow-invoking-agents/references/manual.md", "agent-flow-implementer/references/native-first.md"]) {
+    assert.equal(read(`plugins/agent-flow/skills/${ref}`), read(`skills/${ref}`), `plugins/agent-flow/skills/${ref} drifted`);
+  }
 });
 
 test("the tracked OpenCode plugin is the template with this repo's bin path", () => {

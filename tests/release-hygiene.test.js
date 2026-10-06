@@ -28,7 +28,7 @@ test("every version file, the CHANGELOG and the docs' action tag agree", () => {
 /** A scratch copy of just the files the check reads. */
 function scratch() {
   const dir = mkdtempSync(join(tmpdir(), "af-ver-"));
-  for (const f of ["package.json", "package-lock.json", "plugin.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "gemini-extension.json", "CHANGELOG.md", "README.md", "docs/ADOPTION.md"]) {
+  for (const f of ["package.json", "package-lock.json", "plugin.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "plugins/agent-flow/plugin.json", "gemini-extension.json", "CHANGELOG.md", "README.md", "docs/ADOPTION.md"]) {
     mkdirSync(join(dir, ...f.split("/").slice(0, -1)), { recursive: true });
     cpSync(join(root, f), join(dir, f));
   }
@@ -42,6 +42,7 @@ test("check-versions fails on a file left behind, on a lockfile that disagrees, 
   for (const [what, mutate, expected] of [
     ["a manifest left behind", (d) => edit(d, "gemini-extension.json", (t) => t.replace(`"version": "${version}"`, `"version": "${stale}"`)), /gemini-extension\.json/],
     ["the marketplace entry", (d) => edit(d, ".claude-plugin/marketplace.json", (t) => t.replace(`"version": "${version}"`, `"version": "${stale}"`)), /marketplace\.json/],
+    ["the codex plugin left behind", (d) => edit(d, "plugins/agent-flow/plugin.json", (t) => t.replace(`"version": "${version}"`, `"version": "${stale}"`)), /plugins\/agent-flow\/plugin\.json/],
     ["the lockfile's package entry", (d) => edit(d, "package-lock.json", (t) => {
       const needle = `"version": "${version}"`;
       const second = t.indexOf(needle, t.indexOf(needle) + 1); // the first is the top of the file, the second is packages[""]

@@ -2,9 +2,11 @@
 
 What is **enforced** (the harness or our code blocks it), **checked** (the pre-commit hook or CI catches it), or only **instructed** (the model is asked to comply), per harness.
 
+Distribution status (directories, marketplaces): [DISTRIBUTION.md](DISTRIBUTION.md).
+
 | Capability | Pi | Claude Code | Codex CLI | Gemini CLI | Cursor | VS Code / Copilot | Windsurf |
 |---|---|---|---|---|---|---|---|
-| Skill discovery | `pi.skills` | `.claude/skills/` | `.agents/skills/` | `.gemini/skills/` | `.cursor/skills/` | `.github/skills/` | none documented — `.agents/skills/` is a manual reference |
+| Skill discovery | `pi.skills` | `.claude/skills/` | Codex plugin (`codex plugin marketplace add Drix10/agent-flow`) or `.agents/skills/` | `.gemini/skills/` | `.cursor/skills/` | `.github/skills/` | none documented — `.agents/skills/` is a manual reference |
 | Root context auto-loaded | `AGENTS.md` | `CLAUDE.md` → `@AGENTS.md` | `AGENTS.md` | `GEMINI.md`, or `context.fileName` incl. `AGENTS.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md`, per-directory in monorepos |
 | `allowed-tools` restricts tools | ❌ pre-approval only (FM-16, tested) | ❌ pre-approval | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Reviewer can't write | ✅ `--tools read,grep,find,ls` + guard (write-block probed live) | ✅ subagent `tools: Read, Grep, Glob` | ✅ `codex exec --sandbox read-only` (OS sandbox; flag verified against `--help`, write-block not yet probed by us) | ⚠️ default approval mode: headless denies writes and shell (unverified) | ❌ instructed | ❌ instructed | ❌ instructed |

@@ -52,7 +52,7 @@ test("every `agent-flow <command>` and --flag mentioned in the docs exists", () 
 });
 
 // Flags that appear on lines mentioning agent-flow but belong to another program (harness CLIs quoted in the docs).
-const ALLOWED_FOREIGN_FLAGS = new Set(["no-verify", "force-with-lease", "hard", "approval-mode", "ask-for-approval", "sandbox", "agent", "agents", "title", "output-schema", "add-dir", "tools", "approve", "no-install", "json-schema"]);
+const ALLOWED_FOREIGN_FLAGS = new Set(["no-verify", "force-with-lease", "hard", "approval-mode", "ask-for-approval", "sandbox", "agent", "agents", "title", "output-schema", "add-dir", "tools", "approve", "no-install", "json-schema", "ref", "sparse"]);
 
 test("backticked repo paths in the docs exist (illustrative ones are listed)", () => {
   const ILLUSTRATIVE = /^(src|app|lib|docs\/private|packages|services|tests?\/|\.agent-flow\/|\.worktrees\/|\.agent-state|AGENT_STATE|\.risk-baseline|CONTEXT_MANIFEST|\.env|node_modules|dist|build|coverage|\.claude\/settings|\.claude\/skills|\.claude\/agents|\.claude\/plugin|\.codex|\.gemini|\.agents|\.pi|\.git\/|\.github\/|CLAUDE\.md|AGENTS\.md|GEMINI\.md|CODEX\.md|MEMORY|~|\/|\.\/|\.\.\/)/;
