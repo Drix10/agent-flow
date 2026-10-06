@@ -9,14 +9,14 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf-8");
-const SKILLS = ["bootstrap", "gardener", "implementer", "invoking-agents", "qa", "reviewer"];
+const SKILLS = ["agent-flow-bootstrap", "agent-flow-gardener", "agent-flow-implementer", "agent-flow-invoking-agents", "agent-flow-qa", "agent-flow-reviewer"];
 
 test("each harness's skill copy equals skills/", () => {
   for (const harness of [".agents", ".cursor", ".gemini"]) {
     for (const skill of SKILLS) {
       assert.equal(read(`${harness}/skills/${skill}/SKILL.md`), read(`skills/${skill}/SKILL.md`), `${harness}/skills/${skill} drifted from skills/${skill}`);
     }
-    for (const ref of ["invoking-agents/references/launch.md", "invoking-agents/references/manual.md", "implementer/references/native-first.md"]) {
+    for (const ref of ["agent-flow-invoking-agents/references/launch.md", "agent-flow-invoking-agents/references/manual.md", "agent-flow-implementer/references/native-first.md"]) {
       assert.equal(read(`${harness}/skills/${ref}`), read(`skills/${ref}`), `${harness}/skills/${ref} drifted`);
     }
   }

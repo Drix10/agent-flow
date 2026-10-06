@@ -7,7 +7,7 @@ Agent Flow runs next to autonomous agents that can edit your repository. This pa
 | Claim | Where | Test |
 |---|---|---|
 | Reviewer and QA can't `write`/`edit` on Pi | `extensions/guard.ts` → `extensions/lib/guard.ts` (`tool_call` hook) | `tests/guard.test.js` |
-| Reviewer launched by the orchestrator has no write, edit or shell tool | `pi --tools read,grep,find,ls` in `skills/invoking-agents` | Pi's own flag |
+| Reviewer launched by the orchestrator has no write, edit or shell tool | `pi --tools read,grep,find,ls` in `skills/agent-flow-invoking-agents` | Pi's own flag |
 | Claude Code reviewer subagent can't write or run shell | `.claude/agents/reviewer.md` → `tools: Read, Grep, Glob` | `tests/package.test.js` (static) + live-verified: launched the real subagent via the Task tool in a scratch repo and told it to create `TEST.md` by any means; it reported it had no tool that could write and the file did not exist on disk. Reproduce with the probe in [docs/HARNESS-MATRIX.md](./docs/HARNESS-MATRIX.md#verify-it-yourself). |
 | Protected paths can't be written by any agent's file tools (Pi, and Claude Code with the `agent-flow guard` hook) | guard | `tests/guard.test.js` |
 | Implementer's **file tools** can't write outside `AGENT_FLOW_WORKTREE`, including through symlinks. Its shell is only best-effort confined — see below | guard (`decideWrite`) | `tests/guard.test.js`, `tests/hardening.test.js` |

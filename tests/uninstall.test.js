@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -112,24 +112,24 @@ test("uninstall: a full round trip keeps the user's settings and hooks, removes 
     assert.ok(existsSync(join(dir, ".agent-flow-runtime")));
     assert.ok(existsSync(join(dir, ".git", "hooks", "pre-commit")));
     // One skill the user customised, and one skill of their own beside ours.
-    writeFileSync(join(dir, ".claude", "skills", "implementer", "SKILL.md"), "# my own implementer\n");
+    writeFileSync(join(dir, ".claude", "skills", "agent-flow-implementer", "SKILL.md"), "# my own implementer\n");
     mkdirSync(join(dir, ".claude", "skills", "mine"), { recursive: true });
     writeFileSync(join(dir, ".claude", "skills", "mine", "SKILL.md"), "# mine\n");
 
     const preview = cli(dir, ["uninstall"]);
     assert.equal(preview.status, 0, preview.stderr);
-    assert.match(preview.stdout, /remove +\.claude\/skills\/bootstrap/);
-    assert.match(preview.stdout, /keep +\.claude\/skills\/implementer .*edited since install/);
+    assert.match(preview.stdout, /remove +\.claude\/skills\/agent-flow-bootstrap/);
+    assert.match(preview.stdout, /keep +\.claude\/skills\/agent-flow-implementer .*edited since install/);
     assert.match(preview.stdout, /strip +\.claude\/settings\.json .*your other settings and hooks stay/);
     assert.match(preview.stdout, /remove +\.git\/hooks\/pre-commit/);
     assert.match(preview.stdout, /remove +\.agent-flow-runtime\//);
     assert.match(preview.stdout, /nothing changed: re-run with --yes/);
-    assert.ok(existsSync(join(dir, ".claude", "skills", "bootstrap")), "a preview changes nothing");
+    assert.ok(existsSync(join(dir, ".claude", "skills", "agent-flow-bootstrap")), "a preview changes nothing");
 
     const r = cli(dir, ["uninstall", "--yes"]);
     assert.equal(r.status, 0, r.stderr);
-    for (const s of ["bootstrap", "gardener", "invoking-agents", "qa", "reviewer"]) assert.ok(!existsSync(join(dir, ".claude", "skills", s)), `${s} removed`);
-    assert.equal(readFileSync(join(dir, ".claude", "skills", "implementer", "SKILL.md"), "utf-8"), "# my own implementer\n", "the edited skill is kept as it was");
+    for (const s of ["agent-flow-bootstrap", "agent-flow-gardener", "agent-flow-invoking-agents", "agent-flow-qa", "agent-flow-reviewer"]) assert.ok(!existsSync(join(dir, ".claude", "skills", s)), `${s} removed`);
+    assert.equal(readFileSync(join(dir, ".claude", "skills", "agent-flow-implementer", "SKILL.md"), "utf-8"), "# my own implementer\n", "the edited skill is kept as it was");
     assert.equal(readFileSync(join(dir, ".claude", "skills", "mine", "SKILL.md"), "utf-8"), "# mine\n", "a skill of the user's own is never touched");
     assert.ok(!existsSync(join(dir, ".claude", "agents", "reviewer.md")));
     const settings = read(join(dir, ".claude", "settings.json"));
@@ -139,12 +139,12 @@ test("uninstall: a full round trip keeps the user's settings and hooks, removes 
     for (const f of ["AGENTS.md", "CONTEXT_MANIFEST.json"]) assert.ok(existsSync(join(dir, f)), `${f} is yours and stays`);
     // The record keeps only what is still there, so a later install or update still sees the edit.
     const rec = read(join(dir, ".claude", "agent-flow-install.json"));
-    assert.deepEqual(Object.keys(rec.files), [".claude/skills/implementer"]);
+    assert.deepEqual(Object.keys(rec.files), [".claude/skills/agent-flow-implementer"]);
     assert.match(r.stdout, /left alone \(yours\): AGENTS\.md/);
     assert.match(r.stdout, /uninstalled claude/);
 
     const audit = readFileSync(join(dir, ".agent-flow", "audit.jsonl"), "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.event === "uninstall");
-    assert.ok(audit && audit.removed.includes(".claude/skills/bootstrap") && audit.kept.includes(".claude/skills/implementer"));
+    assert.ok(audit && audit.removed.includes(".claude/skills/agent-flow-bootstrap") && audit.kept.includes(".claude/skills/agent-flow-implementer"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -162,7 +162,7 @@ test("uninstall: a clean install leaves nothing behind but your own files", () =
     assert.ok(existsSync(join(dir, "CLAUDE.md")), "the @AGENTS.md import is left for the user to decide");
     // And it can be put back.
     assert.equal(cli(dir, ["install", "--harness", "claude"]).status, 0);
-    assert.ok(existsSync(join(dir, ".claude", "skills", "bootstrap")));
+    assert.ok(existsSync(join(dir, ".claude", "skills", "agent-flow-bootstrap")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -179,7 +179,7 @@ test("uninstall --harness: one harness leaves, the others and the shared runtime
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /keep +\.agent-flow-runtime\/ .*still used by claude/);
     assert.ok(!existsSync(join(dir, ".cursor")), "cursor's skills and hooks.json are gone");
-    assert.ok(existsSync(join(dir, ".claude", "skills", "bootstrap")), "claude is untouched");
+    assert.ok(existsSync(join(dir, ".claude", "skills", "agent-flow-bootstrap")), "claude is untouched");
     assert.ok(existsSync(join(dir, ".agent-flow-runtime")), "the runtime claude's hook runs is still there");
     assert.ok(existsSync(join(dir, ".git", "hooks", "pre-commit")));
     assert.ok(readFileSync(join(dir, ".claude", "settings.json"), "utf-8").includes("agent-flow"), "claude's guard hook is still wired");
@@ -196,7 +196,7 @@ test("uninstall: a skills folder shared by several harnesses goes only with the 
     assert.equal(cli(dir, ["install", "--harness", "agents"]).status, 0);
     const first = cli(dir, ["uninstall", "--harness", "agents", "--yes"]);
     assert.match(first.stdout, /keep +\.agents\/skills\/ .*still used by codex/);
-    assert.ok(existsSync(join(dir, ".agents", "skills", "bootstrap")), "codex still needs it");
+    assert.ok(existsSync(join(dir, ".agents", "skills", "agent-flow-bootstrap")), "codex still needs it");
     assert.ok(existsSync(join(dir, ".codex", "hooks.json")));
     const second = cli(dir, ["uninstall", "--harness", "codex", "--yes"]);
     assert.equal(second.status, 0, second.stderr);
@@ -257,7 +257,7 @@ test("uninstall: --json, nothing installed, an unknown harness, and a pipeline r
     const j = JSON.parse(cli(dir, ["uninstall", "--json"]).stdout);
     assert.equal(j.applied, false);
     assert.deepEqual(j.harnesses, ["claude"]);
-    assert.ok(j.items.some((i) => i.label === ".claude/skills/bootstrap" && i.action === "remove"));
+    assert.ok(j.items.some((i) => i.label === ".claude/skills/agent-flow-bootstrap" && i.action === "remove"));
     assert.ok(!j.items.some((i) => "config" in i || "raw" in i), "no file contents in the output");
     assert.ok(j.left_alone.includes("CONTEXT_MANIFEST.json"));
 
@@ -266,7 +266,7 @@ test("uninstall: --json, nothing installed, an unknown harness, and a pipeline r
       assert.equal(r.status, 2, role);
       assert.match(r.stderr, /may not run `agent-flow uninstall`/);
     }
-    assert.ok(existsSync(join(dir, ".claude", "skills", "bootstrap")), "a refused role removed nothing");
+    assert.ok(existsSync(join(dir, ".claude", "skills", "agent-flow-bootstrap")), "a refused role removed nothing");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -279,7 +279,7 @@ test("uninstall removes nothing the install record doesn't vouch for in an older
     rmSync(join(dir, ".claude", "agent-flow-install.json"));
     const r = cli(dir, ["uninstall", "--yes"]);
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(!existsSync(join(dir, ".claude", "skills", "bootstrap")), "identical to what this version writes: safe to remove");
+    assert.ok(!existsSync(join(dir, ".claude", "skills", "agent-flow-bootstrap")), "identical to what this version writes: safe to remove");
     assert.match(r.stdout, /keep +\.agent-flow-runtime\/ .*no install record/);
     assert.deepEqual(readdirSync(dir).filter((n) => n === ".claude"), [], "the empty folder goes");
   } finally {
@@ -290,9 +290,33 @@ test("uninstall removes nothing the install record doesn't vouch for in an older
 test("uninstall: an old install with no record in the shared skills folder is read as the generic `agents` target", () => {
   const dir = mkdtempSync(join(tmpdir(), "af-unrec-"));
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
-  mkdirSync(join(dir, ".agents", "skills", "bootstrap"), { recursive: true });
-  writeFileSync(join(dir, ".agents", "skills", "bootstrap", "SKILL.md"), "old copy");
+  mkdirSync(join(dir, ".agents", "skills", "agent-flow-bootstrap"), { recursive: true });
+  writeFileSync(join(dir, ".agents", "skills", "agent-flow-bootstrap", "SKILL.md"), "old copy");
   const r = spawnSync(process.execPath, [fileURLToPath(new URL("../bin/agent-flow.js", import.meta.url)), "uninstall", "--json"], { cwd: dir, encoding: "utf-8", env: { ...process.env, NO_COLOR: "1", AGENT_FLOW_ROLE: "" } });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(JSON.parse(r.stdout).harnesses, ["agents"]);
+});
+
+test("uninstall: pre-rename skill dirs go when still what install wrote, edited ones stay", () => {
+  const dir = repo();
+  try {
+    assert.equal(cli(dir, ["install", "--harness", "claude"]).status, 0);
+    renameSync(join(dir, ".claude/skills/agent-flow-qa"), join(dir, ".claude/skills/qa"));
+    renameSync(join(dir, ".claude/skills/agent-flow-reviewer"), join(dir, ".claude/skills/reviewer"));
+    const recPath = join(dir, ".claude/agent-flow-install.json");
+    const rec = read(recPath);
+    rec.files[".claude/skills/qa"] = rec.files[".claude/skills/agent-flow-qa"];
+    rec.files[".claude/skills/reviewer"] = rec.files[".claude/skills/agent-flow-reviewer"];
+    delete rec.files[".claude/skills/agent-flow-qa"];
+    delete rec.files[".claude/skills/agent-flow-reviewer"];
+    writeFileSync(recPath, JSON.stringify(rec));
+    appendFileSync(join(dir, ".claude/skills/reviewer/SKILL.md"), "\nour team rule\n");
+
+    const r = cli(dir, ["uninstall", "--yes"]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!existsSync(join(dir, ".claude/skills/qa")), "the untouched pre-rename dir goes with the rest");
+    assert.match(readFileSync(join(dir, ".claude/skills/reviewer/SKILL.md"), "utf-8"), /our team rule/, "the edited pre-rename dir is kept");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

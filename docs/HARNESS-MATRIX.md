@@ -20,7 +20,7 @@ What is **enforced** (the harness or our code blocks it), **checked** (the pre-c
 
 "⚠️ pre-commit hook only" means the rule is *checked* when a commit is made (the hook rejects it), not blocked when the agent writes the file: the write still happens on disk. Only Pi and Claude Code block per call.
 
-**Gemini CLI:** the pipeline runs the Implementer and QA with `--approval-mode yolo` (they need a shell), so nothing confines them while they run; only the pre-commit hook and QA's before/after tree check contain them. The Reviewer runs at the default approval mode, and its write-block is unverified until someone runs the probe below. See `skills/invoking-agents/references/launch.md`.
+**Gemini CLI:** the pipeline runs the Implementer and QA with `--approval-mode yolo` (they need a shell), so nothing confines them while they run; only the pre-commit hook and QA's before/after tree check contain them. The Reviewer runs at the default approval mode, and its write-block is unverified until someone runs the probe below. See `skills/agent-flow-invoking-agents/references/launch.md`.
 
 "⚠️ shell best-effort" means the guard lexes the command and resolves where it writes (redirections, `cp`/`mv`/`tee`/`sed -i`…, following `cd`), but it only sees the command text: an interpreter or script can still write anywhere. For a hard guarantee, run the agent in a container or sandbox. The same limit applies to the git row: branch protection on the remote is the real backstop.
 

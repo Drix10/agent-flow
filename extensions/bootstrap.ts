@@ -44,7 +44,7 @@ export default function (pi: ExtensionAPI) {
     name: "bootstrap_scan",
     label: "Bootstrap scan",
     description:
-      "Read-only repository scan for /bootstrap: languages, package managers, test frameworks, build/test/lint commands " +
+      "Read-only repository scan for /agent-flow-bootstrap: languages, package managers, test frameworks, build/test/lint commands " +
       "(read from package.json scripts / Makefile), CI files, existing context files (AGENTS.md, CLAUDE.md, …), docs, default branch, " +
       "recent commits, and secret SUSPECTS (paths + kinds only, never values). Every field is backed by a file that was actually read.",
     parameters: Type.Object({

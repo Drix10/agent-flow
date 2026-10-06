@@ -10,7 +10,7 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf-8"));
 
 test("entry points exist", () => {
   assert.ok(existsSync(join(root, "extensions/index.ts")), "extensions/index.ts missing");
-  for (const skill of ["bootstrap", "implementer", "reviewer", "qa", "gardener", "invoking-agents"]) {
+  for (const skill of ["agent-flow-bootstrap", "agent-flow-implementer", "agent-flow-reviewer", "agent-flow-qa", "agent-flow-gardener", "agent-flow-invoking-agents"]) {
     assert.ok(existsSync(join(root, "skills", skill, "SKILL.md")), `skills/${skill}/SKILL.md missing`);
   }
   for (const t of ["AGENTS.md.template", "module-AGENTS.md.template", "CLAUDE.md.template", "DOCS_INDEX.md.template", "CONTEXT_MANIFEST.json.template"]) {
@@ -27,7 +27,7 @@ test("read-only reviewers really are read-only where the harness enforces it", (
   for (const t of ["write_file", "replace", "run_shell_command"]) assert.ok(!gemini.includes(`- ${t}`), `gemini reviewer must not have ${t}`);
   assert.match(readFileSync(join(root, ".codex", "agents", "reviewer.toml"), "utf-8"), /sandbox_mode = "read-only"/);
   // Skills must not pretend allowed-tools is enforcement (FM-16).
-  for (const skill of ["reviewer", "qa"]) {
+  for (const skill of ["agent-flow-reviewer", "agent-flow-qa"]) {
     const m = readFileSync(join(root, "skills", skill, "SKILL.md"), "utf-8").match(/allowed-tools:\s*(.+)/);
     if (m) assert.ok(!/\b(write|edit)\b/.test(m[1]), `${skill} must not allow write/edit`);
   }
@@ -68,6 +68,15 @@ test("templates contain no stale file names, and no leftover files from the old 
   }
 });
 
+test("skills.sh install surface: every directory under skills/ is an installable skill, and the README names the command", () => {
+  // `npx skills add Drix10/agent-flow` discovers skills/ by convention: a stray directory, or a skill whose
+  // name doesn't match its folder, breaks the install — so both fail here first, not on the leaderboard.
+  for (const dir of readdirSync(join(root, "skills"))) {
+    assert.ok(existsSync(join(root, "skills", dir, "SKILL.md")), `skills/${dir} has no SKILL.md and is not installable`);
+  }
+  assert.ok(readFileSync(join(root, "README.md"), "utf-8").includes("npx skills add Drix10/agent-flow"), "README must document the skills.sh install command");
+});
+
 test("pi manifest keywords", () => {
   assert.ok(pkg.keywords.includes("pi-package"), "pi-package keyword required");
   assert.ok(pkg.pi?.skills && pkg.pi?.extensions, "pi manifest must list skills and extensions");
@@ -93,7 +102,7 @@ test("reviewer subagents live at harness-canonical paths", () => {
   assert.ok(existsSync(join(root, ".claude", "agents", "reviewer.md")), ".claude/agents/reviewer.md missing");
   assert.ok(existsSync(join(root, ".gemini", "agents", "reviewer.md")), ".gemini/agents/reviewer.md missing");
   assert.ok(existsSync(join(root, ".codex", "agents", "reviewer.toml")), ".codex/agents/reviewer.toml missing");
-  const agentsDir = join(root, "skills", "reviewer", "agents");
+  const agentsDir = join(root, "skills", "agent-flow-reviewer", "agents");
   if (existsSync(agentsDir)) {
     for (const f of readdirSync(agentsDir)) {
       assert.ok(!f.endsWith(".yaml"), `unverified ${f} must not ship under skills/`);
@@ -131,11 +140,10 @@ test("versions agree in every shipped manifest, and the README advertises no unl
   for (const p of JSON.parse(readFileSync(join(root, ".claude-plugin", "marketplace.json"), "utf-8")).plugins) {
     assert.equal(p.version, v, `marketplace plugin ${p.name} drifted`);
   }
-  assert.ok(!readFileSync(join(root, "README.md"), "utf-8").includes("skills.sh"), "README links a skill directory the package isn't listed on");
 });
 
 test("launch.md commands only use harness flags that exist (checked via --help)", () => {
-  const launch = readFileSync(join(root, "skills", "invoking-agents", "references", "launch.md"), "utf-8");
+  const launch = readFileSync(join(root, "skills", "agent-flow-invoking-agents", "references", "launch.md"), "utf-8");
   // Mentions in prose (fallbacks, newer-flag notes) are fine; the runnable commands must not use them.
   for (const flag of ["--max-turns", "--max-budget-usd", '--json-schema "$(cat', "-o json", "--approval-mode plan", "--agent reviewer --tools"]) {
     assert.ok(!launch.includes(flag), `launch.md runs ${flag}, which supported CLIs don't all offer (see --help)`);

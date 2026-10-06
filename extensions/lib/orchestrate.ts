@@ -615,9 +615,9 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         commands = `listed, one per line separated by ";", in ${join(A, "commands.txt")}`;
       }
       const prompts: Record<Role, string> = {
-        implementer: `Use the implementer skill. Round ${rr}. Issue: ${A}/issue.md. Worktree: ${WT} (cd into it first). Findings to address: ${o.findings ?? "none"}. Lean level: ${LEAN}.`,
-        reviewer: `Round ${rr} of ${o.limit}. Read .claude/skills/reviewer/SKILL.md and follow it. Packet: ${A}/ (issue.md, diff.patch, classification.json, implementer-r${rr}.json, and review-r${rr - 1}.json if it exists). Worktree for reading context: ${WT}. Lean level: ${LEAN}.`,
-        qa: `Use the qa skill. Issue ${N}. Worktree: ${WT} (cd into it first). Commands: ${commands}`,
+        implementer: `Use the agent-flow-implementer skill. Round ${rr}. Issue: ${A}/issue.md. Worktree: ${WT} (cd into it first). Findings to address: ${o.findings ?? "none"}. Lean level: ${LEAN}.`,
+        reviewer: `Round ${rr} of ${o.limit}. Read .claude/skills/agent-flow-reviewer/SKILL.md and follow it. Packet: ${A}/ (issue.md, diff.patch, classification.json, implementer-r${rr}.json, and review-r${rr - 1}.json if it exists). Worktree for reading context: ${WT}. Lean level: ${LEAN}.`,
+        qa: `Use the agent-flow-qa skill. Issue ${N}. Worktree: ${WT} (cd into it first). Commands: ${commands}`,
       };
       const env: Record<string, string> = { AGENT_FLOW_ROLE: role };
       if (role === "implementer") env.AGENT_FLOW_WORKTREE = WT;

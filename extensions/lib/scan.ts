@@ -1,5 +1,5 @@
 /**
- * Read-only repository reconnaissance for /bootstrap.
+ * Read-only repository reconnaissance for /agent-flow-bootstrap.
  *
  * Every field is backed by a file we actually read, so the bootstrap agent can
  * mark it [HIGH CONFIDENCE]. Anything we could not determine is null, never a

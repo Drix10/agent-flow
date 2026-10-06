@@ -107,12 +107,12 @@ test("install copies skills + reviewer agent and refuses to clobber user edits",
   try {
     const run = localInstall(dir);
     assert.equal(run(dir, "install", "--harness", "claude").status, 0);
-    assert.ok(existsSync(join(dir, ".claude", "skills", "reviewer", "SKILL.md")));
+    assert.ok(existsSync(join(dir, ".claude", "skills", "agent-flow-reviewer", "SKILL.md")));
     assert.ok(existsSync(join(dir, ".claude", "agents", "reviewer.md")));
-    writeFileSync(join(dir, ".claude", "skills", "reviewer", "SKILL.md"), "user edit");
+    writeFileSync(join(dir, ".claude", "skills", "agent-flow-reviewer", "SKILL.md"), "user edit");
     const r = run(dir, "install", "--harness", "claude");
     assert.equal(r.status, 1);
-    assert.equal(readFileSync(join(dir, ".claude", "skills", "reviewer", "SKILL.md"), "utf-8"), "user edit");
+    assert.equal(readFileSync(join(dir, ".claude", "skills", "agent-flow-reviewer", "SKILL.md"), "utf-8"), "user edit");
     assert.equal(run(dir, "install", "--harness", "nope").status, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -159,7 +159,7 @@ test("install --force overwrites a user edit instead of refusing", () => {
   const { dir } = repo();
   try {
     assert.equal(run(dir, "install", "--harness", "codex").status, 0);
-    const skillFile = join(dir, ".agents", "skills", "reviewer", "SKILL.md");
+    const skillFile = join(dir, ".agents", "skills", "agent-flow-reviewer", "SKILL.md");
     writeFileSync(skillFile, "user edit");
     assert.equal(run(dir, "install", "--harness", "codex").status, 1, "without --force, still refuses");
     assert.equal(readFileSync(skillFile, "utf-8"), "user edit");

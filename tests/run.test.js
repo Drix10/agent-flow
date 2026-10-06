@@ -1070,7 +1070,7 @@ test("run on Windows: a claude.cmd shim is launched through cmd.exe with no depr
     const out = JSON.parse(r.stdout);
     assert.equal(out.category, "malformed_report", JSON.stringify(out));
     const seen = readFileSync(record, "utf-8");
-    assert.match(seen, /Use the implementer skill/, "the prompt reached the shim");
+    assert.match(seen, /Use the agent-flow-implementer skill/, "the prompt reached the shim");
     assert.match(seen, /Worktree: /, "and was not cut short at a line break");
     assert.doesNotMatch(seen, /Path is C:/i, "%PATH% in the task text was not expanded by cmd.exe");
   } finally {

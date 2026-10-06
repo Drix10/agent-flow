@@ -53,7 +53,7 @@ test("guard: review_paths lets a role add to a CI workflow; every other workflow
 
     // The rest of AGENT_CONFIG is what constrains the agents; listing it opens nothing.
     const greedy = { ...base, review_paths: [".claude/", ".github/skills/", ".husky/", ".agents/", ".github/workflows/ci.yml"] };
-    for (const f of [".claude/settings.json", ".claude/agents/reviewer.md", ".github/skills/x/SKILL.md", ".husky/pre-commit", ".agents/skills/implementer/SKILL.md"]) {
+    for (const f of [".claude/settings.json", ".claude/agents/reviewer.md", ".github/skills/x/SKILL.md", ".husky/pre-commit", ".agents/skills/agent-flow-implementer/SKILL.md"]) {
       assert.equal(d(greedy, "implementer", "Write", { file_path: f, content: "x" })?.rule, "agent-config", f);
     }
     // Nor does it open the trust files, the manifest, or a protected path.

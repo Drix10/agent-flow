@@ -19,7 +19,7 @@ The guard reads command text, so it has documented limits (`tests/redteam/corpus
 
 - Live containment probes for the two remaining unverified harness claims (Gemini reviewer, Claude Code reviewer allow-list path), promoted to ✅/❌ in the matrix.
 - The Gardener consuming `audit summary` to propose `protected_paths` and lint rules (the report exists; the skill doesn't read it yet).
-- Public demo repo with a recorded, unedited `/bootstrap` → `/implement` → `/garden` run.
+- Public demo repo with a recorded, unedited `/agent-flow-bootstrap` → `/implement` → `/garden` run.
 
 ## Later
 

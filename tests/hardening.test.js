@@ -103,7 +103,7 @@ test("guard: custom and harness write tools are recognised whatever their naming
 test("guard: agents can't edit what constrains them (agent definitions, skills, CI)", () => {
   const root = tmp("cfg");
   try {
-    for (const p of [".claude/agents/reviewer.md", ".claude/settings.json", ".codex/agents/reviewer.toml", ".agents/skills/qa/SKILL.md", ".github/workflows/ci.yml"]) {
+    for (const p of [".claude/agents/reviewer.md", ".claude/settings.json", ".codex/agents/reviewer.toml", ".agents/skills/agent-flow-qa/SKILL.md", ".github/workflows/ci.yml"]) {
       assert.equal(call(root, "gardener", "write", { path: p })?.rule, "agent-config", `gardener → ${p}`);
       assert.equal(call(root, "orchestrator", "write", { path: p })?.rule, "agent-config", `orchestrator → ${p}`);
     }

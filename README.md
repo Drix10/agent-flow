@@ -20,6 +20,18 @@
 
 ---
 
+### Try it in 30 seconds — nothing installed, nothing written
+
+```bash
+npx @drix10/agent-flow scan
+```
+
+A read-only X-ray of any repository: languages, test and lint commands, CI, secret suspects. Or take just the skills, with any agent, via [skills.sh](https://skills.sh) (they call the CLI through `npx`, so there is still nothing to set up):
+
+```bash
+npx skills add Drix10/agent-flow
+```
+
 Give an agent a task and walk away. Agent Flow runs it through separate **implement, review and QA** steps in its own git worktree, blocks the edits an agent must never make, lets it fix its own failing tests and CI lists, and leaves you a short list of what needs a person.
 
 It is a Node.js CLI and skills package for Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf, Pi and other tools that read `AGENTS.md` (14 install targets plus Pi; see the [harness matrix](docs/HARNESS-MATRIX.md) for what each one enforces). It has no runtime dependencies and needs no `package.json` in the repository it sets up. Node.js 20 or later is required.
@@ -60,7 +72,7 @@ npx @drix10/agent-flow run "Add a --json flag so CI can parse the output"
 
 The command runs in a worktree and leaves checked work local by default. Add `--dry-run` to see setup gaps without launching roles. Add `--pr` to push the branch and open a pull request. Add `--auto-merge` only when you want eligible low-risk PRs queued for merge and the repository also sets `pipeline.auto_merge_low_risk: true`.
 
-On other harnesses, ask the agent to use the `invoking-agents` skill for an issue or task. It applies the same state, risk, review and QA checks using that harness's launch procedure. Pi also provides `/implement <issue>`.
+On other harnesses, ask the agent to use the `agent-flow-invoking-agents` skill for an issue or task. It applies the same state, risk, review and QA checks using that harness's launch procedure. Pi also provides `/implement <issue>`.
 
 ## Keep the setup current
 
@@ -96,7 +108,7 @@ Or use the [composite GitHub Action](action.yml), which also classifies pull req
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- uses: Drix10/agent-flow@v1.2.3
+- uses: Drix10/agent-flow@v1.2.4
 ```
 
 ## What it does
@@ -104,9 +116,9 @@ Or use the [composite GitHub Action](action.yml), which also classifies pull req
 | Area | Behavior | Command or enforcement |
 |---|---|---|
 | Context drift | Checks referenced paths, commands, relative links, cited commits and manifest timestamps. | `agent-flow doctor` |
-| Setup | Scans the repository and proposes context files with confidence markers. | `bootstrap` skill; `agent-flow scan` and `init` |
+| Setup | Scans the repository and proposes context files with confidence markers. | `agent-flow-bootstrap` skill; `agent-flow scan` and `init` |
 | Risk | Classifies the actual diff using protected paths and risk boundaries. | `agent-flow classify` |
-| Pipeline | Runs implementation, mechanical classification, review, required gates and QA with a round cap. | `agent-flow run` on Claude Code; `invoking-agents` skill elsewhere |
+| Pipeline | Runs implementation, mechanical classification, review, required gates and QA with a round cap. | `agent-flow run` on Claude Code; `agent-flow-invoking-agents` skill elsewhere |
 | Risk changes | Compares new dependencies, credentials, payment/auth code and other risk signals with a reviewed baseline. | `agent-flow audit-risk --fail-on-new` |
 | Audit trail | Records state changes, guard blocks, gate results and role runs in a hash-chained log. | `agent-flow audit verify` and `summary` |
 | Deferred shortcuts | Reads back every `lean:` comment (a ceiling and when to upgrade) and flags the ones that name no trigger. | `agent-flow debt`; [Lean](docs/LEAN.md) |
@@ -143,7 +155,7 @@ The loop is not equally enforced on every harness. The guard blocks tool calls d
 
 ## Repository context
 
-Agent Flow uses `AGENTS.md` for shared agent instructions. Claude Code can load it through `CLAUDE.md` containing `@AGENTS.md`. Module-level `AGENTS.md` files add rules for that part of the repository. `CONTEXT_MANIFEST.json` records referenced paths, protected paths, risk boundaries and pipeline settings. The `gardener` skill checks and repairs this context; it re-reads the code before refreshing timestamps.
+Agent Flow uses `AGENTS.md` for shared agent instructions. Claude Code can load it through `CLAUDE.md` containing `@AGENTS.md`. Module-level `AGENTS.md` files add rules for that part of the repository. `CONTEXT_MANIFEST.json` records referenced paths, protected paths, risk boundaries and pipeline settings. The `agent-flow-gardener` skill checks and repairs this context; it re-reads the code before refreshing timestamps.
 
 When an agent repeats a mistake, prefer a mechanical fix: an invariant in code, a test, a guard rule or a protected path. Prompts and prose are the least reliable enforcement.
 

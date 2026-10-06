@@ -18,7 +18,7 @@ It is read from the default branch's manifest, like `gates` and `policy`, so a b
 
 ## The ladder (`full`)
 
-Stop at the first rung that holds: do the criteria need it at all, then does the repo already have it, then the standard library, then a platform feature (see [native-first](../skills/implementer/references/native-first.md)), then an installed dependency, then one line, then the minimum that works. Add no abstraction the criteria didn't ask for, no scaffolding for later, and the fewest files.
+Stop at the first rung that holds: do the criteria need it at all, then does the repo already have it, then the standard library, then a platform feature (see [native-first](../skills/agent-flow-implementer/references/native-first.md)), then an installed dependency, then one line, then the minimum that works. Add no abstraction the criteria didn't ask for, no scaffolding for later, and the fewest files.
 
 The ladder runs after understanding the problem, never instead of it: the Implementer reads the code the change touches and traces the real flow first. A small diff in the wrong place is a second bug.
 

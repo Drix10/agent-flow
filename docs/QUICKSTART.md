@@ -27,7 +27,7 @@ npx @drix10/agent-flow hook install                                             
 
 ## 2. Bootstrap
 
-`init` gives you a mechanical starting point; bootstrap has an agent fill it in. Pi: `/bootstrap`. Claude Code, Codex, Gemini CLI, Cursor, Copilot, Windsurf: ask the agent to bootstrap the repo (it has the `bootstrap` skill installed) — or run it yourself, `npx @drix10/agent-flow scan`, and follow the same skill.
+`init` gives you a mechanical starting point; bootstrap has an agent fill it in. Pi: `/agent-flow-bootstrap`. Claude Code, Codex, Gemini CLI, Cursor, Copilot, Windsurf: ask the agent to bootstrap the repo (it has the `agent-flow-bootstrap` skill installed) — or run it yourself, `npx @drix10/agent-flow scan`, and follow the same skill.
 
 It scans read-only, stops if it finds committed secrets, proposes `AGENTS.md` and `CONTEXT_MANIFEST.json` with confidence markers, and asks you for protected paths and critical areas. Each file is written only after you approve it.
 
@@ -52,7 +52,7 @@ It creates a local worktree, runs implementation, review, gates and QA, and leav
 
 **If it stops or you interrupt it,** nothing is lost. Ctrl-C stops the agent and everything it started; the issue number it printed (for a task you typed, 100000 and up) resumes it with `npx @drix10/agent-flow run <number>`, and finished steps are not repeated. When it stops with "This needs you", read the reason, fix what it names, and run the two commands it prints to send the issue back to work. A second `run` for an issue that is already running is refused. If you handled an issue yourself, `npx @drix10/agent-flow state dismiss --issue <number> --reason "<why>"` drops it from the list (its files stay; agents cannot do this). Work the agent forgot to commit is sent back to it, and a change that touches nothing stops as `no_changes`.
 
-For a GitHub issue, use `npx @drix10/agent-flow run 42`. Pi: `/implement 42`. On Codex, Gemini CLI, Cursor, Copilot and Windsurf, ask the agent to work the issue through the `invoking-agents` skill; that skill uses the same checks with the harness-specific launch path.
+For a GitHub issue, use `npx @drix10/agent-flow run 42`. Pi: `/implement 42`. On Codex, Gemini CLI, Cursor, Copilot and Windsurf, ask the agent to work the issue through the `agent-flow-invoking-agents` skill; that skill uses the same checks with the harness-specific launch path.
 
 Worktree → Implementer → mechanical classification → Reviewer (no write or shell tools) → QA (re-runs failures once to catch flakes) → PR. Round 3 escalates to **Needs Me**. Critical changes open a **draft** PR for you.
 
@@ -60,10 +60,10 @@ To follow along: `AGENT_STATE.md`, or `npx @drix10/agent-flow state`.
 
 ## 4. Keep context true
 
-Pi: `/doctor` (report only), `/garden` (sync docs index, audit risk, re-verify and repair context). Elsewhere: `npx @drix10/agent-flow doctor`, or ask the agent to garden the repo (`gardener` skill).
+Pi: `/doctor` (report only), `/garden` (sync docs index, audit risk, re-verify and repair context). Elsewhere: `npx @drix10/agent-flow doctor`, or ask the agent to garden the repo (`agent-flow-gardener` skill).
 
 Add `npx @drix10/agent-flow doctor` and `npx @drix10/agent-flow audit-risk --fail-on-new` to CI. There's a ready-made workflow in the README.
 
 ## Headless mode
 
-Slash commands only exist on Pi, and only in interactive sessions. Everywhere — headless Pi (`pi -p`), `claude -p`, `codex exec` — name the skill and task in the prompt instead: `"Use the gardener skill's /doctor procedure"`. On Pi, file-writing tools refuse to run headless unless you launch with `AGENT_FLOW_HEADLESS_WRITES=1`, because there is no human to confirm; on the others, the harness's own headless approval policy applies (e.g. Codex's `--ask-for-approval`/`--sandbox`).
+Slash commands only exist on Pi, and only in interactive sessions. Everywhere — headless Pi (`pi -p`), `claude -p`, `codex exec` — name the skill and task in the prompt instead: `"Use the agent-flow-gardener skill's /doctor procedure"`. On Pi, file-writing tools refuse to run headless unless you launch with `AGENT_FLOW_HEADLESS_WRITES=1`, because there is no human to confirm; on the others, the harness's own headless approval policy applies (e.g. Codex's `--ask-for-approval`/`--sandbox`).

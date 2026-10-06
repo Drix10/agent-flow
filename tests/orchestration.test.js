@@ -1,5 +1,5 @@
 // Orchestration layer: strict schemas for Codex, harness envelopes, the audit line, and the
-// background runner that skills/invoking-agents/references/launch.md tells the orchestrator to write.
+// background runner that skills/agent-flow-invoking-agents/references/launch.md tells the orchestrator to write.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -205,8 +205,8 @@ test("report --harness appends a role_run line to .agent-flow/audit.jsonl", () =
 // The skill text: the runner it tells the orchestrator to write, and the commands it gives
 // ---------------------------------------------------------------------------
 
-const launch = read("skills/invoking-agents/references/launch.md");
-const skill = read("skills/invoking-agents/SKILL.md");
+const launch = read("skills/agent-flow-invoking-agents/references/launch.md");
+const skill = read("skills/agent-flow-invoking-agents/SKILL.md");
 const runnerSource = () => launch.match(/cat > "\$A\/run-role\.mjs" <<'EOF'\n([\s\S]*?)\nEOF/)[1];
 
 function waitFor(path, ms = 15000) {
@@ -275,7 +275,7 @@ test("launch commands: Codex uses the strict schemas, Gemini shell roles can run
 test("orchestrator skill: resume path, HEAD check, QA environment routing, idempotent PR, size", () => {
   // The procedure lives in references/manual.md so a session that uses the CLI never loads it.
   const procedure = `${skill}
-${read("skills/invoking-agents/references/manual.md")}`;
+${read("skills/agent-flow-invoking-agents/references/manual.md")}`;
   assert.match(procedure, /`Working` → .*Resuming/);
   assert.match(procedure, /rev-parse HEAD/);
   assert.match(procedure, /qa_environment/);
@@ -284,7 +284,7 @@ ${read("skills/invoking-agents/references/manual.md")}`;
   assert.ok(!/classify both first/.test(procedure), "classify can't run before implementation");
   assert.ok(skill.split("\n").length <= 80, `SKILL.md is ${skill.split("\n").length} lines`);
   assert.ok(!/enableAgents/.test(read(".gemini/agents/reviewer.md")), "subagents are on by default in Gemini CLI");
-  assert.match(read(".claude/agents/reviewer.md"), /^skills:\n\s+- reviewer$/m);
+  assert.match(read(".claude/agents/reviewer.md"), /^skills:\n\s+- agent-flow-reviewer$/m);
 });
 
 test("manifest: a round cap below 1 is rejected (0 would escalate before any work), models must be non-empty strings", async () => {

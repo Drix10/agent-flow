@@ -120,7 +120,7 @@ Checks (CI-safe, read-only):
       --base <rev> --head <rev> --issue <n>  --fail-on-protected  --fail-on-critical
                             --fail-on-policy (manifest policy rules)  --fail-on-heuristic (no risk_boundaries set)
   check-staged              Pre-commit gate: protected paths, secrets, broken context refs
-  scan                      Read-only repo reconnaissance (what /bootstrap sees)
+  scan                      Read-only repo reconnaissance (what /agent-flow-bootstrap sees)
 
 Pipeline (the CLI twin of the Pi tools — same rules, any harness):
   state [show] [--issue <n>]  Print pipeline state
@@ -235,7 +235,7 @@ function cmdDoctor(args) {
     // A fresh repo isn't broken: nothing to drift yet, so this is a note and exit 0 (CI stays green).
     if (none) {
       warn(`no agent context files found (${CONTEXT_FILE_NAMES})`);
-      console.log(dim("  Start one: `agent-flow init` writes a starter AGENTS.md + manifest, or ask your agent to use the bootstrap skill."));
+      console.log(dim("  Start one: `agent-flow init` writes a starter AGENTS.md + manifest, or ask your agent to use the agent-flow-bootstrap skill."));
       return;
     }
     const section = (label, items, fmt) => {
@@ -434,7 +434,7 @@ function doctorNextStep(rep, schema) {
     return "fill in the {{PLACEHOLDERS}} above (for a manifest, `agent-flow init` generates a filled one), then re-run `agent-flow doctor`";
   }
   if (rep.missing_paths.length || rep.missing_context_files.length) {
-    return "fix the references above (or ask your agent to use the gardener skill's /repair-docs procedure), then re-run `agent-flow doctor`";
+    return "fix the references above (or ask your agent to use the agent-flow-gardener skill's /repair-docs procedure), then re-run `agent-flow doctor`";
   }
   if (schema.length) return "fix CONTEXT_MANIFEST.json (`agent-flow schema manifest` prints the schema)";
   return "re-read the stale files against the code, then `agent-flow repair --yes` to refresh their timestamps";
@@ -1084,7 +1084,7 @@ function auditRoleRun(role, file, args, r) {
 
 function cmdRepair(args) {
   if (!args.yes) {
-    return usage("repair --yes — refreshes every manifest timestamp. Only run it after re-reading the code each flagged claim describes (the gardener skill's /repair-docs procedure).");
+    return usage("repair --yes — refreshes every manifest timestamp. Only run it after re-reading the code each flagged claim describes (the agent-flow-gardener skill's /repair-docs procedure).");
   }
   const rt = root();
   if (!existsSync(manifestLib.manifestPathFor(rt, args.manifest))) throw new UserError("no CONTEXT_MANIFEST.json to repair — `agent-flow init` creates one");
@@ -1222,6 +1222,20 @@ async function cmdGuard(args) {
 
 const RULE_NOTE = "has no hook agent-flow can use to block a call, so enforcement here is the pre-commit hook (`agent-flow hook install`) and CI; the rules file only asks.";
 
+/**
+ * Skills renamed to `agent-flow-*`: one generic word (`reviewer`, `qa`, …) shares a flat namespace with every other
+ * package's skills on every harness, so the unprefixed names collided. `update` and `uninstall` retire the old
+ * directory when it is exactly what install wrote; one you edited is kept and named.
+ */
+const RENAMED_SKILLS = {
+  bootstrap: "agent-flow-bootstrap",
+  gardener: "agent-flow-gardener",
+  implementer: "agent-flow-implementer",
+  "invoking-agents": "agent-flow-invoking-agents",
+  qa: "agent-flow-qa",
+  reviewer: "agent-flow-reviewer",
+};
+
 const TARGETS = {
   claude: { skills: ".claude/skills", agents: [[".claude/agents/reviewer.md", ".claude/agents/reviewer.md"]], note: "" },
   codex: {
@@ -1271,7 +1285,7 @@ function installedHarnesses(rt) {
     }
   };
   const ownWiring = (h) => (h === "claude" ? wired(".claude/settings.json") : TARGETS[h].hook ? wired(HOOK_FILES[TARGETS[h].hook].path) : TARGETS[h].plugin ? wired(".opencode/plugins/agent-flow-guard.js") : TARGETS[h].agents.some(([, to]) => wired(to)));
-  const present = (h) => existsSync(join(rt, TARGETS[h].skills, "bootstrap")) || !!updateLib.readRecord(rt, TARGETS[h].skills);
+  const present = (h) => ["bootstrap", RENAMED_SKILLS.bootstrap].some((d) => existsSync(join(rt, TARGETS[h].skills, d))) || !!updateLib.readRecord(rt, TARGETS[h].skills);
   const installed = everything.filter((h) => present(h) && (updateLib.readRecord(rt, TARGETS[h].skills)?.harness === h || ownWiring(h)));
   const byDir = (dir) => everything.filter((h) => TARGETS[h].skills === dir && present(h));
   // An install from before the record existed: the folder is there, but nothing names whose it is.
@@ -1343,13 +1357,13 @@ function runPreflight(rt, af, harness, { pr = false } = {}) {
   const problems = [];
   const loaded = manifestLib.loadManifest(rt, undefined);
   if (!loaded.ok) {
-    if (loaded.error === "manifest_not_found") problems.push("this repo isn't set up yet — run `npx @drix10/agent-flow install --harness claude`, then ask Claude to use the bootstrap skill");
+    if (loaded.error === "manifest_not_found") problems.push("this repo isn't set up yet — run `npx @drix10/agent-flow install --harness claude`, then ask Claude to use the agent-flow-bootstrap skill");
     else problems.push(`CONTEXT_MANIFEST.json can't be read (${loaded.error}); run \`npx @drix10/agent-flow doctor\` before starting work`);
   } else if (loaded.value.problems.length) {
     const found = loaded.value.problems;
     problems.push(`CONTEXT_MANIFEST.json has ${found.length} problem${found.length === 1 ? "" : "s"}: ${found.slice(0, 2).join("; ")}${found.length > 2 ? "; …" : ""}. Fix it (\`npx @drix10/agent-flow doctor\` lists them all) before starting work`);
   }
-  if (harness !== "claude") problems.push(`\`run\` drives Claude Code for now (you asked for ${harness}); Codex and Gemini still work through the invoking-agents skill`);
+  if (harness !== "claude") problems.push(`\`run\` drives Claude Code for now (you asked for ${harness}); Codex and Gemini still work through the agent-flow-invoking-agents skill`);
   else {
     // An npm .cmd shim must go through cmd.exe. Node prints a deprecation warning when arguments are passed alongside
     // `shell: true`, so in that case the whole command is one quoted string (as the role launcher does).
@@ -1550,13 +1564,13 @@ function cmdStatus(args) {
   const loaded = manifestLib.loadManifest(rt, undefined);
   let gates = [];
   if (!loaded.ok) {
-    add("Protection", "bad", "no CONTEXT_MANIFEST.json: nothing says what to protect", "npx @drix10/agent-flow install --harness claude, then ask Claude to use the bootstrap skill");
+    add("Protection", "bad", "no CONTEXT_MANIFEST.json: nothing says what to protect", "npx @drix10/agent-flow install --harness claude, then ask Claude to use the agent-flow-bootstrap skill");
   } else {
     const man = loaded.value.manifest;
     const prot = (man.protected_paths ?? []).length;
     const crit = (man.risk_boundaries ?? []).filter((b) => b.risk_level === "critical").length;
     if (prot) add("Protection", "ok", `${prot} protected path${prot === 1 ? "" : "s"}, ${crit} critical area${crit === 1 ? "" : "s"}`);
-    else add("Protection", "warn", "no protected paths set: only secrets and git internals are guarded", "ask Claude to use the bootstrap skill and answer the risk questions");
+    else add("Protection", "warn", "no protected paths set: only secrets and git internals are guarded", "ask Claude to use the agent-flow-bootstrap skill and answer the risk questions");
     const reviewOnly = manifestLib.reviewPathsOf(man).length;
     if (reviewOnly) add("Protection", "ok", `${reviewOnly} review-only path${reviewOnly === 1 ? "" : "s"}: agents may add lines (a new CI test), a person reviews the pull request`);
     if (crit && !man.pipeline?.models?.high_reasoning) {
@@ -1589,7 +1603,7 @@ function cmdStatus(args) {
     const needs = [...new Set(gates.filter((g) => !here.includes(g)).flatMap((g) => g.os ?? []))].map(osName).join("/");
     const runs = `${here.length} check${here.length === 1 ? "" : "s"} run${here.length === 1 ? "s" : ""} here`;
     add("Checks", skipped ? "warn" : "ok", skipped ? `${runs}; ${skipped} need${skipped === 1 ? "s" : ""} ${needs} and ${skipped === 1 ? "is" : "are"} skipped (CI runs them)` : runs, skipped ? `use a ${needs} clone for the full set` : undefined);
-  } else add("Checks", "warn", "no checks (gates) defined: the pipeline can't prove a change works", "ask Claude to use the bootstrap skill");
+  } else add("Checks", "warn", "no checks (gates) defined: the pipeline can't prove a change works", "ask Claude to use the agent-flow-bootstrap skill");
 
   // Work: what is waiting on you?
   const sessions = state.readState(rt).sessions ?? [];
@@ -1659,6 +1673,10 @@ function recordInstall(rt, harness, t, plan, opts = {}) {
   if (t.plugin && !files[plugin] && prev?.files[plugin]) files[plugin] = prev.files[plugin];
   if (opts.vendorWritten) files[VENDOR_DIR] = updateLib.hashTree(join(rt, VENDOR_DIR));
   else if (prev?.files[VENDOR_DIR]) files[VENDOR_DIR] = prev.files[VENDOR_DIR];
+  for (const old of Object.keys(RENAMED_SKILLS)) {
+    const label = `${t.skills}/${old}`;
+    if (files[label] && !existsSync(join(rt, label))) delete files[label];
+  }
   updateLib.writeRecord(rt, t.skills, { version: VERSION, harness, files });
 }
 
@@ -1697,6 +1715,14 @@ function cmdUpdate(args) {
       const src = join(pkgRoot, "skills", name);
       if (statSync(src).isDirectory()) add(h, `${t.skills}/${name}`, src, join(rt, t.skills, name), rec?.files[`${t.skills}/${name}`]);
     }
+    for (const old of Object.keys(RENAMED_SKILLS)) {
+      const label = `${t.skills}/${old}`;
+      const dst = join(rt, label);
+      const onDisk = updateLib.hashTree(dst);
+      if (onDisk === null) continue;
+      const recorded = rec?.files[label];
+      items.push({ harness: h, label, src: null, dst, state: recorded !== undefined && onDisk === recorded ? "remove" : "edited", superseded: RENAMED_SKILLS[old] });
+    }
     for (const [from, to] of t.agents) add(h, to, join(pkgRoot, from), join(rt, to), rec?.files[to]);
     if (t.plugin) {
       const label = ".opencode/plugins/agent-flow-guard.js";
@@ -1721,6 +1747,7 @@ function cmdUpdate(args) {
   }
   const pending = items.filter((i) => i.state === "upgrade" || i.state === "new");
   const kept = items.filter((i) => i.state === "edited");
+  const retired = items.filter((i) => i.state === "remove");
   const runtimeDue = runtime && !runtime.same && !runtime.downgrade;
   // Hook wiring (a new matcher, a moved runtime) can be out of date on its own: ask the installers what they would change.
   const hookDue = [];
@@ -1742,8 +1769,8 @@ function cmdUpdate(args) {
     if (t.hook && probe((a) => installGuardHook(rt, a, t.hook))) hookDue.push(h);
     if (h === "claude" && probe((a) => installClaudeHook(rt, a))) hookDue.push(h);
   }
-  const available = pending.length > 0 || !!runtimeDue || hookDue.length > 0 || (args.force && kept.length > 0);
-  const result = { version: VERSION, vendored_version: updateLib.vendoredVersion(rt), runtime: runtime && { from: runtime.have, to: VERSION, action: runtime.downgrade ? "refused_downgrade" : runtime.same ? "up_to_date" : runtime.edited && !args.force ? "edited_kept" : "upgrade" }, upgrade: pending.map((i) => i.label), edited_kept: args.force ? [] : kept.map((i) => i.label), self_is_vendored: selfIsVendored };
+  const available = pending.length > 0 || retired.length > 0 || !!runtimeDue || hookDue.length > 0 || (args.force && kept.length > 0);
+  const result = { version: VERSION, vendored_version: updateLib.vendoredVersion(rt), runtime: runtime && { from: runtime.have, to: VERSION, action: runtime.downgrade ? "refused_downgrade" : runtime.same ? "up_to_date" : runtime.edited && !args.force ? "edited_kept" : "upgrade" }, upgrade: pending.map((i) => i.label), removed_superseded: retired.map((i) => i.label), edited_kept: args.force ? [] : kept.map((i) => i.label), self_is_vendored: selfIsVendored };
   if (args.check) {
     out(args, { ...result, update_available: available }, () => (available ? warn(`an update is available (${VERSION}): run \`npx ${PACKAGE}@latest update --yes\``) : ok("up to date")));
     return available ? 10 : 0;
@@ -1760,6 +1787,7 @@ function cmdUpdate(args) {
     for (const i of items) {
       if (i.state === "up_to_date") console.log(dim(`= ${i.label} (up to date)`));
       else if (i.state === "edited" && !args.force) warn(`${i.label} was edited since install: kept (--force to replace)`);
+      else if (i.state === "remove" || i.superseded) console.log(`  ${i.label}  removed (renamed to ${TARGETS[i.harness].skills}/${i.superseded})`);
       else console.log(`  ${i.label}  ${i.state === "new" ? "new" : "upgrade"}`);
     }
     if (!available) return ok(hookNotes.size ? "everything else is up to date" : "everything is up to date");
@@ -1769,6 +1797,10 @@ function cmdUpdate(args) {
   // Apply.
   if (runtimeDue && (!runtime.edited || args.force)) runtimeBinRel(rt, { ...args, vendor: true }, "update");
   for (const i of items) {
+    if (i.superseded) {
+      if (i.state === "remove" || args.force) rmSync(i.dst, { recursive: true, force: true });
+      continue;
+    }
     if (i.state === "edited" && !args.force) continue;
     if (i.state === "up_to_date") continue;
     mkdirSync(dirname(i.dst), { recursive: true });
@@ -1838,6 +1870,7 @@ function cmdUninstall(args) {
           const src = join(pkgRoot, "skills", name);
           if (statSync(src).isDirectory()) check(`${t.skills}/${name}`, src, join(rt, t.skills, name));
         }
+        for (const old of Object.keys(RENAMED_SKILLS)) check(`${t.skills}/${old}`, null, join(rt, t.skills, old));
       }
     }
     for (const [from, to] of t.agents) check(to, join(pkgRoot, from), join(rt, to));
@@ -2030,6 +2063,19 @@ function cmdInstall(args) {
     }
   }
   if (t.hook) installGuardHook(rt, args, t.hook); // best effort: skills alone are still a valid install
+  for (const old of Object.keys(RENAMED_SKILLS)) {
+    const label = `${t.skills}/${old}`;
+    const dst = join(rt, label);
+    const onDisk = updateLib.hashTree(dst);
+    if (onDisk === null) continue;
+    const rec = updateLib.readRecord(rt, t.skills);
+    const renamed = `${t.skills}/${RENAMED_SKILLS[old]}`;
+    if (args["dry-run"]) console.log(dim(`would remove ${label} (renamed to ${renamed})`));
+    else if (rec?.files[label] !== undefined && onDisk === rec.files[label]) {
+      rmSync(dst, { recursive: true, force: true });
+      ok(`removed ${label} (renamed to ${renamed})`);
+    } else warn(`${label} is from an older agent-flow and was edited: kept — remove it by hand`);
+  }
   if (args.harness === "claude") {
     if (!installClaudeHook(rt, args)) conflicts.push(".claude/settings.json");
     importAgentsMd(rt, args);
@@ -2040,7 +2086,7 @@ function cmdInstall(args) {
   const who = args.harness === "claude" ? "Claude" : "your agent";
   const steps = [
     "npx @drix10/agent-flow doctor   (checks what your context files claim today)",
-    `ask ${who}: "use the bootstrap skill to set up this repo"`,
+    `ask ${who}: "use the agent-flow-bootstrap skill to set up this repo"`,
     "npx @drix10/agent-flow hook install   (pre-commit gate)",
     `commit what install wrote${vendoredThisRun ? ` (including ${VENDOR_DIR}/, so the hook runs for everyone who clones)` : ""}`,
   ];
@@ -2374,7 +2420,7 @@ async function cmdInit(args) {
   }
   if (!args.json) {
     for (const f of plan.files) if (f.exists) warn(`${f.path} exists — not overwritten`);
-    if (plan.existing_rules) console.log(dim(`  ${plan.existing_rules.join(", ")} already holds your rules, so no AGENTS.md was generated beside it. Move the shared rules into AGENTS.md when you're ready (other agents read that file), or ask your agent to use the bootstrap skill to merge them.`));
+    if (plan.existing_rules) console.log(dim(`  ${plan.existing_rules.join(", ")} already holds your rules, so no AGENTS.md was generated beside it. Move the shared rules into AGENTS.md when you're ready (other agents read that file), or ask your agent to use the agent-flow-bootstrap skill to merge them.`));
     if (todo.length && !args.yes) {
       for (const f of todo) console.log(`${dim(`--- ${f.path} (would write) ---`)}\n${f.content.trimEnd()}\n`);
     }

@@ -21,8 +21,8 @@ test("skill descriptions are loaded into every session: each is short and the to
 });
 
 test("the orchestrator skill keeps its procedure in a reference, so a CLI run never loads it", () => {
-  assert.ok(read("skills/invoking-agents/SKILL.md").length <= 4_500);
-  assert.ok(read("skills/invoking-agents/references/manual.md").includes("## Step 1: The round loop"));
+  assert.ok(read("skills/agent-flow-invoking-agents/SKILL.md").length <= 4_500);
+  assert.ok(read("skills/agent-flow-invoking-agents/references/manual.md").includes("## Step 1: The round loop"));
 });
 
 test("the rules file and the starter templates stay small", () => {
@@ -33,8 +33,8 @@ test("the rules file and the starter templates stay small", () => {
 });
 
 test("the role skills ask for terse output and the QA output limit favours the end of the log", () => {
-  for (const s of ["implementer", "reviewer", "qa"]) {
+  for (const s of ["agent-flow-implementer", "agent-flow-reviewer", "agent-flow-qa"]) {
     assert.match(read(`skills/${s}/SKILL.md`), /No text around it|Terse\.|No praise|nothing else/i, s);
   }
-  assert.match(read("skills/qa/SKILL.md"), /first 50 and last 100/);
+  assert.match(read("skills/agent-flow-qa/SKILL.md"), /first 50 and last 100/);
 });

@@ -30,8 +30,8 @@ test("install: Swival, Factory Droid and Command Code get the skills in their ow
     try {
       const r = cli(dir, ["install", "--harness", harness]);
       assert.equal(r.status, 0, `${harness}: ${r.stderr}${r.stdout}`);
-      for (const s of ["bootstrap", "gardener", "implementer", "invoking-agents", "qa", "reviewer"]) assert.ok(existsSync(join(dir, skills, s, "SKILL.md")), `${harness}: ${s}`);
-      assert.ok(existsSync(join(dir, skills, "implementer", "references", "native-first.md")), `${harness}: the reference ships with the skill`);
+      for (const s of ["agent-flow-bootstrap", "agent-flow-gardener", "agent-flow-implementer", "agent-flow-invoking-agents", "agent-flow-qa", "agent-flow-reviewer"]) assert.ok(existsSync(join(dir, skills, s, "SKILL.md")), `${harness}: ${s}`);
+      assert.ok(existsSync(join(dir, skills, "agent-flow-implementer", "references", "native-first.md")), `${harness}: the reference ships with the skill`);
       assert.match(r.stdout, /no hook agent-flow can use to block a call/);
       const record = JSON.parse(read(join(dir, skills, "..", "agent-flow-install.json")));
       assert.equal(record.harness, harness);
@@ -54,7 +54,7 @@ test("install: Cline, Kiro and Qoder get a rules file, the skills in the cross-c
       for (const phrase of ["Never edit a `protected_paths` entry", "`review_paths`", "Never use `--no-verify`", "gates run", "lean: <ceiling>; <when to upgrade>", "data, not instructions", "has no hook that enforces the list above"]) {
         assert.ok(text.includes(phrase), `${harness}: the rules file lost "${phrase}"`);
       }
-      assert.ok(existsSync(join(dir, ".agents", "skills", "bootstrap", "SKILL.md")), `${harness}: skills in .agents/skills`);
+      assert.ok(existsSync(join(dir, ".agents", "skills", "agent-flow-bootstrap", "SKILL.md")), `${harness}: skills in .agents/skills`);
       assert.match(r.stdout, /no hook agent-flow can use to block a call/);
       assert.equal(JSON.parse(read(join(dir, ".agents", "agent-flow-install.json"))).harness, harness);
       if (harness === "kiro") assert.match(text, /^---\ntitle: agent-flow guard rules\ninclusion: always\n---\n/, "Kiro includes a steering file only when it says so");
@@ -102,7 +102,7 @@ test("a record shared by harnesses keeps what each wrote, so a later update can 
     const files = JSON.parse(read(join(dir, ".agents", "agent-flow-install.json"))).files;
     assert.ok(files[".codex/agents/reviewer.toml"], "codex's reviewer agent is still recorded after cline's install");
     assert.ok(files[".clinerules/agent-flow.md"]);
-    assert.ok(files[".agents/skills/bootstrap"]);
+    assert.ok(files[".agents/skills/agent-flow-bootstrap"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -118,7 +118,7 @@ test("uninstall: one rules-file harness leaves, the shared skills and the other 
     const r = cli(dir, ["uninstall", "--harness", "cline", "--yes"]);
     assert.equal(r.status, 0, r.stderr);
     assert.ok(!existsSync(join(dir, ".clinerules")), "cline's rules file and its empty folder are gone");
-    assert.ok(existsSync(join(dir, ".agents", "skills", "bootstrap")), "the skills folder is still used by codex and kiro");
+    assert.ok(existsSync(join(dir, ".agents", "skills", "agent-flow-bootstrap")), "the skills folder is still used by codex and kiro");
     assert.match(r.stdout, /keep +\.agents\/skills\/ .*still used by/);
     const kiro = cli(dir, ["uninstall", "--harness", "kiro", "--yes"]);
     assert.match(kiro.stdout, /keep +\.kiro\/steering\/agent-flow\.md .*edited since install/);

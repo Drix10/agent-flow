@@ -20,7 +20,7 @@ for (const [bin, { help, flags }] of Object.entries(WANT)) {
   if (missing.length) {
     failed++;
     console.log(`x ${bin}: --help no longer lists ${missing.join(", ")}`);
-    console.log(`::error::${bin} --help no longer lists ${missing.join(", ")}; update skills/invoking-agents/references/launch.md`);
+    console.log(`::error::${bin} --help no longer lists ${missing.join(", ")}; update skills/agent-flow-invoking-agents/references/launch.md`);
   } else console.log(`ok ${bin}: ${flags.join(" ")}`);
 }
 process.exit(failed ? 1 : 0);

@@ -11,7 +11,7 @@ Set up Agent Flow (@drix10/agent-flow) in this repository, end to end. Work in t
 
 2. Install. Run `npx @drix10/agent-flow install --harness <your tool>`. It copies the skills and wires the guard hook. Without a package.json it also vendors a small runtime into `.agent-flow-runtime/`; commit that directory. If the output has a "note", do what it says (for example Gemini needs `/trust` and a `context.fileName` setting). It also wires a short `SessionStart` briefing (`--no-brief` leaves it out) where the tool has hooks. If I use several tools, repeat with each `--harness`; `cline`, `kiro`, `qoder`, `swival`, `factory` and `commandcode` are instruction-tier (a rules file or a skills folder, no hook that blocks a call).
 
-3. Bootstrap. Use the `bootstrap` skill (Claude Code: `/bootstrap`; elsewhere: "use the bootstrap skill"). It scans the repo read-only and proposes AGENTS.md and CONTEXT_MANIFEST.json. Keep any rules file I already have (AGENTS.md, CLAUDE.md, .cursorrules) as the source of truth; do not overwrite it. ASK me before writing:
+3. Bootstrap. Use the `agent-flow-bootstrap` skill (Claude Code: `/agent-flow-bootstrap`; elsewhere: "use the bootstrap skill"). It scans the repo read-only and proposes AGENTS.md and CONTEXT_MANIFEST.json. Keep any rules file I already have (AGENTS.md, CLAUDE.md, .cursorrules) as the source of truth; do not overwrite it. ASK me before writing:
    - protected_paths: files that must never change (frozen specs, migrations, ledgers, lockfiles). Propose from what you found; I confirm. A protected path stops an unattended run.
    - review_paths: CI workflows (usually `.github/workflows/`). Agents may add lines there (a new test in the CI list) and I review the pull request, so a CI change doesn't stop the run. An edited or removed line, or an added line that reaches secrets, is sent back. Ask me; don't list the same path under protected_paths.
    - risk_boundaries: the areas where a mistake is expensive (auth, payments, data, kernel code). Propose; I confirm.
@@ -43,7 +43,7 @@ Rules while you work: do not edit protected paths or the guard's wiring to get a
 | Step | Command | Result |
 |---|---|---|
 | Install | `install --harness <name>` | Skills in the tool's folder (`.claude/skills`, `.agents/skills`, `.cursor/skills`, `.gemini/skills`, `.github/skills`), the Reviewer agent where the tool supports one, and the guard hook where it has hooks. Merged into existing settings, never replacing them. |
-| Bootstrap | the `bootstrap` skill | `AGENTS.md` and `CONTEXT_MANIFEST.json` (protected paths, risk boundaries, gates, models), written only after you confirm. |
+| Bootstrap | the `agent-flow-bootstrap` skill | `AGENTS.md` and `CONTEXT_MANIFEST.json` (protected paths, risk boundaries, gates, models), written only after you confirm. |
 | Wire | `hook install`, `codeowners`, `manifest sync`, `baseline accept` | Pre-commit gate, owner review on protected paths, a manifest that matches the files on disk, a risk baseline. |
 | Verify | `doctor`, `gates run`, `status` | Broken context references, gates that actually pass, and one screen of what protects the repo. |
 

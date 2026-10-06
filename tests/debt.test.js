@@ -164,10 +164,10 @@ test("status shows deferred shortcuts only when there are some, and warns about 
   }
 });
 
-test("the gardener skill and prompts know /debt and /audit-lean", async () => {
+test("the agent-flow-gardener skill and prompts know /debt and /audit-lean", async () => {
   const { readFileSync } = await import("node:fs");
   const root = join(fileURLToPath(new URL("..", import.meta.url)));
-  const gardener = readFileSync(join(root, "skills/gardener/SKILL.md"), "utf-8");
+  const gardener = readFileSync(join(root, "skills/agent-flow-gardener/SKILL.md"), "utf-8");
   for (const phrase of ["## /debt", "## /audit-lean", "AF debt", "[no-trigger]", "net: -N lines, -M dependencies possible"]) assert.ok(gardener.includes(phrase), phrase);
   for (const p of ["debt", "audit-lean"]) assert.match(readFileSync(join(root, "prompts", `${p}.md`), "utf-8"), /^---\ndescription: .+\n---\n/);
   assert.match(readFileSync(join(root, "prompts/garden.md"), "utf-8"), /\/audit-risk → \/debt → \/doctor/);

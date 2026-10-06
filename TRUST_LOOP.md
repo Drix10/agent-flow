@@ -35,7 +35,7 @@ A system that doesn't feed its own outcomes back into its inputs degrades. The T
 
 ### 1. Bootstrap (Trust Creation)
 
-The `/bootstrap` command scans the repo and **proposes** `AGENTS.md` (root and per module) plus `CONTEXT_MANIFEST.json`. Each file is written only after a human approves it: Pi shows a confirmation dialog, and other harnesses use their own permission prompt. Every architectural assertion carries a confidence marker:
+The `/agent-flow-bootstrap` command scans the repo and **proposes** `AGENTS.md` (root and per module) plus `CONTEXT_MANIFEST.json`. Each file is written only after a human approves it: Pi shows a confirmation dialog, and other harnesses use their own permission prompt. Every architectural assertion carries a confidence marker:
 
 - `[HIGH CONFIDENCE]` — verified by reading code
 - `[INFERRED]` — guessed from patterns

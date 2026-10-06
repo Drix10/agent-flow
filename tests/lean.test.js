@@ -132,15 +132,15 @@ test("reports: shortcuts and net_lines_removable validate, malformed ones don't,
 });
 
 test("the skills carry the lean rules and the native-first reference ships with the implementer", () => {
-  const impl = readText(join(root, "skills/implementer/SKILL.md"));
+  const impl = readText(join(root, "skills/agent-flow-implementer/SKILL.md"));
   for (const phrase of ["Lean level: off | lite | full", "Reuse before you write", "Root cause, not symptom", "Leave one runnable check", "lean: <the ceiling>", "Never lean away", "references/native-first.md", "`shortcuts`"]) {
     assert.ok(impl.includes(phrase), `implementer skill lost: ${phrase}`);
   }
-  const rev = readText(join(root, "skills/reviewer/SKILL.md"));
+  const rev = readText(join(root, "skills/agent-flow-reviewer/SKILL.md"));
   for (const phrase of ["Lean lens", "net_lines_removable", "`delete:`", "`stdlib:`", "`native:`", "`reuse:`", "`yagni:`", "`shrink:`", "never flag one small runnable check"]) {
     assert.ok(rev.toLowerCase().includes(phrase.toLowerCase()), `reviewer skill lost: ${phrase}`);
   }
-  assert.ok(existsSync(join(root, "skills/implementer/references/native-first.md")));
-  const launch = readText(join(root, "skills/invoking-agents/references/launch.md"));
+  assert.ok(existsSync(join(root, "skills/agent-flow-implementer/references/native-first.md")));
+  const launch = readText(join(root, "skills/agent-flow-invoking-agents/references/launch.md"));
   assert.ok(launch.includes("LEAN=\"$(lean)\"") && (launch.match(/Lean level: \$LEAN\./g) ?? []).length >= 8, "every manual launch prompt carries the level");
 });

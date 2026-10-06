@@ -51,7 +51,7 @@ test("doctor with zero setup: auto-discovers AGENTS.md, catches the rename, sugg
     assert.match(r.stdout, /AGENTS\.md:4\s+src\/users\/service\.ts\s+→ did you mean src\/users\/user-service\.ts\?/);
     assert.match(r.stdout, /no CONTEXT_MANIFEST\.json.*agent-flow init/);
     assert.doesNotMatch(r.stdout + r.stderr, /manifest_not_found|\/repair-docs \(Gardener\)/);
-    assert.match(r.stdout, /gardener skill's \/repair-docs procedure/);
+    assert.match(r.stdout, /agent-flow-gardener skill's \/repair-docs procedure/);
     const j = JSON.parse(run(dir, ["doctor", "--json"]).stdout);
     assert.equal(j.mode, "discovered");
     assert.deepEqual(j.report.missing_paths, [{ file: "AGENTS.md", path: "src/users/service.ts", source: "prose", suggestion: "src/users/user-service.ts" }]);

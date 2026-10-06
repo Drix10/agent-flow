@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,7 @@ function newerPackage(dir, version) {
   const pj = JSON.parse(readFileSync(join(dest, "package.json"), "utf-8"));
   pj.version = version;
   writeFileSync(join(dest, "package.json"), JSON.stringify(pj));
-  appendFileSync(join(dest, "skills/qa/SKILL.md"), `\n<!-- new in ${version} -->\n`);
+  appendFileSync(join(dest, "skills/agent-flow-qa/SKILL.md"), `\n<!-- new in ${version} -->\n`);
   return join(dest, "bin/agent-flow.js");
 }
 
@@ -63,30 +63,30 @@ test("update: upgrades what is untouched, keeps what was edited, and stays that 
   withRepo((dir, repo) => {
     assert.equal(run(BIN, repo, ["install", "--harness", "claude"]).status, 0);
     const record = JSON.parse(readFileSync(join(repo, ".claude/agent-flow-install.json"), "utf-8"));
-    assert.ok(record.files[".claude/skills/qa"] && record.files[".agent-flow-runtime"], "install records what it wrote");
-    appendFileSync(join(repo, ".claude/skills/reviewer/SKILL.md"), "\nour team rule\n");
+    assert.ok(record.files[".claude/skills/agent-flow-qa"] && record.files[".agent-flow-runtime"], "install records what it wrote");
+    appendFileSync(join(repo, ".claude/skills/agent-flow-reviewer/SKILL.md"), "\nour team rule\n");
     const newer = newerPackage(dir, "9.9.9");
 
     const preview = run(newer, repo, ["update"]);
     assert.match(preview.stdout, /\.agent-flow-runtime\/ +\d+\.\d+\.\d+ -> 9\.9\.9/);
-    assert.match(preview.stdout, /\.claude\/skills\/qa +upgrade/);
+    assert.match(preview.stdout, /\.claude\/skills\/agent-flow-qa +upgrade/);
     assert.match(preview.stdout, /reviewer was edited since install: kept/);
     assert.match(preview.stdout, /nothing changed/);
     assert.equal(run(newer, repo, ["update", "--check"]).status, 10, "scheduled CI can detect an available update");
 
     assert.equal(run(newer, repo, ["update", "--yes"]).status, 0);
-    assert.match(readFileSync(join(repo, ".claude/skills/qa/SKILL.md"), "utf-8"), /new in 9\.9\.9/);
-    assert.match(readFileSync(join(repo, ".claude/skills/reviewer/SKILL.md"), "utf-8"), /our team rule/, "the edit survives");
+    assert.match(readFileSync(join(repo, ".claude/skills/agent-flow-qa/SKILL.md"), "utf-8"), /new in 9\.9\.9/);
+    assert.match(readFileSync(join(repo, ".claude/skills/agent-flow-reviewer/SKILL.md"), "utf-8"), /our team rule/, "the edit survives");
     assert.equal(JSON.parse(readFileSync(join(repo, ".agent-flow-runtime/package.json"), "utf-8")).version, "9.9.9");
 
     // The regression this guards: recording the edited file's current hash made it look "unchanged since install"
     // on the next run, and the run after that overwrote it.
     run(newer, repo, ["update", "--yes"]);
-    assert.match(readFileSync(join(repo, ".claude/skills/reviewer/SKILL.md"), "utf-8"), /our team rule/, "still there after a second update");
+    assert.match(readFileSync(join(repo, ".claude/skills/agent-flow-reviewer/SKILL.md"), "utf-8"), /our team rule/, "still there after a second update");
     assert.match(run(newer, repo, ["update"]).stdout, /reviewer was edited since install: kept/);
 
     assert.equal(run(newer, repo, ["update", "--yes", "--force"]).status, 0);
-    assert.doesNotMatch(readFileSync(join(repo, ".claude/skills/reviewer/SKILL.md"), "utf-8"), /our team rule/, "--force replaces it");
+    assert.doesNotMatch(readFileSync(join(repo, ".claude/skills/agent-flow-reviewer/SKILL.md"), "utf-8"), /our team rule/, "--force replaces it");
     assert.equal(run(newer, repo, ["update", "--check"]).status, 0, "now everything is current");
   });
 });
@@ -109,15 +109,15 @@ test("update: the vendored copy explains how to update instead of crashing, and 
 
 test("install records only what it wrote: a skill it refused to overwrite stays 'edited' for update", () => {
   withRepo((dir, repo) => {
-    mkdirSync(join(repo, ".claude/skills/qa"), { recursive: true });
-    writeFileSync(join(repo, ".claude/skills/qa/SKILL.md"), "my own qa skill\n");
+    mkdirSync(join(repo, ".claude/skills/agent-flow-qa"), { recursive: true });
+    writeFileSync(join(repo, ".claude/skills/agent-flow-qa/SKILL.md"), "my own qa skill\n");
     const inst = run(BIN, repo, ["install", "--harness", "claude"]);
     assert.match(inst.stdout, /qa exists and differs/);
     const record = JSON.parse(readFileSync(join(repo, ".claude/agent-flow-install.json"), "utf-8"));
-    assert.equal(record.files[".claude/skills/qa"], undefined, "a file install did not write is not claimed");
+    assert.equal(record.files[".claude/skills/agent-flow-qa"], undefined, "a file install did not write is not claimed");
     const newer = newerPackage(dir, "9.9.9");
     run(newer, repo, ["update", "--yes"]);
-    assert.equal(readFileSync(join(repo, ".claude/skills/qa/SKILL.md"), "utf-8"), "my own qa skill\n");
+    assert.equal(readFileSync(join(repo, ".claude/skills/agent-flow-qa/SKILL.md"), "utf-8"), "my own qa skill\n");
   });
 });
 
@@ -239,4 +239,32 @@ test("update is a setup action: no pipeline role may run it, any more than insta
       assert.match(r.stderr, /may not run `agent-flow update`/);
     }
   }
+});
+
+test("update: pre-rename skill dirs retire — untouched ones go, edited ones are kept and named", () => {
+  withRepo((dir, repo) => {
+    assert.equal(run(BIN, repo, ["install", "--harness", "claude"]).status, 0);
+    // Rewind two skills to their pre-rename names, as an older agent-flow left them.
+    renameSync(join(repo, ".claude/skills/agent-flow-qa"), join(repo, ".claude/skills/qa"));
+    renameSync(join(repo, ".claude/skills/agent-flow-reviewer"), join(repo, ".claude/skills/reviewer"));
+    const recPath = join(repo, ".claude/agent-flow-install.json");
+    const rec = JSON.parse(readFileSync(recPath, "utf-8"));
+    rec.files[".claude/skills/qa"] = rec.files[".claude/skills/agent-flow-qa"];
+    rec.files[".claude/skills/reviewer"] = rec.files[".claude/skills/agent-flow-reviewer"];
+    delete rec.files[".claude/skills/agent-flow-qa"];
+    delete rec.files[".claude/skills/agent-flow-reviewer"];
+    writeFileSync(recPath, JSON.stringify(rec));
+    appendFileSync(join(repo, ".claude/skills/reviewer/SKILL.md"), "\nour team rule\n");
+
+    const preview = run(BIN, repo, ["update"]);
+    assert.match(preview.stdout, /removed \(renamed to \.claude\/skills\/agent-flow-qa\)/);
+    assert.match(preview.stdout, /\.claude\/skills\/reviewer was edited since install: kept/);
+
+    assert.equal(run(BIN, repo, ["update", "--yes"]).status, 0);
+    assert.ok(!existsSync(join(repo, ".claude/skills/qa")), "the untouched pre-rename dir is retired");
+    assert.ok(existsSync(join(repo, ".claude/skills/agent-flow-qa/SKILL.md")), "its replacement is installed");
+    assert.match(readFileSync(join(repo, ".claude/skills/reviewer/SKILL.md"), "utf-8"), /our team rule/, "the edited pre-rename dir survives");
+    const after = JSON.parse(readFileSync(recPath, "utf-8"));
+    assert.ok(after.files[".claude/skills/agent-flow-qa"] && !after.files[".claude/skills/qa"], "the record drops the retired label");
+  });
 });
