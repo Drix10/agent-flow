@@ -2,7 +2,6 @@
 
 What is **enforced** (the harness or our code blocks it), **checked** (the pre-commit hook or CI catches it), or only **instructed** (the model is asked to comply), per harness.
 
-Distribution status (directories, marketplaces): [DISTRIBUTION.md](DISTRIBUTION.md).
 
 | Capability | Pi | Claude Code | Codex CLI | Gemini CLI | Cursor | VS Code / Copilot | Windsurf |
 |---|---|---|---|---|---|---|---|

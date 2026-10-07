@@ -20,7 +20,6 @@ const SOURCES = [
   ["package.json", (j) => j.version],
   ["package-lock.json", (j) => j.version],
   ["package-lock.json (packages[\"\"])", (j) => j.packages?.[""]?.version, "package-lock.json"],
-  ["plugin.json", (j) => j.version],
   [".claude-plugin/plugin.json", (j) => j.version],
   [".claude-plugin/marketplace.json", (j) => j.plugins?.find((p) => p.name === "agent-flow")?.version],
   ["plugins/agent-flow/plugin.json", (j) => j.version],

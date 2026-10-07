@@ -28,7 +28,7 @@ test("every version file, the CHANGELOG and the docs' action tag agree", () => {
 /** A scratch copy of just the files the check reads. */
 function scratch() {
   const dir = mkdtempSync(join(tmpdir(), "af-ver-"));
-  for (const f of ["package.json", "package-lock.json", "plugin.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "plugins/agent-flow/plugin.json", "gemini-extension.json", "CHANGELOG.md", "README.md", "docs/ADOPTION.md"]) {
+  for (const f of ["package.json", "package-lock.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "plugins/agent-flow/plugin.json", "gemini-extension.json", "CHANGELOG.md", "README.md", "docs/ADOPTION.md"]) {
     mkdirSync(join(dir, ...f.split("/").slice(0, -1)), { recursive: true });
     cpSync(join(root, f), join(dir, f));
   }
@@ -48,7 +48,7 @@ test("check-versions fails on a file left behind, on a lockfile that disagrees, 
       const second = t.indexOf(needle, t.indexOf(needle) + 1); // the first is the top of the file, the second is packages[""]
       return `${t.slice(0, second)}"version": "${stale}"${t.slice(second + needle.length)}`;
     }), /package-lock\.json/],
-    ["a version that isn't pinned", (d) => edit(d, "plugin.json", (t) => t.replace(`"version": "${version}"`, '"version": "^1.2.3"')), /pinned X\.Y\.Z/],
+    ["a version that isn't pinned", (d) => edit(d, "plugins/agent-flow/plugin.json", (t) => t.replace(`"version": "${version}"`, '"version": "^1.2.3"')), /pinned X\.Y\.Z/],
     ["no CHANGELOG section", (d) => edit(d, "CHANGELOG.md", (t) => t.replace(`## [${version}]`, "## [renamed]")), /CHANGELOG\.md has no/],
     ["a stale action tag in the README", (d) => edit(d, "README.md", (t) => t.replace(`Drix10/agent-flow@v${version}`, `Drix10/agent-flow@v${stale}`)), /README\.md shows Drix10\/agent-flow@v0\.0\.1/],
   ]) {

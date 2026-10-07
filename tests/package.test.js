@@ -134,7 +134,6 @@ test("skill frontmatter valid for cross-harness discovery", () => {
 
 test("versions agree in every shipped manifest, and the README advertises no unlisted directory", () => {
   const v = pkg.version;
-  assert.equal(JSON.parse(readFileSync(join(root, "plugin.json"), "utf-8")).version, v, "plugin.json drifted");
   assert.equal(JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf-8")).version, v);
   assert.equal(JSON.parse(readFileSync(join(root, "gemini-extension.json"), "utf-8")).version, v);
   for (const p of JSON.parse(readFileSync(join(root, ".claude-plugin", "marketplace.json"), "utf-8")).plugins) {
