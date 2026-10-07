@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-flow",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Run AI coding agents unattended, safely: Implement → Review → QA as separate agents, a guard that blocks edits they must never make, and context that stays true to the code.",
   "author": {
     "name": "Drix10",

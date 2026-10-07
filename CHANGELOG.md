@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-10-07
+
+- **Fixed:** the `/debt` prompt failed to load in Pi — its frontmatter `description` held a bare `": "` (`(lean: comments)`), the same nested-mapping rejection as the implementer skill. The value is quoted, and the prompt test now enforces quoting everywhere, not just in skills.
+
 - **Codex plugin + distribution tracker:** `plugins/agent-flow/plugin.json` (portable manifest, version pinned by `scripts/check-versions.mjs`) bundles copies of all six skills, and `.agents/plugins/marketplace.json` exposes it as a repo marketplace, so `codex plugin marketplace add Drix10/agent-flow` installs the skills into Codex. `tests/dogfood.test.js` fails if the plugin's skill copies drift from `skills/`; `tests/package.test.js` checks the marketplace entry. `docs/DISTRIBUTION.md` tracks every directory/marketplace, its state and its next step.
 - **Installable from skills.sh:** `npx skills add Drix10/agent-flow` discovers all six skills with no packaging changes (verified live against the skills CLI); the README leads with a 30-second try (`npx @drix10/agent-flow scan`, read-only, nothing installed) and documents the skills.sh command. `tests/package.test.js` pins the install surface: every directory under `skills/` is a skill, and the README names the command.
 

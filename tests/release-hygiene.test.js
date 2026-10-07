@@ -99,7 +99,10 @@ test("every skill has a frontmatter name matching its folder and a description a
 
 test("every prompt has a one-line description", () => {
   for (const f of readdirSync(join(root, "prompts")).filter((n) => n.endsWith(".md"))) {
-    assert.match(read(`prompts/${f}`), /^---\n(?:[a-z-]+: .*\n)*description: .{20,}\n(?:[a-z-]+: .*\n)*---\n/, f);
+    const text = read(`prompts/${f}`);
+    assert.match(text, /^---\n(?:[a-z-]+: .*\n)*description: .{20,}\n(?:[a-z-]+: .*\n)*---\n/, f);
+    const desc = /^description:\s*(.+)$/m.exec(text)?.[1] ?? "";
+    assert.ok(!desc.includes(": ") || /^".*"$/.test(desc) || /^'.*'$/.test(desc), `prompts/${f}: bare ": " — quote the value or strict readers (Pi) reject it as a nested mapping`);
   }
 });
 
