@@ -159,6 +159,19 @@ Agent Flow uses `AGENTS.md` for shared agent instructions. Claude Code can load 
 
 When an agent repeats a mistake, prefer a mechanical fix: an invariant in code, a test, a guard rule or a protected path. Prompts and prose are the least reliable enforcement.
 
+## What leaves your machine
+
+Agent Flow runs no service and has no telemetry, account or API key. It sends nothing to its author. The only traffic is what you start yourself, to services you already use:
+
+| What | Where it goes | When |
+|---|---|---|
+| Role prompts and the repository content a role reads | The model provider of the agent CLI you run (Claude Code, Codex, Gemini, …), exactly as when you use that CLI directly | When you run the pipeline (`agent-flow run`, or a skill that launches a role) |
+| Issue text, the branch, the pull request | GitHub, through your own logged-in `gh` | When you read an issue, or pass `--pr` or `--auto-merge` |
+| A version-number request for this package | The npm registry (one GET, cached for 24 hours) | `doctor`, `update`, and `status` in an interactive terminal; skipped in CI and with `--offline` or `AGENT_FLOW_NO_UPDATE_CHECK=1` |
+| A Code Owners setting read | GitHub, through your own `gh api` | `doctor`, skipped in CI and with `--offline` |
+
+The guard, the pre-commit hook, `classify`, `audit-risk` and `gates` never touch the network. What Agent Flow writes stays in your repository: the audit log and artifacts under `.agent-flow/` (kept out of git through `.git/info/exclude`). It reads files in your checkout and commit hashes and subjects; it does not collect personal data, and it refuses to read `.env` files and `deny_read` paths. Details: [Security](SECURITY.md).
+
 ## Limits and security
 
 - Risk classification and secret detection are heuristic; review their findings.
