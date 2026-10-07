@@ -6,10 +6,10 @@ One row per directory or marketplace. **Shipped** means this repo already contai
 |---|---|---|---|
 | npm | ✅ Listed as `@drix10/agent-flow` | `npx @drix10/agent-flow install …` | none: `npm-publish.yml` publishes on every GitHub release. The unscoped `agentflow` is refused by npm (too similar to the existing `agent-flow`, another maintainer's two-release package from 2024); getting it means an npm name dispute, not started |
 | GitHub repository | ✅ About text and topics set | — | none |
-| GitHub Marketplace (the Action) | ⏳ Ready, not published | `uses: Drix10/agent-flow@v<version>` | tick "Publish this Action to the GitHub Marketplace" when creating the release (human); name and description already meet its rules |
+| GitHub Marketplace (the Action) | ✅ Published (per the maintainer) | `uses: Drix10/agent-flow@v<version>` | none: tick the Marketplace box again on each release |
 | pi.dev/packages | ✅ Automatic | `pi install npm:@drix10/agent-flow` | none: the catalog scans npm for the `pi-package` keyword; allow index lag after a release |
 | skills.sh | ⏳ Unranked | `npx skills add Drix10/agent-flow` | installs: the leaderboard page is created from install telemetry, there is no submission form |
-| Claude official directory | ❌ Not submitted | `/plugin marketplace add Drix10/agent-flow` (ours, below) until listed | submit at `claude.ai/directory/manage`: run `claude plugin validate` first, then portal review (human) |
+| Claude official directory | ❌ Not submitted | `/plugin marketplace add Drix10/agent-flow` (ours, below) until listed | submit at `claude.ai/directory/manage`: `claude plugin validate .` passes for the repo and for `.claude-plugin/plugin.json`; the portal review is the human step |
 | Claude (own marketplace) | ✅ Shipped in `.claude-plugin/marketplace.json` (skills only: the guard hook comes from `install --harness claude`) | `/plugin marketplace add Drix10/agent-flow` | none |
 | Codex (repo marketplace) | ✅ Shipped in `.agents/plugins/marketplace.json` + `plugins/agent-flow/plugin.json` | `codex plugin marketplace add Drix10/agent-flow` | not yet run on a real Codex install; then the universal-directory submission through the plugin portal (human) |
 | Cursor | ✅ File-level via `install --harness cursor` | — | `cursor.directory` community listing (human) |
@@ -61,7 +61,7 @@ Run AI coding agents unattended without letting them go loose: one implements, a
 
 Each is ready to paste. Replace `<version>` with the release.
 
-**Claude official directory** (`claude.ai/directory/manage`): *Agent Flow runs coding agents through separate implement, review and QA steps and keeps their context true to the code. The plugin installs six skills (bootstrap, implementer, reviewer, QA, gardener, orchestrator). The guard that blocks edits to protected paths, `--no-verify` and pushes to the default branch is a hook that `npx @drix10/agent-flow install --harness claude` adds to the repo; the plugin alone does not wire it. MIT, no runtime dependencies. Repo: https://github.com/Drix10/agent-flow. Install: `/plugin marketplace add Drix10/agent-flow`.* Run `claude plugin validate` before submitting.
+**Claude official directory** (`claude.ai/directory/manage`): *Agent Flow runs coding agents through separate implement, review and QA steps and keeps their context true to the code. The plugin installs six skills (bootstrap, implementer, reviewer, QA, gardener, orchestrator). The guard that blocks edits to protected paths, `--no-verify` and pushes to the default branch is a hook that `npx @drix10/agent-flow install --harness claude` adds to the repo; the plugin alone does not wire it. MIT, no runtime dependencies. Repo: https://github.com/Drix10/agent-flow. Install: `/plugin marketplace add Drix10/agent-flow`.* Validation already passes (`claude plugin validate .`).
 
 **Codex plugin portal:** *Agent Flow: unattended implement, review and QA with a guard for protected paths. Marketplace: `codex plugin marketplace add Drix10/agent-flow`. Source: https://github.com/Drix10/agent-flow (MIT).* Submit only after one real install worked.
 
