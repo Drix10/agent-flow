@@ -1149,6 +1149,31 @@ test("run: a new test that no gate names is reported, in the log, the result and
   }
 });
 
+test("run: QA commands that were all killed by a timeout are an environment problem, not a round for the Implementer", async () => {
+  const timedOut = qaReport("failed", { commands: [{ name: "engine", command: "node t", exit_code: 124, rerun_exit_code: 124, raw_output: "Terminated" }] });
+  const env = makeRepo();
+  try {
+    const agent = fakeAgent(env.repo, { implementer: [implStep("f.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => ({ report: timedOut })] });
+    const { result } = await run(env, agent);
+    assert.equal(result.category, "qa_environment", JSON.stringify(result));
+    assert.match(result.reason, /\`engine\`.*exit 124/);
+    assert.equal(agent.counts.implementer, 1, "no second round was spent");
+  } finally {
+    env.cleanup();
+  }
+  // One real failure beside a timeout is still the code's: the Implementer gets the report.
+  const mixed = qaReport("failed", { commands: [{ name: "engine", command: "node t", exit_code: 124, rerun_exit_code: 124, raw_output: "Terminated" }, { name: "unit", command: "node u", exit_code: 1, rerun_exit_code: 1, raw_output: "1 failed" }] });
+  const env2 = makeRepo();
+  try {
+    const agent = fakeAgent(env2.repo, { implementer: [implStep("f.txt"), implStep("g.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => ({ report: mixed }), () => ({ report: qaReport() })] });
+    const { result } = await run(env2, agent);
+    assert.equal(result.status, "ready", JSON.stringify(result));
+    assert.equal(agent.counts.implementer, 2, "a genuine failure still earns a round");
+  } finally {
+    env2.cleanup();
+  }
+});
+
 test("run: a critical change says so when no stronger review model is configured, and uses one when it is", async () => {
   const env = makeRepo();
   try {

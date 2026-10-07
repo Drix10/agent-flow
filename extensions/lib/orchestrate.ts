@@ -576,6 +576,12 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       const pre = snapshot();
       const qa = await runRole("qa", R, { model: FAST, announce: `${roundTag}: QA` });
       if (snapshot() !== pre) escalate("qa_mutated_tree", "QA changed the files it was testing, so its result is invalid. Decide: re-run QA.");
+      // A command killed by its timeout (exit 124) on the run and again on the re-run says nothing about the code: the
+      // Implementer would get "Terminated" as its finding and a round would be spent on a machine that was too slow.
+      const failing: any[] = (qa.commands ?? []).filter((c: any) => c && c.exit_code !== 0);
+      if (qa.status === "failed" && !qa.reason && failing.length && failing.every((c) => c.exit_code === 124 && (c.rerun_exit_code === 124 || c.rerun_exit_code == null))) {
+        escalate("qa_environment", `QA's own time limit killed ${failing.map((c) => `\`${c.name ?? c.command}\``).join(", ")} (exit 124, also on the re-run); that is not a test result, so no round was spent on it. Decide: run on a less loaded machine, or raise the limit; the gates, which have their own limits, ran first.`);
+      }
       if (qa.status === "failed" && !qa.reason) {
         findings = join(A, `qa-r${R}.json`);
         dirtyBaseline = statusLines();
