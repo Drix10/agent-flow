@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+- `docs/DISTRIBUTION.md` gains the listing copy (tagline, one-liner under the Marketplace limit, short and long text, tags, what to say and not say) and ready-to-paste messages for each directory that needs a person; it now says the Claude plugin ships the skills only (the guard hook comes from `install --harness claude`) and that the Codex and skills.sh installs haven't been run on a real machine. The plugin keyword `trust-loop` became `guardrails`. `SETUP.md` names the renamed skill in its non-Claude wording. Removed `docs/EXTENSIONS-VS-SKILLS.md`: nothing linked to it and its "MCP is the plan" section described a server that has shipped.
+
 ## [1.2.5] - 2026-10-07
 
 - **Fixed:** the `/debt` prompt failed to load in Pi — its frontmatter `description` held a bare `": "` (`(lean: comments)`), the same nested-mapping rejection as the implementer skill. The value is quoted, and the prompt test now enforces quoting everywhere, not just in skills.

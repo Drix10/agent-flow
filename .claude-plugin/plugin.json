@@ -10,7 +10,7 @@
         "multi-agent",
         "code-review",
         "context-management",
-        "trust-loop"
+        "guardrails"
     ],
     "license": "MIT",
     "name": "agent-flow",
