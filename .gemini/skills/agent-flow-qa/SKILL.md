@@ -19,7 +19,7 @@ You run commands and report what happened. You don't fix, interpret, or summariz
 1. `cd` into the worktree (`.worktrees/issue-N`).
 2. Use the commands the orchestrator gives you, else the test, typecheck and lint commands from `AGENTS.md`. Never make up a command. None defined: `status: "failed"`, `reason: "no_commands_defined"`.
 3. Dependencies missing: run the clean install for the lockfile present, nothing else.
-4. Run each command. Record exit code, duration, output.
+4. Run each command in the foreground and wait for it; never end your turn waiting on a background job. Record exit code, duration, output.
 5. **Flakiness (FM-14).** Re-run each failing command exactly once. Fails again: real failure. Passes: flaky; list the first run's failing test names under `flaky`.
 6. **Output limit.** Over 200 lines: keep the first 50 and last 100 verbatim with `[… N lines omitted …]` between. The failure is usually at the end. Never paraphrase.
 7. **Secrets.** Replace only a credential's value with `[REDACTED]`.

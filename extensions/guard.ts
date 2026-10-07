@@ -23,7 +23,7 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import { findRepoRoot } from "./lib/fsutil.js";
-import { decide, parseRole, READ_ONLY_ROLES } from "./lib/guard.js";
+import { auditTarget, decide, parseRole, READ_ONLY_ROLES } from "./lib/guard.js";
 import { ContextManifest, guardFailsClosed, loadManifestForGuard, manifestPathFor } from "./lib/manifest.js";
 import { appendAudit } from "./lib/state.js";
 import { text } from "./result.js";
@@ -86,7 +86,7 @@ export default function (pi: ExtensionAPI) {
         allowSecretRead,
       });
       if (!decision) return undefined;
-      appendAudit(root, { event: "guard_block", role, tool: event.toolName, rule: decision.rule, reason: decision.reason });
+      appendAudit(root, { event: "guard_block", role, tool: event.toolName, target: auditTarget(event.input), rule: decision.rule, reason: decision.reason });
       return { block: true, reason: decision.reason };
     } catch (e: any) {
       // Same stance as `agent-flow guard`: refuse when a role or configured protection (manifest on disk or

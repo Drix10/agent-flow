@@ -13,7 +13,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { defaultBranch, git } from "./git.js";
+import { defaultBase, defaultBranch, git } from "./git.js";
 import { branchFor } from "./worktree.js";
 import { AUDIT_LOG } from "./state.js";
 import type { GateSpec } from "./gates.js";
@@ -155,4 +155,67 @@ export function bindingEscalation<T extends CompletionParams>(root: string, p: T
   if (!b.enforced || b.ok) return null;
   const reason = `unreviewed_commits: ${b.problems.join("; ")}. Decide: re-run the missing role(s) on the current tip, or reset the branch to the reviewed commit.`;
   return { params: { ...p, state: "Needs Me", reason }, binding: b };
+}
+
+/** The newest commit the audit log names for each of these issues (a role run or a gate run records the tip it judged). */
+function lastReviewedHeads(root: string, issues: Set<number>): Map<number, string> {
+  const out = new Map<number, string>();
+  const path = join(root, AUDIT_LOG);
+  if (!existsSync(path)) return out;
+  let text: string;
+  try {
+    text = readFileSync(path, "utf-8");
+  } catch {
+    return out;
+  }
+  // A year of runs is a few megabytes: the newest lines are enough.
+  if (text.length > 8_000_000) text = text.slice(-8_000_000);
+  for (const line of text.split("\n")) {
+    if (!line.includes('"head"')) continue;
+    try {
+      const e = JSON.parse(line);
+      if (issues.has(e.issue) && typeof e.head === "string" && /^[0-9a-f]{40,64}$/.test(e.head)) out.set(e.issue, e.head);
+    } catch {
+      /* a partial first line of the window, or a damaged line: the verifier's business */
+    }
+  }
+  return out;
+}
+
+/**
+ * Finished issues whose reviewed commit is already part of the default branch: someone merged it by hand (a merge, a
+ * fast-forward or a squash, and usually the branch was deleted after), and nothing told the state file. Only issues at
+ * the finished stage count (reviewed, gated and tested, or waiting for a person to read the pull request).
+ *
+ * One `git rev-list` of the default branch answers every issue, so `status` stays quick. A squash merge leaves no ancestor to
+ * find; recognising one compares patches, which is slow, so only `squash: true` (the dismiss command) does it.
+ */
+export function mergedFinished(root: string, sessions: { issue: number; state: string; phase?: string; reason?: string }[], opts: { squash?: boolean } = {}): { base: string; issues: number[] } {
+  const finished = sessions.filter((s) => (s.state === "Working" && s.phase === "publish") || (s.state === "Needs Me" && /^(review_required|critical_change_needs_human):/.test(String(s.reason ?? ""))));
+  if (!finished.length) return { base: "", issues: [] };
+  let base: string;
+  try {
+    base = defaultBase(root);
+  } catch {
+    return { base: "", issues: [] };
+  }
+  const heads = lastReviewedHeads(root, new Set(finished.map((s) => s.issue)));
+  const branch = (() => {
+    try {
+      return defaultBranch(root);
+    } catch {
+      return "main";
+    }
+  })();
+  const reachable = new Set<string>();
+  for (const ref of [`refs/remotes/origin/${branch}`, `refs/heads/${branch}`]) {
+    const r = git(["rev-list", "--max-count=200000", ref], root, 30_000);
+    if (r.ok) for (const sha of r.stdout.split("\n")) if (sha) reachable.add(sha);
+  }
+  const issues = finished.filter((s) => {
+    const head = heads.get(s.issue) ?? branchTip(root, s.issue);
+    if (!head) return false;
+    return reachable.has(head) || (!!opts.squash && mergedInto(root, head) !== null);
+  }).map((s) => s.issue);
+  return { base, issues };
 }

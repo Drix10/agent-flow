@@ -148,6 +148,7 @@ npx @drix10/agent-flow hook install # install the pre-commit gate
 npx @drix10/agent-flow debt         # the shortcuts agents left, and which have no trigger to revisit them
 npx @drix10/agent-flow uninstall    # preview taking back out what install wrote (--yes to do it)
 npx @drix10/agent-flow state dismiss --issue 100000 --reason "did it by hand"   # drop an issue from the list
+npx @drix10/agent-flow state dismiss --merged                                   # drop every finished issue already merged into the default branch
 ```
 
 ## Pipeline behavior

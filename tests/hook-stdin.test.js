@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,21 @@ function stuck(dir, args, env = {}) {
     });
   });
 }
+
+test("guard: a blocked call's audit record says what it tried (and hides a credential in it)", () => {
+  const dir = repo({ protected_paths: ["secret/**"] });
+  try {
+    const event = { tool_name: "Bash", tool_input: { command: "echo run --token=hunter2hunter2 > out.txt" }, cwd: dir };
+    const r = spawnSync(process.execPath, [BIN, "guard"], { cwd: dir, input: JSON.stringify(event), encoding: "utf-8", env: { ...process.env, NO_COLOR: "1", AGENT_FLOW_ROLE: "qa" } });
+    assert.equal(r.status, 2, r.stderr);
+    const lines = readFileSync(join(dir, ".agent-flow", "audit.jsonl"), "utf-8").trim().split("\n").map((l) => JSON.parse(l));
+    const block = lines.find((e) => e.event === "guard_block");
+    assert.equal(block.rule, "read-only-role");
+    assert.equal(block.target, "echo run --token=[REDACTED] > out.txt");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("guard: stdin that never closes is refused for a role, and for a repo with protection configured", async () => {
   const configured = repo({ protected_paths: ["secret/**"] });

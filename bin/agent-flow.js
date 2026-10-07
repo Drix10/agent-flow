@@ -55,7 +55,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline", "fail-on-no-trigger", "keep-runtime", "keep-hook", "no-brief", "statusline"]);
+const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline", "fail-on-no-trigger", "merged", "keep-runtime", "keep-hook", "no-brief", "statusline"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -126,6 +126,7 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
   state [show] [--issue <n>]  Print pipeline state
   state update --issue <n> --state "Working|Needs Me|Completed" [--phase p] [--round r] [--reason t] [--reopen]
   state dismiss --issue <n> --reason <why>
+  state dismiss --merged [--reason <why>]   drop every finished issue whose branch is already in the default branch
                             Drop an issue from the list (you handled it by hand, or no longer want it); its files are kept
                             Exit 3 when the round cap escalated the issue to Needs Me
   worktree create <n> [--base <branch>] | remove <n> [--force] [--delete-branch] | list
@@ -921,6 +922,31 @@ function cmdState(args) {
     // Distinct exit code so a script can't miss the escalation by only checking for failure.
     return r.escalated ? 3 : 0;
   }
+  if (action === "dismiss" && args.merged) {
+    // Finished work someone merged by hand: its branch is part of the default branch, so there is nothing left to publish.
+    const { base, issues } = bindingLib.mergedFinished(rt, state.readState(rt).sessions ?? [], { squash: true });
+    const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason : `merged into ${base}`;
+    const dropped = [];
+    const skipped = [];
+    for (const issue of issues) {
+      const artifacts = join(rt, ".agent-flow", "artifacts", `issue-${issue}`);
+      if (existsSync(artifacts)) {
+        const held = orchestrateLib.acquireRunLock(artifacts);
+        if ("heldBy" in held) {
+          skipped.push(issue); // a run is working on it right now
+          continue;
+        }
+        held.release();
+      }
+      if (state.dismissSession(rt, issue, reason).dismissed) dropped.push(issue);
+    }
+    out(args, { base, dropped, skipped, reason }, () => {
+      if (!dropped.length && !skipped.length) return console.log(dim("no finished issue is merged into the default branch yet"));
+      if (dropped.length) ok(`dropped ${dropped.length} merged issue${dropped.length === 1 ? "" : "s"}: ${dropped.map((n) => `#${n}`).join(", ")} (${reason}). Their files stay under .agent-flow/artifacts; remove a worktree with: agent-flow worktree remove <n>`);
+      if (skipped.length) warn(`left ${skipped.map((n) => `#${n}`).join(", ")}: a run is working on ${skipped.length === 1 ? "it" : "them"} right now`);
+    });
+    return 0;
+  }
   if (action === "dismiss") {
     const issue = issueNumber(args.issue, "state dismiss --issue <n> --reason <why>");
     const reason = typeof args.reason === "string" ? args.reason : "";
@@ -1203,7 +1229,7 @@ async function cmdGuard(args) {
     });
     if (!decision) return 0;
     try {
-      state.appendAudit(rt, { event: "guard_block", harness: "claude", role, tool: ev.tool_name, rule: decision.rule, reason: decision.reason });
+      state.appendAudit(rt, { event: "guard_block", harness: "claude", role, tool: ev.tool_name, target: guardLib.auditTarget(ev.tool_input), rule: decision.rule, reason: decision.reason });
     } catch {
       /* the block matters more than the log line */
     }
@@ -1645,7 +1671,10 @@ function cmdStatus(args) {
   const sessions = state.readState(rt).sessions ?? [];
   const waiting = sessions.filter((s) => s.state === "Needs Me");
   const working = sessions.filter((s) => s.state === "Working");
-  if (waiting.length) for (const s of waiting) {
+  // Finished work that someone merged by hand stays "ready" until told otherwise: say so once, instead of once per issue.
+  const merged = bindingLib.mergedFinished(rt, sessions);
+  const mergedSet = new Set(merged.issues);
+  if (waiting.length) for (const s of waiting.filter((x) => !mergedSet.has(x.issue))) {
     // Finished work waiting for a person to read the diff isn't a decision to send back: merge it, then close the issue.
     const review = /^(review_required|critical_change_needs_human):/.test(String(s.reason ?? ""));
     add("Work", "warn", `#${s.issue} needs you: ${String(s.reason ?? "").slice(0, 160)}`, review
@@ -1653,7 +1682,11 @@ function cmdStatus(args) {
       : `decide, then: agent-flow state update --issue ${s.issue} --state Working --phase implement --round ${Math.max(1, Number(s.round) || 1)}; agent-flow run ${s.issue}`);
   }
   else add("Work", "ok", "nothing is waiting on you");
-  for (const s of working) {
+  if (merged.issues.length) {
+    const list = merged.issues.length > 12 ? `${merged.issues.slice(0, 12).map((n) => `#${n}`).join(", ")}, …` : merged.issues.map((n) => `#${n}`).join(", ");
+    rows.push({ section: "Work", level: "info", text: `${merged.issues.length} finished issue${merged.issues.length === 1 ? " is" : "s are"} already merged into ${merged.base}: ${list}`, hint: "agent-flow state dismiss --merged  to clear them from the list", issues: merged.issues });
+  }
+  for (const s of working.filter((x) => !mergedSet.has(x.issue))) {
     // The publish checkpoint is recorded once review, gates and QA have passed: finished, waiting for a person to publish.
     if (s.phase === "publish") add("Work", "info", `#${s.issue} is ready: reviewed, checked, not pushed`, `agent-flow run ${s.issue} --pr  to open the pull request`);
     else add("Work", "info", `#${s.issue} in progress (round ${s.round ?? 1}, ${s.phase ?? "?"})`, `agent-flow run ${s.issue}  to resume`);

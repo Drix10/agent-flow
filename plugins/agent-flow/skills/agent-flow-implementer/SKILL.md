@@ -40,7 +40,7 @@ At `full`, also stop at the first rung that holds: needed at all? → the repo h
 2. **Trust code over context files.** If a context file disagrees with the code, carry on and add a `context_stale` entry.
 3. **Implement** every acceptance criterion, following the paved paths in `AGENTS.md`. Fix root causes; never add comments that justify a workaround. Add or adjust tests that prove each criterion.
 4. **New dependency** only if nothing in the repo, standard library or platform will do. List it in `new_dependencies`; the classifier routes it to risk review.
-5. **Self-check** with the `AGENTS.md` commands: test, typecheck, lint. A fresh worktree has no `node_modules` or venv: run the lockfile install first (`npm ci`, `pnpm install --frozen-lockfile`, `uv sync`, …). Fix and retry up to 3 times, then escalate with the verbatim failing output.
+5. **Self-check** with the `AGENTS.md` commands: test, typecheck, lint. A fresh worktree has no `node_modules` or venv: run the lockfile install first (`npm ci`, `pnpm install --frozen-lockfile`, `uv sync`, …). Run each check in the foreground and wait for it: **never end your turn waiting on a background job**, because the turn's last message must be the JSON report and a role that stops to wait is rejected. Fix and retry up to 3 times, then escalate with the verbatim failing output.
 6. **Commit** with a quoted heredoc, so nothing in the untrusted title is executed by the shell:
 
    ```bash

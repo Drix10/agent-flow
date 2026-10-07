@@ -97,6 +97,47 @@ test("implementer is confined to its worktree and cannot edit context files", ()
   blocked(d("implementer", "edit", { path: "src/api/AGENTS.md" }), "context-file");
 });
 
+test("Git Bash and Cygwin drive paths are read as the drive they name (a real run lost 16 writes to C:/c/Users/...)", async () => {
+  const { msysToWindows } = await import("../extensions/lib/guard.js");
+  assert.equal(msysToWindows("/c/Users/x/repo", "win32"), "C:/Users/x/repo");
+  assert.equal(msysToWindows("/d/work", "win32"), "D:/work");
+  assert.equal(msysToWindows("/cygdrive/c/Users/x", "win32"), "C:/Users/x");
+  assert.equal(msysToWindows("/c", "win32"), "C:/");
+  assert.equal(msysToWindows("/usr/bin", "win32"), "/usr/bin", "a longer first segment is a real directory");
+  assert.equal(msysToWindows("/tmp/a", "win32"), "/tmp/a");
+  assert.equal(msysToWindows("/c/Users/x", "linux"), "/c/Users/x", "only Windows reads it as a drive");
+  assert.equal(msysToWindows("C:/Users/x", "win32"), "C:/Users/x");
+  if (process.platform !== "win32") return;
+  // End to end on Windows: the worktree written the way Git Bash writes it is inside the worktree, and the repo root beside it is not.
+  const wt = join(root, ".worktrees", "issue-7");
+  const msys = (p) => p.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_, l) => "/" + l.toLowerCase());
+  assert.equal(d("implementer", "bash", { command: `echo x > ${msys(join(wt, "src", "a.ts"))}` }, { worktree: wt }), null);
+  blocked(d("implementer", "bash", { command: `echo x > ${msys(join(root, "src", "a.ts"))}` }, { worktree: wt }), "worktree-confinement");
+});
+
+test("auditTarget keeps what a blocked call tried, shortened, with credentials replaced", async () => {
+  const { auditTarget } = await import("../extensions/lib/guard.js");
+  assert.equal(auditTarget({ command: "echo hi > out.txt" }), "echo hi > out.txt");
+  assert.equal(auditTarget({ file_path: "src/a.ts" }), "src/a.ts");
+  assert.equal(auditTarget({ command: "a\n  b" }), "a b", "one line");
+  assert.equal(auditTarget({}), undefined);
+  assert.equal(auditTarget(null), undefined);
+  assert.equal(auditTarget({ command: "x".repeat(500) }).length, 240);
+  for (const secret of ["curl -H 'Authorization: Bearer abcdefghijklmnop1234' https://x.test", "echo ghp_abcdefghijklmnopqrstuvwxyz0123456789", "run --token=hunter2hunter2", "PASSWORD='correct horse' ./go", "aws AKIAABCDEFGHIJKLMNOP"]) {
+    const t = auditTarget({ command: secret });
+    assert.match(t, /\[REDACTED\]/, secret);
+    assert.doesNotMatch(t, /abcdefghijklmnop1234|ghp_abc|hunter2|correct horse|AKIAABCDEFGHIJKLMNOP/, secret);
+  }
+});
+
+test("a redirect to PowerShell's $null writes nothing, so a confined implementer may use it", () => {
+  const wt = join(root, ".worktrees", "issue-7");
+  assert.equal(d("implementer", "bash", { command: "npm test > $null" }, { worktree: wt }), null);
+  assert.equal(d("implementer", "bash", { command: "npm test 2> /dev/null" }, { worktree: wt }), null);
+  // A variable that names a real file is still unresolvable, so still refused.
+  blocked(d("implementer", "bash", { command: "npm test > $OUT" }, { worktree: wt }), "worktree-confinement");
+});
+
 test("gardener may edit docs and the manifest, not source", () => {
   assert.equal(d("gardener", "edit", { path: "AGENTS.md" }), null);
   assert.equal(d("gardener", "write", { path: "CONTEXT_MANIFEST.json" }), null);

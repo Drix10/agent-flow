@@ -961,7 +961,8 @@ function globHitsProtected(relGlob: string, patterns: readonly string[]): string
   return null;
 }
 
-const DEVICE = /^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/;
+// `$null` is PowerShell's /dev/null: a redirect to it writes nothing anywhere.
+const DEVICE = /^(\/dev\/(null|stdout|stderr|tty|fd\/\d+)|\$null)$/;
 
 // ---------------------------------------------------------------------------
 // The CLI twins of agent-flow's own mutating tools
@@ -1186,10 +1187,40 @@ function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision |
   return null;
 }
 
+/**
+ * What a blocked call tried to do, for the audit log: the shell command or the file path, shortened, with anything that
+ * looks like a credential replaced. A log that says only "output redirection to a file" can't tell a false positive
+ * from an attack (50 of one real run's 53 read-only blocks were that sentence).
+ */
+export function auditTarget(input: unknown, max = 240): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const o = input as Record<string, unknown>;
+  const raw = [o.command, o.cmd, o.script, o.path, o.file_path, o.filePath, o.notebook_path].find((v) => typeof v === "string" && v) as string | undefined;
+  if (!raw) return undefined;
+  const clean = raw
+    .replace(/\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})/g, "[REDACTED]")
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, "$1 [REDACTED]")
+    .replace(/((?:pass(?:word|wd)?|secret|token|api[_-]?key|auth)[A-Za-z_]*\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1[REDACTED]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
+/**
+ * Git Bash (MSYS) writes a drive path as `/c/dir/x` and Cygwin as `/cygdrive/c/dir/x`. Node reads either as a path on the
+ * current drive (a top-level `c` folder), which is outside the worktree the agent meant: 16 of 28 confinement blocks in a real run.
+ */
+export function msysToWindows(p: string, platform: string = process.platform): string {
+  if (platform !== "win32") return p;
+  const m = /^\/(?:cygdrive\/)?([a-zA-Z])(?:\/(.*))?$/.exec(p);
+  return m ? `${m[1].toUpperCase()}:/${m[2] ?? ""}` : p;
+}
+
 /** `~`, `~/x`, absolute and cwd-relative paths; null when the shell's answer isn't knowable here. */
 function resolveShellPath(cwd: string | null, p: string): string | null {
   if (p === "~" || p.startsWith("~/")) return join(homedir(), p.slice(1));
   if (p.startsWith("~")) return null;
+  p = msysToWindows(p);
   if (isAbsolute(p)) return resolve(p);
   return cwd === null ? null : resolve(cwd, p);
 }
