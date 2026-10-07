@@ -1174,6 +1174,53 @@ test("run: QA commands that were all killed by a timeout are an environment prob
   }
 });
 
+test("run: QA is not launched when its commands are exactly the gates that just passed; the result is recorded and still binds the commit", async () => {
+  const gate = 'node -e "process.exit(0)"';
+  const noQa = (repo) => fakeAgent(repo, { implementer: [implStep("f.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => { throw new Error("QA must not be launched"); }] });
+  const env = makeRepo({ gates: [{ name: "g", command: gate }] });
+  try {
+    const agent = noQa(env.repo);
+    const { result, logs } = await run(env, agent, { commands: gate });
+    assert.equal(result.status, "ready", JSON.stringify(result));
+    assert.equal(agent.counts.qa, 0, "no QA process");
+    assert.ok(logs.some((l) => /QA: not launched/.test(l.text)));
+    const artifacts = join(env.repo, ".agent-flow", "artifacts", `issue-${result.issue}`);
+    const qa = JSON.parse(readFileSync(join(artifacts, "qa-r1.json"), "utf-8"));
+    assert.equal(qa.status, "passed");
+    assert.equal(qa.commands[0].command, gate);
+    assert.equal(qa.commands[0].exit_code, 0);
+    const entry = audit(env.repo).find((e) => e.event === "role_run" && e.role === "qa");
+    assert.equal(entry.harness, "gates", "the audit log says where this QA result came from");
+    assert.ok(entry.ok && /^[0-9a-f]{40}$/.test(entry.head), "and it names the commit it covers");
+    // The completion binding accepts it: publishing completes the issue.
+    const pr = await run(env, agent, { pr: true, commands: gate });
+    assert.equal(pr.result.status, "pr", JSON.stringify(pr.result));
+    assert.equal(stateOf(env.repo).state, "Completed");
+  } finally {
+    env.cleanup();
+  }
+  // pipeline.qa_reuses_gates: false always launches QA.
+  const off = makeRepo({ gates: [{ name: "g", command: gate }], pipeline: { max_review_rounds: 2, qa_reuses_gates: false } });
+  try {
+    const agent = fakeAgent(off.repo, { implementer: [implStep("f.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => ({ report: qaReport() })] });
+    const { result } = await run(off, agent, { commands: gate });
+    assert.equal(result.status, "ready", JSON.stringify(result));
+    assert.equal(agent.counts.qa, 1);
+  } finally {
+    off.cleanup();
+  }
+  // Commands the caller named are not the gates' commands: QA runs them.
+  const own = makeRepo({ gates: [{ name: "g", command: gate }] });
+  try {
+    const agent = fakeAgent(own.repo, { implementer: [implStep("f.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => ({ report: qaReport() })] });
+    const { result } = await run(own, agent, { commands: "node t" });
+    assert.equal(result.status, "ready", JSON.stringify(result));
+    assert.equal(agent.counts.qa, 1);
+  } finally {
+    own.cleanup();
+  }
+});
+
 test("run: a critical change says so when no stronger review model is configured, and uses one when it is", async () => {
   const env = makeRepo();
   try {

@@ -73,7 +73,7 @@ export interface ContextManifest {
   gates?: unknown[];
   /** Change-size and content rules (see policy.ts). */
   policy?: unknown;
-  pipeline?: { max_review_rounds?: number; max_cost_usd?: number; max_stop_blocks?: number; lean?: LeanLevel; isolate_roles?: boolean; harness_by_role?: Partial<Record<"implementer" | "reviewer" | "qa", string>>; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
+  pipeline?: { max_review_rounds?: number; max_cost_usd?: number; max_stop_blocks?: number; lean?: LeanLevel; isolate_roles?: boolean; qa_reuses_gates?: boolean; harness_by_role?: Partial<Record<"implementer" | "reviewer" | "qa", string>>; auto_merge_low_risk?: boolean; models?: { fast?: string; high_reasoning?: string } };
   ci?: Record<string, unknown>;
   [key: string]: unknown;
 }
@@ -231,6 +231,8 @@ export function validateManifest(m: unknown): string[] {
   if (lean !== undefined && !LEAN_LEVELS.includes(lean as LeanLevel)) problems.push(`pipeline.lean must be one of ${LEAN_LEVELS.join(", ")} (default ${DEFAULT_LEAN}), got ${JSON.stringify(lean)}`);
   const isolate = man.pipeline?.isolate_roles as unknown;
   if (isolate !== undefined && typeof isolate !== "boolean") problems.push("pipeline.isolate_roles must be true or false");
+  const reuse = man.pipeline?.qa_reuses_gates as unknown;
+  if (reuse !== undefined && typeof reuse !== "boolean") problems.push("pipeline.qa_reuses_gates must be true or false");
   const stopBlocks = man.pipeline?.max_stop_blocks;
   if (stopBlocks !== undefined && (!Number.isInteger(stopBlocks) || stopBlocks < 1 || stopBlocks > 5)) {
     problems.push("pipeline.max_stop_blocks must be an integer 1–5");

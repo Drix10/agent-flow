@@ -4,8 +4,11 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-10-08
+
 Found by reading a real repository's history (the Hypothesis Arena: 294 role runs and about $83 over five days) and by installing the published package on real Gemini CLI 0.62 and Codex 0.160:
 
+- **QA no longer repeats the gates.** When QA's commands are exactly the gates' commands (you didn't pass `--commands`) and every one just passed on this commit, `run` records the QA result from the gate logs and doesn't launch a QA role: in the arena QA re-ran the gates on 63 issues for 8 hours and $11 and caught nothing the gates had passed, and a live run spent 13 minutes per QA pass on it. The audit line says `harness: gates`, the completion binding accepts it like any QA run, and `pipeline.qa_reuses_gates: false` always launches QA. The trade is the re-run QA does to tell a flaky test from a broken one.
 - **A plugin or skill install no longer looks like protection.** The Claude plugin installs the skills only, so a user who stopped there had no guard and nothing said so. The bootstrap and orchestrator skills now start with `agent-flow status` and tell the user plainly when it reports no guard hook, with the one command that wires it. The README says the same beside the new npm install commands (`npm install --global`, `--save-dev`) and gains an npm downloads badge.
 - **`status` collapses a long backlog.** The arena had 27 finished issues, each two lines. Past four of a kind (ready, in progress) the screen prints one summary line with the issue numbers and what to run; `status --json` still lists every row.
 - **The guard no longer blocks writes that are inside the worktree.** On Windows, Git Bash writes `C:\…` as `/c/…`, which node reads as a path on the current drive, outside the worktree: 16 of the arena's 28 confinement blocks were that. `/c/…` and `/cygdrive/c/…` are now read as the drive they name. A redirect to PowerShell's `$null` (like `/dev/null`) is no longer refused as an unresolvable target. A variable that may name a real file (`> $OUT`) still is.

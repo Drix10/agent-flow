@@ -442,6 +442,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
     const leanSetting = cfg("pipeline.lean");
     const LEAN = leanSetting === "off" || leanSetting === "lite" || leanSetting === "full" ? leanSetting : "lite";
     const ISOLATE = cfg("pipeline.isolate_roles") === "true";
+    const REUSE_GATES = cfg("pipeline.qa_reuses_gates") !== "false";
     let shortcuts: { where: string; ceiling: string; upgrade: string }[] = [];
     const gatesDefined = (afJson(["gates", "list"]).gates ?? []).length > 0;
     let findings = R > 1 ? findingsFor(A, R - 1) : "none";
@@ -559,6 +560,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       // 1e. gates, then QA
       // Reaching the qa phase means the gates already passed this round; the binding at completion re-checks that
       // they were run on the commit being published, so a resume does not pay for them a second time.
+      let gatesPassedNow: any = null;
       if (gatesDefined && phaseNow < 2) {
         log({ kind: "step", text: `${roundTag}: running gates` });
         const g = af(["gates", "run", "--issue", String(N), "--json"]);
@@ -571,10 +573,20 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
           R = nextRound(R);
           continue;
         }
+        if (g.status === 0) {
+          try {
+            gatesPassedNow = JSON.parse(g.stdout);
+          } catch {
+            gatesPassedNow = null;
+          }
+        }
       }
       if (at("qa")) updatePhase("qa", R);
       const pre = snapshot();
-      const qa = await runRole("qa", R, { model: FAST, announce: `${roundTag}: QA` });
+      // QA's commands are, unless the caller named its own, exactly the gates' commands. When every one of them just passed on
+      // this commit, a QA run repeats the same work: in the arena that was 8 hours and $11 over 63 issues, and it never caught
+      // what the gates had passed. Record QA from the gate results instead (`pipeline.qa_reuses_gates: false` runs it anyway).
+      const qa = (REUSE_GATES ? qaFromGates(gatesPassedNow) : null) ?? (await runRole("qa", R, { model: FAST, announce: `${roundTag}: QA` }));
       if (snapshot() !== pre) escalate("qa_mutated_tree", "QA changed the files it was testing, so its result is invalid. Decide: re-run QA.");
       // A command killed by its timeout (exit 124) on the run and again on the re-run says nothing about the code: the
       // Implementer would get "Terminated" as its finding and a round would be spent on a machine that was too slow.
@@ -614,6 +626,49 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
 
     function nextRound(r: number): number {
       return r + 1;
+    }
+
+    // ---- QA from the gates' own results --------------------------------------------------
+    /** The last lines of a gate's log: what QA's report carries as raw output. */
+    function gateTail(log: string): string {
+      try {
+        const text = readFileSync(join(root, log), "utf-8");
+        const lines = text.split(/\r?\n/);
+        const tail = lines.length > 40 ? `[… ${lines.length - 40} earlier lines in ${log} …]\n${lines.slice(-40).join("\n")}` : text;
+        return tail.length > 3000 ? `…${tail.slice(-3000)}` : tail;
+      } catch {
+        return `(log: ${log})`;
+      }
+    }
+
+    function qaFromGates(g: any): any | null {
+      const results: any[] = Array.isArray(g?.results) ? g.results : [];
+      const ran = results.filter((x) => !x.skipped);
+      if (!g?.ok || !ran.length || !ran.every((x) => x.ok)) return null;
+      // Only when QA would run exactly what the gates just ran (not a command the caller added or changed).
+      if (i.commands !== ran.map((x) => x.command).join("; ")) return null;
+      const stem = join(A, `${fileFor("qa")}-r${R}`);
+      const doc = {
+        status: "passed",
+        issue: N,
+        commands: ran.map((x) => ({ name: x.name, command: x.command, exit_code: x.exit_code ?? 0, duration_seconds: Math.round((x.duration_ms ?? 0) / 1000), rerun_exit_code: null, raw_output: gateTail(x.log) })),
+        flaky: [],
+        reason: null,
+      };
+      writeFileSync(`${stem}.raw`, `${JSON.stringify(doc)}\n`);
+      const rep = af(["report", "qa", `${stem}.raw`, "--out", `${stem}.json`, "--json", "--harness", "gates", "--issue", String(N), "--round", String(R), "--exit", "0", "--seconds", "0"]);
+      let chk: any = {};
+      try {
+        chk = json(rep.stdout);
+      } catch {
+        chk = { ok: false };
+      }
+      if (!chk.ok) {
+        log({ kind: "warn", text: `QA: the gate results could not be recorded as a QA report (${(chk.problems ?? [])[0] ?? "unknown"}); running QA instead` });
+        return null;
+      }
+      log({ kind: "info", text: `QA: not launched; its ${ran.length === 1 ? "command is" : "commands are"} the gates' own, and ${ran.length === 1 ? "it" : "all"} passed on this commit (recorded from the gate logs)` });
+      return readJson(`${stem}.json`);
     }
 
     // ---- role launch + validation ------------------------------------------------------

@@ -11,7 +11,7 @@
             "homepage": "https://github.com/Drix10/agent-flow",
             "name": "agent-flow",
             "source": "./plugins/agent-flow",
-            "version": "1.2.5"
+            "version": "1.2.6"
         }
     ]
 }

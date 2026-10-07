@@ -63,7 +63,7 @@ npx @drix10/agent-flow audit-risk        # review once, then `baseline accept --
 npx @drix10/agent-flow init              # preview a manifest; suggests protected_paths but writes none
 ```
 
-Add `doctor` and `audit-risk --fail-on-new` to CI, or use the composite action (`uses: Drix10/agent-flow@v1.2.5`), which also runs `classify --fail-on-protected --fail-on-policy` and can upload SARIF to code scanning (`--sarif` on `doctor` and `audit-risk`). In a git repo the scans read git's file list, so untracked gitignored trees (data, caches, vendored code) are not walked. Files git tracks are always scanned, even under an ignored pattern, and outside git the scans fall back to a directory walk.
+Add `doctor` and `audit-risk --fail-on-new` to CI, or use the composite action (`uses: Drix10/agent-flow@v1.2.6`), which also runs `classify --fail-on-protected --fail-on-policy` and can upload SARIF to code scanning (`--sarif` on `doctor` and `audit-risk`). In a git repo the scans read git's file list, so untracked gitignored trees (data, caches, vendored code) are not walked. Files git tracks are always scanned, even under an ignored pattern, and outside git the scans fall back to a directory walk.
 
 ## Layer 2: protect what must not change
 
@@ -157,6 +157,8 @@ Most teams already run one of superpowers, GSD, gstack, spec-kit or openspec. Th
 ## Layer 2d: lean, and role isolation
 
 `pipeline.lean` (`off`, `lite` by default, `full`) tells the Implementer and Reviewer to make the smallest correct change; `agent-flow debt` lists the shortcuts it leaves marked in the code. `pipeline.isolate_roles: true` keeps this machine's global Claude Code plugins and hooks out of each role. Both are explained, with what is and isn't claimed, in [LEAN.md](LEAN.md).
+
+`pipeline.qa_reuses_gates` (default `true`): when QA would run exactly the commands the gates just ran, and every one passed on this commit, `run` records the QA result from the gate logs instead of launching a QA role to repeat them (the audit line says `harness: gates`). A real repository paid 8 hours and $11 over 63 issues for that repeat and it never caught what the gates had passed. The trade: a gate runs a command once, where QA re-runs a failure to tell a flaky test from a broken one, and the shortcut applies only when QA's list is the gates' list (naming your own with `--commands` still launches QA). Set it to `false` to always launch QA.
 
 ## Taking it back out
 

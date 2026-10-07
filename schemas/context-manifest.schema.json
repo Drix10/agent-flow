@@ -243,6 +243,10 @@
           "type": "boolean",
           "description": "Launch each role with --setting-sources project,local so a global plugin or hook on this machine can't add context to a role (it would change what the Reviewer judges and what QA runs). Off by default: it also drops the user's own Claude Code settings for roles."
         },
+        "qa_reuses_gates": {
+          "type": "boolean",
+          "description": "Default true. When QA would run exactly the commands the gates just ran and all of them passed on this commit, the QA result is recorded from the gate logs instead of launching a QA role that would repeat the work (a gate has no re-run for flakiness; QA does). Set false to always launch QA."
+        },
         "harness_by_role": {
           "type": "object",
           "description": "Run a role on a different harness than the orchestrator's, e.g. the Reviewer on another vendor so it doesn't share the Implementer's blind spots. The verdict still goes through the schema, the round cap and the audit chain.",

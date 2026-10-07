@@ -121,7 +121,7 @@ Or use the [composite GitHub Action](action.yml), which also classifies pull req
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- uses: Drix10/agent-flow@v1.2.5
+- uses: Drix10/agent-flow@v1.2.6
 ```
 
 ## What it does
