@@ -56,12 +56,13 @@ import { existsSync, openSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const [base, secs, , ...rest] = process.argv.slice(2);
 if (process.env.AF_SUPERVISED !== "1") {
-  spawn(process.execPath, process.argv.slice(1), { detached: true, stdio: "ignore", windowsHide: true, env: { ...process.env, AF_SUPERVISED: "1" } }).unref();
+  process.env.AF_SUPERVISED = "1"; // a spawned process inherits this process's environment, so the detached copy sees it
+  spawn(process.execPath, process.argv.slice(1), { detached: true, stdio: "ignore", windowsHide: true }).unref();
   process.exit(0);
 }
-const env = { ...process.env };
-while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0] ?? "")) { const [k, ...v] = rest.shift().split("="); env[k] = v.join("="); }
-delete env.AF_SUPERVISED;
+// KEY=VALUE arguments are set here, in the runner's own environment, which the role then inherits (nothing else sees them).
+while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0] ?? "")) { const [k, ...v] = rest.shift().split("="); process.env[k] = v.join("="); }
+delete process.env.AF_SUPERVISED;
 writeFileSync(`${base}.argv`, JSON.stringify(rest));
 const win = process.platform === "win32";
 // Windows: run .exe directly (args intact); npm's .cmd shims (claude.cmd, codex.cmd) need cmd.exe, with every arg quoted.
@@ -79,8 +80,8 @@ let timedOut = false;
 const out = (f) => openSync(`${base}.${f}`, "w");
 const stdio = ["ignore", out("raw"), out("err")];
 const child = win && /\.(cmd|bat)$/i.test(exe)
-  ? spawn(`${q(exe)} ${rest.slice(1).map(q).join(" ")}`, { env, stdio, shell: true, windowsHide: true })
-  : spawn(exe, rest.slice(1), { env, stdio, windowsHide: true });
+  ? spawn(`${q(exe)} ${rest.slice(1).map(q).join(" ")}`, { stdio, shell: true, windowsHide: true })
+  : spawn(exe, rest.slice(1), { stdio, windowsHide: true });
 writeFileSync(`${base}.pid`, String(child.pid));
 const stop = () => (win ? spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"]) : child.kill("SIGTERM"));
 const kill = setTimeout(() => { timedOut = true; stop(); setTimeout(() => child.kill("SIGKILL"), 10000).unref(); }, Number(secs) * 1000);
