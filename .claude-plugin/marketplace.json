@@ -10,7 +10,7 @@
             "description": "Run AI coding agents unattended, safely: Implement → Review → QA as separate agents, a guard that blocks edits they must never make, and context that stays true to the code.",
             "homepage": "https://github.com/Drix10/agent-flow",
             "name": "agent-flow",
-            "source": "./",
+            "source": "./plugins/agent-flow",
             "version": "1.2.5"
         }
     ]

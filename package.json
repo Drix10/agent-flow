@@ -27,7 +27,6 @@
     "templates/",
     "schemas/",
     "prompts/",
-    ".claude-plugin/plugin.json",
     ".claude-plugin/marketplace.json",
     "gemini-extension.json",
     "docs/",

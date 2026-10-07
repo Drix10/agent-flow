@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+- **The Claude Code plugin is now the skills folder alone** (`plugins/agent-flow`, with its own `.claude-plugin/plugin.json`; the marketplace entry points there). The directory scans whatever its source path holds, and with the whole repository as the source it flagged tests, fixtures and the CLI itself. Reworded two scanner false positives in the skills: a docs URL beside `$PWD` in `launch.md`, and `eval` beside "shell" in the reviewer skill. The guard hook still comes from `install --harness claude`; the plugin never wired it.
+
 - Removed `docs/DISTRIBUTION.md` and the root `plugin.json`. The root manifest was in the agent-plugins.org format, which Claude reads none of (the directory validator said so), and `plugins/agent-flow/plugin.json` already carries the same manifest for Codex. The plugin keyword `trust-loop` became `guardrails`, `SETUP.md` names the renamed skill in its non-Claude wording, and `docs/EXTENSIONS-VS-SKILLS.md` went (nothing linked to it).
 
 ## [1.2.5] - 2026-10-07

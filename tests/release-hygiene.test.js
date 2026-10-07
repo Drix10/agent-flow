@@ -28,7 +28,7 @@ test("every version file, the CHANGELOG and the docs' action tag agree", () => {
 /** A scratch copy of just the files the check reads. */
 function scratch() {
   const dir = mkdtempSync(join(tmpdir(), "af-ver-"));
-  for (const f of ["package.json", "package-lock.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "plugins/agent-flow/plugin.json", "gemini-extension.json", "CHANGELOG.md", "README.md", "docs/ADOPTION.md"]) {
+  for (const f of ["package.json", "package-lock.json", "plugins/agent-flow/.claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "plugins/agent-flow/plugin.json", "gemini-extension.json", "CHANGELOG.md", "README.md", "docs/ADOPTION.md"]) {
     mkdirSync(join(dir, ...f.split("/").slice(0, -1)), { recursive: true });
     cpSync(join(root, f), join(dir, f));
   }
