@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-  <img src="assets/logo.svg" alt="Agent Flow" width="320">
+  <img src="assets/logo.svg" alt="Agent Flow" width="140">
 </picture>
 
 # Agent Flow
