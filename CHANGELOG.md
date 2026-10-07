@@ -4,6 +4,8 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+- **Branding.** The README now opens with one sentence and one outcome (*Leave your coding agent alone with your repo. Come back to a reviewed pull request, not a mess.*), shows real `status` output, gives one install command and two follow-up steps, and puts the other install routes, the CI snippet and the command list under collapsed sections. A short "From one real repo" block gives measured numbers from five days of use, including the false alarms. The same sentence is the description in `package.json`, the Claude and Codex plugin manifests, the marketplace file, `gemini-extension.json` and the GitHub About text. No behaviour changed.
+
 ## [1.2.6] - 2026-10-08
 
 Found by reading a real repository's history (the Hypothesis Arena: 294 role runs and about $83 over five days) and by installing the published package on real Gemini CLI 0.62 and Codex 0.160:

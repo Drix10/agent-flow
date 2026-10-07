@@ -5,39 +5,57 @@
   <img src="assets/logo.svg" alt="Agent Flow" width="320">
 </picture>
 
-**Run AI coding agents unattended without letting them go loose: one implements, another reviews, a third tests, a guard blocks what they must never touch, and you only see what needs you.**
+# Agent Flow
 
-[![npm version](https://img.shields.io/npm/v/@drix10/agent-flow?style=flat-square&logo=npm)](https://www.npmjs.com/package/@drix10/agent-flow)
-[![npm downloads](https://img.shields.io/npm/dm/@drix10/agent-flow?style=flat-square&label=npm%20downloads)](https://www.npmjs.com/package/@drix10/agent-flow)
-[![CI](https://img.shields.io/github/actions/workflow/status/Drix10/agent-flow/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)
-[![Node](https://img.shields.io/node/v/@drix10/agent-flow?style=flat-square&logo=node.js&logoColor=white&label=node)](https://nodejs.org/)
+*Leave your coding agent alone with your repo. Come back to a reviewed pull request, not a mess.*
 
-**Zero runtime dependencies** · **tests run against real git repositories** · **every claim marked enforced, checked or instructed**
+[![npm version](https://img.shields.io/npm/v/@drix10/agent-flow?style=flat-square&color=111111&label=npm)](https://www.npmjs.com/package/@drix10/agent-flow)
+[![npm downloads](https://img.shields.io/npm/dm/@drix10/agent-flow?style=flat-square&color=111111&label=downloads)](https://www.npmjs.com/package/@drix10/agent-flow)
+[![CI](https://img.shields.io/github/actions/workflow/status/Drix10/agent-flow/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-111111?style=flat-square)](./LICENSE)
 
-[Quick start](#quick-start) · [How it works](#pipeline-behavior) · [Harnesses](docs/HARNESS-MATRIX.md) · [Lean mode](docs/LEAN.md) · [FAQ](#faq)
+**One agent builds. A second reviews. A third tests. A guard keeps all three out of what they must never touch.**
+
+[Install](#install) · [What you come back to](#what-you-come-back-to) · [How it works](#how-it-works) · [Harnesses](docs/HARNESS-MATRIX.md) · [FAQ](#faq)
 
 </div>
 
 ---
 
-### Try it in 30 seconds — nothing installed, nothing written
+## Install
 
 ```bash
-npx @drix10/agent-flow scan
+npx @drix10/agent-flow install --harness claude
 ```
 
-A read-only X-ray of any repository: languages, test and lint commands, CI, secret suspects. Or take just the skills, with any agent, via [skills.sh](https://skills.sh) (they call the CLI through `npx`, so there is still nothing to set up):
+Then tell your agent *"use the agent-flow-bootstrap skill"*: it reads the repo and asks what must never be touched. After that, hand it a task:
 
 ```bash
-npx skills add Drix10/agent-flow
+npx @drix10/agent-flow run "Add a --json flag so CI can parse the output"
 ```
 
-Give an agent a task and walk away. Agent Flow runs it through separate **implement, review and QA** steps in its own git worktree, blocks the edits an agent must never make, lets it fix its own failing tests and CI lists, and leaves you a short list of what needs a person.
+That's all of it. It runs in its own git worktree and stops with checked work and a draft pull request waiting for you. Works with Claude Code, Codex, Gemini CLI, Cursor, Copilot, Windsurf, Pi and anything that reads `AGENTS.md`: swap `claude` for `codex`, `gemini`, `cursor`, `copilot`, `windsurf` or `agents`. Node.js 20+, no runtime dependencies, no `package.json` needed in your repo.
 
-It is a Node.js CLI and skills package for Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot, Windsurf, Pi and other tools that read `AGENTS.md` (14 install targets plus Pi; see the [harness matrix](docs/HARNESS-MATRIX.md) for what each one enforces). It has no runtime dependencies and needs no `package.json` in the repository it sets up. Node.js 20 or later is required.
+**The guard blocks tool calls directly on Claude Code and Pi.** On the other hosts the skills guide the agent and a pre-commit hook and CI catch the slips: [what each host enforces](docs/HARNESS-MATRIX.md).
 
-### You hand off *"add a `--json` flag"* and leave
+## What you come back to
+
+Real output from a run on a real repository (trimmed):
+
+```text
+$ agent-flow status
+
+Protection
+  ✓ Claude Code guard hook is active
+  ✓ 11 protected paths, 7 critical areas
+  ✓ 1 review-only path: agents may add lines (a new CI test), a person reviews the pull request
+
+Work
+  · #100000 is ready: reviewed, checked, not pushed
+      → agent-flow run 100000 --pr  to open the pull request
+```
+
+## Without it, and with it
 
 | | ❌ Without Agent Flow | ✅ With Agent Flow |
 |---|---|---|
@@ -49,7 +67,30 @@ It is a Node.js CLI and skills package for Claude Code, Codex CLI, Gemini CLI, C
 | **Docs and context** | `AGENTS.md` describes the old behaviour | `agent-flow doctor` flags it |
 | **What happened** | Ask the agent | A hash-chained audit log |
 
-## Quick start
+## From one real repo
+
+Agent Flow ran for five days on a real C++ and Python research repository (294 role runs, about $83). The audit log recorded:
+
+- **150 tool calls blocked**, among them 20 reads of secret files, 2 pushes to `main` and 1 `--no-verify`. Not every block was right: 16 were false alarms from a Windows path bug, fixed in 1.2.6.
+- **15 lines added to the CI workflow, none changed or deleted.**
+- **A median finished issue cost $0.90 and took 17 minutes**, over 63 issues.
+
+One repository, one maintainer: an example, not a benchmark.
+
+<details>
+<summary><b>More ways to install and run</b></summary>
+
+**Try it first, nothing installed and nothing written:**
+
+```bash
+npx @drix10/agent-flow scan
+```
+
+A read-only X-ray of any repository: languages, test and lint commands, CI, secret suspects. Or take just the skills, with any agent, via [skills.sh](https://skills.sh) (they call the CLI through `npx`, so there is still nothing to set up):
+
+```bash
+npx skills add Drix10/agent-flow
+```
 
 Install the harness files, then ask your coding agent to bootstrap the repository:
 
@@ -87,7 +128,10 @@ The command runs in a worktree and leaves checked work local by default. Add `--
 
 On other harnesses, ask the agent to use the `agent-flow-invoking-agents` skill for an issue or task. It applies the same state, risk, review and QA checks using that harness's launch procedure. Pi also provides `/implement <issue>`.
 
-## Keep the setup current
+</details>
+
+<details>
+<summary><b>Keep it current, and run it in CI</b></summary>
 
 ```bash
 npx @drix10/agent-flow@latest update --yes
@@ -97,7 +141,7 @@ npx @drix10/agent-flow audit-risk --fail-on-new
 
 `update` refreshes unedited skills, hooks and the vendored runtime; it preserves files you customized. `doctor` checks context paths, commands, links and manifest freshness. `audit-risk` compares dependencies, secrets and other risk surfaces with `.risk-baseline.json`. See [Adoption](docs/ADOPTION.md) for update behavior by install type.
 
-## Add CI checks
+**Add CI checks**
 
 The CLI works in Python, Go, C++, Rust and other repositories without adding `package.json` or `node_modules`. Node.js is needed in the CI job to run it.
 
@@ -124,7 +168,10 @@ Or use the [composite GitHub Action](action.yml), which also classifies pull req
 - uses: Drix10/agent-flow@v1.2.6
 ```
 
-## What it does
+</details>
+
+<details>
+<summary><b>Everything it does, and the commands</b></summary>
 
 | Area | Behavior | Command or enforcement |
 |---|---|---|
@@ -151,7 +198,9 @@ npx @drix10/agent-flow state dismiss --issue 100000 --reason "did it by hand"   
 npx @drix10/agent-flow state dismiss --merged                                   # drop every finished issue already merged into the default branch
 ```
 
-## Pipeline behavior
+</details>
+
+## How it works
 
 ```text
 task -> worktree -> implement -> classify -> review -> gates -> QA -> optional PR

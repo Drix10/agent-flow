@@ -1,6 +1,6 @@
 {
     "author": "Drix10",
-    "description": "Run AI coding agents unattended, safely: Implement → Review → QA as separate agents, a guard that blocks edits they must never make, and context that stays true to the code.",
+    "description": "Leave your coding agent alone with your repo and come back to a reviewed pull request: separate agents implement, review and test, and a guard blocks what they must never touch.",
     "homepage": "https://github.com/Drix10/agent-flow",
     "license": "MIT",
     "name": "agent-flow",
