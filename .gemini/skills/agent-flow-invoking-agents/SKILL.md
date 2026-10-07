@@ -31,6 +31,8 @@ The CLI owns the state transitions, report validation, risk checks and role laun
 
 ## Other harnesses, or CLI unusable
 
+First run `npx @drix10/agent-flow status`. If it reports no guard hook, tell the user that agents here are not being stopped from touching protected files, and that `npx @drix10/agent-flow install --harness <name>` is what wires the guard (the skills alone don't); then continue.
+
 Follow [references/manual.md](references/manual.md) (steps, resuming, escalation, parallel issues) and [references/launch.md](references/launch.md) (variables, background runner, per-harness launch). Read them only now; don't run both paths for one issue.
 
 The shape: prepare (issue → `.agent-flow/artifacts/issue-N/issue.md`, state, worktree) → each round implement → `AF classify` → review → gates → QA, a rejected review or failed QA starting the next round with that report as findings → PR → cleanup. The tools route every step: a protected path, `SPEC_ERROR`, `ARCH_ERROR`, a permission violation, a role failure or the round cap is Needs Me with a reason a human can act on in 60 seconds.

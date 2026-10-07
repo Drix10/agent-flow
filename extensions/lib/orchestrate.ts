@@ -660,6 +660,12 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         if (chk.ok) return readJson(`${stem}.json`);
         if (attempt === 1) escalate("malformed_report", `the ${role}'s report was invalid twice: ${problems.slice(0, 3).join("; ")}.`);
         log({ kind: "warn", text: `${role} report invalid (${problems[0] ?? "unknown"}); asking once to correct it` });
+        // The retry writes to the same files; keep what the invalid attempt printed, or nobody can see why it was invalid.
+        try {
+          renameSync(`${stem}.raw`, `${stem}.attempt${attempt + 1}.raw`);
+        } catch {
+          /* nothing to keep */
+        }
         argv = retryArgs(argv, chk.harness?.session_id, problems);
       }
       throw new Error("unreachable");

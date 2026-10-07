@@ -1543,6 +1543,42 @@ ${signal}: stopped ${stopped} running role${stopped === 1 ? "" : "s"}. Progress 
 // status: everything you need to know about this repo's protection and pending work, on one screen
 // ---------------------------------------------------------------------------
 
+/**
+ * A long run leaves dozens of finished issues. Past a few of one kind, `status` prints one summary line for the rest
+ * (the `--json` rows are never collapsed, so a script still sees every issue).
+ */
+const WORK_ROWS_SHOWN = 4;
+function collapseWork(rows) {
+  const kindOf = (r) => (r.section === "Work" && r.level === "info" ? (/ is ready: /.test(r.text) ? "ready" : / in progress /.test(r.text) ? "progress" : null) : null);
+  const ids = { ready: [], progress: [] };
+  for (const r of rows) {
+    const k = kindOf(r);
+    if (k) ids[k].push(/^#(\d+)/.exec(r.text)?.[1] ?? "?");
+  }
+  const seen = { ready: 0, progress: 0 };
+  const shown = [];
+  for (const r of rows) {
+    const k = kindOf(r);
+    if (!k) {
+      shown.push(r);
+      continue;
+    }
+    if (++seen[k] > WORK_ROWS_SHOWN) continue;
+    shown.push(r);
+    if (seen[k] === WORK_ROWS_SHOWN && ids[k].length > WORK_ROWS_SHOWN) {
+      const rest = ids[k].slice(WORK_ROWS_SHOWN);
+      const list = rest.length > 12 ? `${rest.slice(0, 12).map((n) => `#${n}`).join(", ")}, …` : rest.map((n) => `#${n}`).join(", ");
+      shown.push({
+        section: "Work",
+        level: "info",
+        text: `${rest.length} more ${k === "ready" ? "ready: reviewed, checked, not pushed" : "in progress"}: ${list}`,
+        hint: k === "ready" ? "agent-flow run <n> --pr for each, or agent-flow state dismiss --issue <n> --reason \"...\" to drop one; agent-flow status --json lists them all" : "agent-flow run <n> to resume; agent-flow status --json lists them all",
+      });
+    }
+  }
+  return shown;
+}
+
 function cmdStatus(args) {
   const rt = root();
   const rows = [];
@@ -1642,7 +1678,7 @@ function cmdStatus(args) {
   out(args, { version: VERSION, repo: basename(rt), ok: !bad_, rows }, () => {
     console.log(c(1, `agent-flow ${VERSION} · ${basename(rt)}`));
     let section = "";
-    for (const r of rows) {
+    for (const r of collapseWork(rows)) {
       if (r.section !== section) {
         section = r.section;
         console.log(`\n${c(1, section)}`);

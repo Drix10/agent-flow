@@ -106,3 +106,26 @@ test("status: an issue that passed review, gates and QA is 'ready', not 'in prog
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("status: a long run's dozens of finished issues collapse to a summary line, and --json still lists every one", () => {
+  const dir = repo({});
+  try {
+    for (let n = 1; n <= 9; n++) cli(dir, "state", "update", "--issue", String(n), "--state", "Working", "--phase", "publish", "--round", "1");
+    const text = cli(dir, "status").stdout;
+    assert.equal((text.match(/ is ready: reviewed, checked, not pushed/g) ?? []).length, 4, "four rows are shown");
+    assert.match(text, /5 more ready: reviewed, checked, not pushed: #5, #6, #7, #8, #9/);
+    assert.match(text, /agent-flow run <n> --pr for each/);
+    const rows = JSON.parse(cli(dir, "status", "--json").stdout).rows.filter((r) => / is ready: /.test(r.text));
+    assert.equal(rows.length, 9, "scripts and the MCP tool see every issue");
+    // Few enough to show: no summary at all.
+    const few = repo({});
+    try {
+      for (let n = 1; n <= 3; n++) cli(few, "state", "update", "--issue", String(n), "--state", "Working", "--phase", "publish", "--round", "1");
+      assert.doesNotMatch(cli(few, "status").stdout, /more ready/);
+    } finally {
+      rmSync(few, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

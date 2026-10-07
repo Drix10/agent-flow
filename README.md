@@ -8,6 +8,7 @@
 **Run AI coding agents unattended without letting them go loose: one implements, another reviews, a third tests, a guard blocks what they must never touch, and you only see what needs you.**
 
 [![npm version](https://img.shields.io/npm/v/@drix10/agent-flow?style=flat-square&logo=npm)](https://www.npmjs.com/package/@drix10/agent-flow)
+[![npm downloads](https://img.shields.io/npm/dm/@drix10/agent-flow?style=flat-square&label=npm%20downloads)](https://www.npmjs.com/package/@drix10/agent-flow)
 [![CI](https://img.shields.io/github/actions/workflow/status/Drix10/agent-flow/ci.yml?branch=main&style=flat-square&logo=github&label=CI)](https://github.com/Drix10/agent-flow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)
 [![Node](https://img.shields.io/node/v/@drix10/agent-flow?style=flat-square&logo=node.js&logoColor=white&label=node)](https://nodejs.org/)
@@ -53,8 +54,20 @@ It is a Node.js CLI and skills package for Claude Code, Codex CLI, Gemini CLI, C
 Install the harness files, then ask your coding agent to bootstrap the repository:
 
 ```bash
-npx @drix10/agent-flow install --harness claude
+npx @drix10/agent-flow install --harness claude     # nothing to install first
 ```
+
+Or install it from npm and use the short `agent-flow` command:
+
+```bash
+npm install --global @drix10/agent-flow             # the agent-flow command everywhere
+agent-flow install --harness claude
+
+npm install --save-dev @drix10/agent-flow           # or pin it in a Node project's package.json
+npx agent-flow install --harness claude
+```
+
+On Claude Code you can also add the skills as a plugin: `/plugin marketplace add Drix10/agent-flow`, then `/plugin install agent-flow@agent-flow-marketplace`. **The plugin installs the skills only. The guard that blocks edits is wired by `install`, so run it too.** `agent-flow status` says whether the guard is on.
 
 Use `codex`, `gemini`, `cursor`, `copilot`, `windsurf` or `agents` instead of `claude` for those tools. Pi users can install the package with `pi install npm:@drix10/agent-flow`.
 

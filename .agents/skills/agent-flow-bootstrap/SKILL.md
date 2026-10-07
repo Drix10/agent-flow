@@ -9,6 +9,8 @@ compatibility: Needs git and Node 20+; runs through `npx @drix10/agent-flow` (no
 
 You propose. The human decides. Every claim you write carries a confidence marker, and every risk boundary is a question to the human, never an assumption.
 
+**First, run `npx @drix10/agent-flow status`.** If its Protection section says there is no guard hook, tell the user plainly: agents in this repo are not being stopped from touching protected files or secrets, and installing this skill or plugin did not change that. `npx @drix10/agent-flow install --harness <name>` wires the guard (Phase 5). Say so now, then carry on.
+
 Why this matters: a context file with confident wrong claims makes agents *worse* than having no context at all (FM-01). Fewer true claims beat many plausible ones.
 
 ## Phase 1: Reconnaissance (read-only)

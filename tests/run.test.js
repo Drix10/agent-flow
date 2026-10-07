@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -235,6 +235,11 @@ test("run: an invalid report gets one correction in the same session, a second f
     assert.deepEqual(calls[1].argv.slice(2, 4), ["--resume", "6f1c2a9e-1b7d-4c53-9a0e-2d8f4b6c7a10"], "the retry resumes the same Claude session");
     assert.match(calls[1].argv.at(-1), /rejected by the validator/);
     assert.equal(audit(env.repo).filter((e) => e.event === "role_run" && e.role === "implementer").length, 2, "both attempts are logged");
+    // The invalid attempt's output survives the retry (the retry writes the same file names).
+    const artifacts = join(env.repo, ".agent-flow", "artifacts");
+    const kept = readdirSync(artifacts).flatMap((d) => readdirSync(join(artifacts, d)).map((f) => join(artifacts, d, f))).filter((f) => /implementer-r1\.attempt1\.raw$/.test(f));
+    assert.equal(kept.length, 1, "the first attempt's raw output is kept");
+    assert.match(readFileSync(kept[0], "utf-8"), /not a report/);
   } finally {
     env.cleanup();
   }
