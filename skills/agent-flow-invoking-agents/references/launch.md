@@ -15,9 +15,9 @@ harness() { npx --no-install @drix10/agent-flow config get "pipeline.harness_by_
 lean() { v="$(npx --no-install @drix10/agent-flow config get pipeline.lean 2>/dev/null)"; case "$v" in off|lite|full) echo "$v" ;; *) echo lite ;; esac; }
 cat > ".agent-flow/artifacts/issue-$N/env.sh" <<EOF
 N=$N
-ROOT="$PWD"                                   # main checkout: state, guard hook and node_modules live here
-A="$PWD/.agent-flow/artifacts/issue-$N"       # absolute, because some CLIs change directory
-WT="$PWD/.worktrees/issue-$N"                 # absolute worktree path, handed to every role
+ROOT="$(pwd)"                                   # main checkout: state, guard hook and node_modules live here
+A="$(pwd)/.agent-flow/artifacts/issue-$N"       # absolute, because some CLIs change directory
+WT="$(pwd)/.worktrees/issue-$N"                 # absolute worktree path, handed to every role
 GIT_COMMON="$(git rev-parse --path-format=absolute --git-common-dir)"
 AF="npx @drix10/agent-flow"
 BASE=main                                     # "base" from \`worktree create --json\`
@@ -236,4 +236,4 @@ node "$A/run-role.mjs" "$A/qa-r$R" "$ROLE_TIMEOUT" -- AGENT_FLOW_ROLE=qa \
 
 ## Windows
 
-Run `env.sh` and the commands above from Git Bash or WSL where you can. In PowerShell, set the same variables with `$N = 42`, `$A = "$PWD\.agent-flow\artifacts\issue-$N"` and so on, pass role variables to the runner as `KEY=VALUE` arguments exactly as above (it sets them for the child only), and replace `${X:+--model "$X"}` with an `if ($X) { '--model', $X }` array. Windows PowerShell 5.1's `>` writes UTF-16; `report` decodes it.
+Run `env.sh` and the commands above from Git Bash or WSL where you can. In PowerShell, set the same variables with `$N = 42`, `$A = Join-Path (Get-Location) ".agent-flow\artifacts\issue-$N"` and so on, pass role variables to the runner as `KEY=VALUE` arguments exactly as above (it sets them for the child only), and replace `${X:+--model "$X"}` with an `if ($X) { '--model', $X }` array. Windows PowerShell 5.1's `>` writes UTF-16; `report` decodes it.
