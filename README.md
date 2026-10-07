@@ -2,10 +2,8 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-  <img src="assets/logo.svg" alt="Agent Flow" width="140">
+  <img src="assets/logo.svg" alt="Agent Flow" width="320">
 </picture>
-
-# Agent Flow
 
 *Leave your coding agent alone with your repo. Come back to a reviewed pull request, not a mess.*
 
