@@ -16,7 +16,7 @@ const N = 100001;
 const git = (cwd, ...a) => spawnSync("git", a, { cwd, encoding: "utf-8" });
 
 /** A repo with a manifest, an `origin` to push to, and the agent-flow CLI as the orchestrator's tool belt. */
-function makeRepo(manifest = {}) {
+function makeRepo(manifest = {}, files = {}) {
   const dir = mkdtempSync(join(tmpdir(), "af-run-"));
   const repo = join(dir, "repo");
   const remote = join(dir, "remote.git");
@@ -26,6 +26,10 @@ function makeRepo(manifest = {}) {
   git(repo, "config", "user.email", "t@example.test");
   git(repo, "config", "user.name", "t");
   writeFileSync(join(repo, "AGENTS.md"), "# rules\n");
+  for (const [name, body] of Object.entries(files)) {
+    mkdirSync(join(repo, ...name.split("/").slice(0, -1)), { recursive: true });
+    writeFileSync(join(repo, name), body);
+  }
   writeFileSync(join(repo, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", default_branch: "main", context_files: [{ path: "AGENTS.md", references: [] }], protected_paths: ["secret/**"], risk_boundaries: [{ path: "core/**", risk_level: "critical" }], pipeline: { max_review_rounds: 2 }, ...manifest }));
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "init");
@@ -1114,6 +1118,34 @@ test("run: resuming at publish does not run the gates again (they already passed
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("run: a new test that no gate names is reported, in the log, the result and the pull request", async () => {
+  const gate = 'node -e "process.exit(0)" tests/test_a.py tests/test_b.py';
+  const env = makeRepo({ gates: [{ name: "listed", command: gate }] }, { "tests/test_a.py": "x\n", "tests/test_b.py": "x\n" });
+  try {
+    const agent = fakeAgent(env.repo, { implementer: [implStep("tests/test_c.py")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => ({ report: qaReport() })] });
+    const { result, logs } = await run(env, agent);
+    assert.equal(result.status, "ready", JSON.stringify(result));
+    assert.ok(logs.some((l) => l.kind === "warn" && /1 new test file\(s\) no gate runs.*tests\/test_c\.py/.test(l.text)), "the log says which test no gate ran: " + JSON.stringify(logs.map((l) => l.text)));
+    assert.match(result.reason, /Not run by any gate .*tests\/test_c\.py/);
+    const pr = await run(env, agent, { pr: true });
+    assert.equal(pr.result.status, "pr", JSON.stringify(pr.result));
+    const body = readFileSync(join(env.repo, ".agent-flow", "artifacts", `issue-${pr.result.issue}`, "pr.md"), "utf-8");
+    assert.match(body, /\*\*Not run by any gate:\*\* `tests\/test_c\.py`/);
+  } finally {
+    env.cleanup();
+  }
+  // A new test the gate does name, and a change that adds none: nothing to say.
+  const quiet = makeRepo({ gates: [{ name: "listed", command: 'node -e "process.exit(0)" tests/test_a.py tests/test_b.py' }] }, { "tests/test_a.py": "x\n", "tests/test_b.py": "x\n" });
+  try {
+    const agent = fakeAgent(quiet.repo, { implementer: [implStep("notes.txt")], reviewer: [({ round }) => ({ report: reviewReport(round) })], qa: [() => ({ report: qaReport() })] });
+    const { result, logs } = await run(quiet, agent);
+    assert.equal(result.reason, "reviewed, gated and tested; nothing was pushed");
+    assert.ok(!logs.some((l) => /no gate runs/.test(l.text)));
+  } finally {
+    quiet.cleanup();
   }
 });
 

@@ -9,6 +9,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { unlistedTests } from "./gates.js";
 import { Spawner } from "./launch.js";
 import { issueCost } from "./state.js";
 import { verifyAudit } from "./audit.js";
@@ -366,6 +367,8 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
   let round = 0;
   let risk: string | undefined;
   let humanReview = false;
+  /** New test files that no gate names: the pipeline's gates and QA never ran them. */
+  let notGated: string[] = [];
   const done = (o: Partial<RunOutcome> & { status: Outcome }): RunOutcome => {
     const c = issueCost(root, N);
     return { issue: N, round, artifacts: A, branch, worktree: WT, risk, ...(humanReview ? { human_review: true } : {}), cost_usd: c.total, unreported_runs: c.unreported_runs, ...o };
@@ -511,6 +514,17 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         R = nextRound(R);
         continue;
       }
+
+      // A new test that no gate names was run by neither the gates nor QA. "Reviewed, gated and tested" would read as covering
+      // it, so say so. It isn't sent back: the gates live in the protected manifest, so only a person can add it.
+      try {
+        const gl = JSON.parse(af(["gates", "list", "--json"]).stdout);
+        const tracked = sh("git", ["-C", WT, "ls-files", "-z"], root).stdout.split("\0").filter(Boolean);
+        notGated = unlistedTests(tracked, gl.gates ?? []).filter((f) => (cls.files ?? []).includes(f));
+      } catch {
+        notGated = []; // advisory only: no readable gate list, nothing to say
+      }
+      if (notGated.length) log({ kind: "warn", text: `${notGated.length} new test file(s) no gate runs, so neither the gates nor QA ran them: ${notGated.join(", ")}` });
 
       // 1d. Reviewer
       if (at("review")) updatePhase("review", R);
@@ -675,7 +689,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
     async function finish(rev: any, qa: any, cls: any, LIMIT: number): Promise<RunOutcome> {
       if (!i.pr) {
         log({ kind: "info", text: `ready on ${branch} (worktree .worktrees/issue-${N}); not pushed` });
-        return done({ status: "ready", reason: "reviewed, gated and tested; nothing was pushed" });
+        return done({ status: "ready", reason: `reviewed, gated and tested; nothing was pushed${notGated.length ? `. Not run by any gate (add ${notGated.length === 1 ? "it" : "them"} to a gate in CONTEXT_MANIFEST.json): ${notGated.join(", ")}` : ""}` });
       }
       const flaky: any[] = qa.flaky ?? [];
       const stale: any[] = rev.context_stale_flags ?? [];
@@ -687,6 +701,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         "",
         `**Risk:** ${cls.risk_level} (${(cls.reasons ?? []).slice(0, 5).join("; ")})`,
         ...((cls.review_required ?? []).length ? [`**Needs your review:** this change adds to ${(cls.review_required as string[]).map((f) => `\`${f}\``).join(", ")} (review-only: CI and test configuration). The agent only added lines; check that each new check is the one you want.`] : []),
+        ...(notGated.length ? [`**Not run by any gate:** ${notGated.map((f) => `\`${f}\``).join(", ")}. The pipeline's gates and QA never ran ${notGated.length === 1 ? "this test" : "these tests"}; CI is the only check until a person adds ${notGated.length === 1 ? "it" : "them"} to a gate in CONTEXT_MANIFEST.json.`] : []),
         `**Review:** ${rev.status}: ${rev.summary ?? ""}${typeof rev.net_lines_removable === "number" && rev.net_lines_removable > 0 ? ` (${rev.net_lines_removable} line(s) could still be cut)` : ""}`,
         ...(shortcuts.length ? ["", "**Deferred shortcuts** (each is marked `lean:` in the code; `agent-flow debt` lists them):", ...shortcuts.map((x) => `- ${x.where}: ${x.ceiling}; upgrade when ${x.upgrade}`)] : []),
         `**QA:** ${qa.status}${flaky.length ? ` (flaky: ${flaky.map((x: any) => x.test ?? x.name ?? JSON.stringify(x)).join(", ")})` : ""}`,
