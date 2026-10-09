@@ -5,6 +5,7 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 ## [Unreleased]
 
 - **Branding.** The README now opens with one sentence and one outcome (*Leave your coding agent alone with your repo. Come back to a reviewed pull request, not a mess.*), shows real `status` output, gives one install command and two follow-up steps, and puts the other install routes, the CI snippet and the command list under collapsed sections. A short "From one real repo" block gives measured numbers from five days of use, including the false alarms. The same sentence is the description in `package.json`, the Claude and Codex plugin manifests, the marketplace file, `gemini-extension.json` and the GitHub About text. No behaviour changed.
+- **Enrolled in Anthropic's OSS Scanner.** `.oss-scanner/Dockerfile` builds and tests the project the way CI does, and `.oss-scanner/threat_model.md` tells the scanner to treat the agent as the attacker, which components matter, how we rate severity and which gaps `SECURITY.md` already admits. Neither ships in the npm package. No behaviour changed.
 
 ## [1.2.6] - 2026-10-08
 
