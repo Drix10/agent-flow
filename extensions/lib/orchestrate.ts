@@ -302,7 +302,9 @@ export function claudeArgs(role: Role, p: { prompt: string; model?: string; dirs
  */
 export function describePushFailure(output: string): string {
   const text = output.trim();
-  if (/GH013|push protection|secret[- ]scanning/i.test(text)) {
+  // GH013 is GitHub's code for any repository rule (a required check, a signed-commit rule): only the push-protection
+  // wording says this is a secret.
+  if (/push protection|secret[- ]scanning/i.test(text)) {
     const paths = [...new Set([...text.matchAll(/path:\s*(\S+)/g)].map((m) => m[1]))].slice(0, 5);
     const url = text.match(/https:\/\/github\.com\/\S*\/security\/secret-scanning\/\S+/)?.[0];
     return `GitHub's push protection blocked the push: it found something shaped like a secret${paths.length ? ` in ${paths.join(", ")}` : ""}. A test fixture should build the string at run time (split or join it), so nothing secret-shaped is committed. If a person has checked that it is safe, they can allow it${url ? ` at ${url}` : " in the repository's secret scanning settings"}`;

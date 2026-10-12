@@ -111,6 +111,57 @@ test("apply: removes merged local and remote branches and worktrees, keeps uncom
   }
 });
 
+test("apply: a branch that moved after it was judged is left alone, locally and on the remote (compare-and-delete, not delete)", () => {
+  const f = fixture();
+  try {
+    const plan = planClean(f.dir, { active: new Set([4]), gh: ghWith(f.tips) });
+    // Someone pushes to #1's branch on the remote, and commits on #3's local branch, after the plan was made.
+    const other = join(f.base, "other");
+    git(f.base, "clone", "-q", join(f.base, "remote.git"), "other");
+    git(other, "config", "user.email", "t@example.test");
+    git(other, "config", "user.name", "t");
+    git(other, "checkout", "-q", "agent/issue-1");
+    writeFileSync(join(other, "late.txt"), "late\n");
+    git(other, "add", "-A");
+    git(other, "commit", "-qm", "late work");
+    git(other, "push", "-q", "origin", "agent/issue-1");
+    const wt3 = join(f.dir, ".worktrees", "issue-3");
+    writeFileSync(join(wt3, "later.txt"), "later\n");
+    git(wt3, "add", "-A");
+    git(wt3, "-c", "user.email=t@example.test", "-c", "user.name=t", "commit", "-qm", "later work");
+    const result = applyClean(f.dir, plan);
+    assert.ok(remoteBranches(f.dir).includes("agent/issue-1"), "the remote branch that gained a commit is kept");
+    assert.ok(result.failed.some((x) => x.issue === 1 && x.where === "remote" && /new commits since it was checked/.test(x.why)), JSON.stringify(result.failed));
+    assert.ok(localBranches(f.dir).includes("agent/issue-3"), "the local branch that gained a commit is kept");
+    assert.ok(result.failed.some((x) => x.issue === 3 && x.where === "local" && /new commits since it was checked/.test(x.why)), JSON.stringify(result.failed));
+    assert.ok(!remoteBranches(f.dir).includes("agent/issue-3"), "an untouched merged remote branch still goes");
+  } finally {
+    rmSync(f.base, { recursive: true, force: true });
+  }
+});
+
+test("apply: it works from any checked-out branch (git branch -d would judge against HEAD), and never deletes the branch that is checked out", () => {
+  const f = fixture();
+  try {
+    // HEAD on an unrelated branch that does not contain the merged work: `git branch -d` would refuse every one of them.
+    git(f.dir, "checkout", "-q", "-b", "elsewhere", "main~3");
+    const plan = planClean(f.dir, { active: new Set([4]), gh: ghWith(f.tips), remote: false });
+    const result = applyClean(f.dir, plan);
+    assert.ok(result.removed.some((r) => r.issue === 1 && r.where === "local"), "merged #1 goes although HEAD is elsewhere");
+    assert.ok(!localBranches(f.dir).includes("agent/issue-1"));
+    // Now the main checkout is on a merged agent branch (no worktree holds it): it must not be pulled out from under HEAD.
+    git(f.dir, "branch", "agent/issue-9", "main");
+    git(f.dir, "checkout", "-q", "agent/issue-9");
+    const again = applyClean(f.dir, planClean(f.dir, { active: new Set([4]), gh: null, remote: false }));
+    assert.ok(localBranches(f.dir).includes("agent/issue-9"), "the checked-out branch stays");
+    assert.ok(again.failed.some((x) => x.issue === 9 && /checked out/.test(x.why)), JSON.stringify(again.failed));
+    git(f.dir, "checkout", "-q", "main");
+    assert.ok(applyClean(f.dir, planClean(f.dir, { active: new Set([4]), gh: null, remote: false })).removed.some((r) => r.issue === 9), "and goes once it is no longer checked out");
+  } finally {
+    rmSync(f.base, { recursive: true, force: true });
+  }
+});
+
 test("CLI: previews until --yes, --offline leaves the remote alone, and a pipeline role may not run it", () => {
   const f = fixture();
   try {

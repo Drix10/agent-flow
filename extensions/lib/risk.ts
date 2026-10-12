@@ -281,7 +281,7 @@ export function parseDependencies(file: string, content: string): string[] {
       }
     } else if (/^Dockerfile/.test(name)) {
       // Base images are dependencies too: a database or runtime upgrade can stop a service starting. Stage names are not images.
-      const stages = new Set([...content.matchAll(/^\s*FROM\s+\S+(?:\s+--\S+)*\s+AS\s+(\S+)/gim)].map((m) => m[1].toLowerCase()));
+      const stages = new Set([...content.matchAll(/^\s*FROM\s+(?:--\S+\s+)*\S+\s+AS\s+(\S+)/gim)].map((m) => m[1].toLowerCase()));
       for (const m of content.matchAll(/^\s*FROM\s+(?:--\S+\s+)*([^\s]+)/gim)) {
         const image = imageName(m[1]);
         if (image && image !== "scratch" && !stages.has(image)) deps.add(`image:${image}`);

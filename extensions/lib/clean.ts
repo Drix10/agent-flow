@@ -23,6 +23,8 @@ export type GhFn = (args: string[]) => { status: number; stdout: string } | null
 export interface CleanItem {
   issue: number;
   branch: string;
+  /** The commit the branch pointed at when it was judged merged: it is deleted only while it still points there. */
+  sha: string;
   where: "local" | "remote";
   action: "remove" | "keep";
   /** Why it stays. */
@@ -109,11 +111,11 @@ export function planClean(root: string, o: { active: ReadonlySet<number>; gh?: G
     const issue = Number(m[1]);
     const worktree = existsSync(join(root, worktreeRel(issue)));
     if (o.active.has(issue)) {
-      items.push({ issue, branch, where: "local", action: "keep", why: "a run or a decision is still open (agent-flow status)", worktree });
+      items.push({ issue, branch, sha, where: "local", action: "keep", why: "a run or a decision is still open (agent-flow status)", worktree });
       continue;
     }
     const j = judge(branch, sha);
-    items.push(j.merged ? { issue, branch, where: "local", action: "remove", worktree, viaPr: j.viaPr, pr: j.pr } : { issue, branch, where: "local", action: "keep", why: "has work that is not in the default branch", worktree });
+    items.push(j.merged ? { issue, branch, sha, where: "local", action: "remove", worktree, viaPr: j.viaPr, pr: j.pr } : { issue, branch, sha, where: "local", action: "keep", why: "has work that is not in the default branch", worktree });
   }
 
   if (o.remote !== false) {
@@ -127,11 +129,11 @@ export function planClean(root: string, o: { active: ReadonlySet<number>; gh?: G
         if (!m || !SHA.test(sha ?? "")) continue;
         const issue = Number(m[1]);
         if (o.active.has(issue)) {
-          items.push({ issue, branch, where: "remote", action: "keep", why: "a run or a decision is still open (agent-flow status)" });
+          items.push({ issue, branch, sha, where: "remote", action: "keep", why: "a run or a decision is still open (agent-flow status)" });
           continue;
         }
         const j = judge(branch, sha);
-        items.push(j.merged ? { issue, branch, where: "remote", action: "remove", viaPr: j.viaPr, pr: j.pr } : { issue, branch, where: "remote", action: "keep", why: "has work that is not in the default branch" });
+        items.push(j.merged ? { issue, branch, sha, where: "remote", action: "remove", viaPr: j.viaPr, pr: j.pr } : { issue, branch, sha, where: "remote", action: "keep", why: "has work that is not in the default branch" });
       }
     }
   }
@@ -142,6 +144,35 @@ export function planClean(root: string, o: { active: ReadonlySet<number>; gh?: G
 export interface CleanResult {
   removed: { issue: number; where: "local" | "remote"; what: string }[];
   failed: { issue: number; where: "local" | "remote"; why: string }[];
+}
+
+/** Is `branch` checked out in any worktree (the main checkout included)? Deleting it would pull the branch out from under HEAD. */
+function checkedOut(root: string, branch: string): boolean {
+  const r = git(["worktree", "list", "--porcelain"], root);
+  return r.ok && r.stdout.split("\n").some((l) => l === `branch refs/heads/${branch}`);
+}
+
+/**
+ * Delete a local branch only if it still points at the commit that was checked, and is not checked out anywhere.
+ * `git branch -d` is not used: it judges "merged" against the current branch, so it refuses a branch that is in the default
+ * branch when you happen to be on another one. `update-ref -d <ref> <sha>` deletes only while the ref still holds `sha`.
+ * Without `expect.sha`, the tip must be in the default branch's history.
+ */
+export function deleteLocalBranch(root: string, branch: string, expect: { sha?: string } = {}): { ok: boolean; absent?: boolean; why?: string } {
+  const tip = git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], root);
+  if (!tip.ok || !tip.stdout) return { ok: true, absent: true };
+  if (expect.sha) {
+    if (tip.stdout !== expect.sha) return { ok: false, why: "the branch has new commits since it was checked, so it was left" };
+  } else {
+    const { base, commits } = reachableFromDefault(root);
+    if (!commits.has(tip.stdout)) return { ok: false, why: `its work is not in ${base}` };
+  }
+  if (checkedOut(root, branch)) return { ok: false, why: "the branch is checked out" };
+  const d = git(["update-ref", "-d", `refs/heads/${branch}`, tip.stdout], root);
+  if (!d.ok) return { ok: false, why: d.stderr.split("\n")[0] || "git would not delete the branch" };
+  // `git branch -d` also drops the branch's upstream settings (set by `push -u`); update-ref does not.
+  git(["config", "--remove-section", `branch.${branch}`], root);
+  return { ok: true };
 }
 
 export function applyClean(root: string, plan: CleanPlan): CleanResult {
@@ -161,28 +192,44 @@ export function applyClean(root: string, plan: CleanPlan): CleanResult {
         }
         what = "worktree and branch";
       }
-      let d = git(["branch", "-d", branchFor(it.issue)], root);
-      // A squash-merged branch is not an ancestor, so git refuses -d; its tip was checked against the merged pull request.
-      if (!d.ok && it.viaPr) d = git(["branch", "-D", branchFor(it.issue)], root);
-      if (d.ok) result.removed.push({ issue: it.issue, where: "local", what });
-      else result.failed.push({ issue: it.issue, where: "local", why: d.stderr.split("\n")[0] || "git would not delete the branch" });
+      const d = deleteLocalBranch(root, it.branch, { sha: it.sha });
+      if (d.ok && !d.absent) result.removed.push({ issue: it.issue, where: "local", what });
+      else if (!d.ok) result.failed.push({ issue: it.issue, where: "local", why: d.why ?? "git would not delete the branch" });
     } catch (e: any) {
       result.failed.push({ issue: it.issue, where: "local", why: String(e?.message ?? e).split("\n")[0] });
     }
   }
 
+  // Remote: each delete carries a lease on the commit that was judged merged, so a push that landed since is never lost.
   const remote = plan.items.filter((x) => x.where === "remote" && x.action === "remove");
-  const deleteOne = (it: CleanItem) => {
-    const r = git(["push", "origin", "--delete", it.branch], root, 60_000);
-    if (r.ok) result.removed.push({ issue: it.issue, where: "remote", what: "remote branch" });
-    else result.failed.push({ issue: it.issue, where: "remote", why: r.stderr.split("\n").find((l) => /rejected|denied|protected|error|fatal/i.test(l))?.replace(/^remote:\s*/, "") ?? "the remote refused" });
+  const leaseArgs = (items: CleanItem[]) => [...items.map((i) => `--force-with-lease=refs/heads/${i.branch}:${i.sha}`), ...items.map((i) => `:refs/heads/${i.branch}`)];
+  const why = (stderr: string) => (/stale info|rejected|lease/i.test(stderr) && !/protected|denied/i.test(stderr) ? "the branch has new commits since it was checked, so it was left" : stderr.split("\n").find((l) => /rejected|denied|protected|error|fatal/i.test(l))?.replace(/^remote:\s*/, "") ?? "the remote refused");
+  const stillThere = (): Map<string, string> => {
+    const ls = git(["ls-remote", "--heads", "origin", "refs/heads/agent/issue-*"], root, 60_000);
+    const m = new Map<string, string>();
+    if (ls.ok) for (const line of ls.stdout.split("\n")) {
+      const [sha, ref] = line.trim().split(/\s+/);
+      if (sha && ref) m.set(ref.replace(/^refs\/heads\//, ""), sha);
+    }
+    return m;
   };
-  // One push for many branches; if the remote refuses the batch (one protected branch fails all), go one by one.
   for (let i = 0; i < remote.length; i += 20) {
     const chunk = remote.slice(i, i + 20);
-    const r = git(["push", "origin", "--delete", ...chunk.map((c) => c.branch)], root, 120_000);
-    if (r.ok) for (const it of chunk) result.removed.push({ issue: it.issue, where: "remote", what: "remote branch" });
-    else for (const it of chunk) deleteOne(it);
+    const r = git(["push", "origin", ...leaseArgs(chunk)], root, 120_000);
+    if (r.ok) {
+      for (const it of chunk) result.removed.push({ issue: it.issue, where: "remote", what: "remote branch" });
+      continue;
+    }
+    // Some refused (a protected branch, or one that moved): see what is gone, and say why for the rest.
+    const left = stillThere();
+    for (const it of chunk) {
+      if (!left.has(it.branch)) result.removed.push({ issue: it.issue, where: "remote", what: "remote branch" });
+      else {
+        const one = git(["push", "origin", ...leaseArgs([it])], root, 60_000);
+        if (one.ok) result.removed.push({ issue: it.issue, where: "remote", what: "remote branch" });
+        else result.failed.push({ issue: it.issue, where: "remote", why: why(one.stderr) });
+      }
+    }
   }
   if (remote.length) git(["remote", "prune", "origin"], root, 60_000);
   return result;

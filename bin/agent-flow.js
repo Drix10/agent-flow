@@ -998,17 +998,17 @@ function cmdState(args) {
     const kept = [];
     if (args.clean) {
       for (const issue of dropped) {
-        const r = worktree.removeWorktree(rt, issue, { deleteBranch: true });
-        if (r.error === "worktree_not_found") {
-          // No folder any more; a branch may be all that is left.
-          const b = git.git(["branch", "-d", `agent/issue-${issue}`], rt);
-          if (b.ok) cleaned.push({ issue, removed: ["branch"] });
-        } else if (r.error) {
+        // The branch is deleted by cleanLib, which checks the exact tip against the default branch (git's own -d judges
+        // "merged" against whatever is checked out, which is not the question here).
+        const r = worktree.removeWorktree(rt, issue, {});
+        if (r.error && r.error !== "worktree_not_found") {
           kept.push({ issue, why: r.error === "worktree_dirty" ? "its worktree has uncommitted work" : r.error });
-        } else {
-          cleaned.push({ issue, removed: r.branch_deleted ? ["worktree", "branch"] : ["worktree"] });
-          if (!r.branch_deleted) kept.push({ issue, why: `branch kept (${r.branch_note})` });
+          continue;
         }
+        const d = cleanLib.deleteLocalBranch(rt, `agent/issue-${issue}`);
+        const removed = [...(r.error ? [] : ["worktree"]), ...(d.ok && !d.absent ? ["branch"] : [])];
+        if (removed.length) cleaned.push({ issue, removed });
+        if (!d.ok) kept.push({ issue, why: `branch kept (${d.why})` });
       }
     }
     out(args, { base, dropped, skipped, reason, cleaned, kept }, () => {

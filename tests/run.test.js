@@ -1248,7 +1248,10 @@ test("a push that GitHub's secret scanning blocks says which file and how to all
   // Any other failure keeps the old behaviour: the first 300 characters.
   assert.equal(describePushFailure("fatal: could not read Username"), "fatal: could not read Username");
   assert.equal(describePushFailure("x".repeat(500)).length, 300);
-  assert.match(describePushFailure("remote: error: GH013 something with no path"), /blocked the push: it found something shaped like a secret\. A test fixture/);
+  assert.match(describePushFailure("remote: error: GH013 something with no path. GITHUB PUSH PROTECTION"), /blocked the push: it found something shaped like a secret\. A test fixture/);
+  // GH013 is also what GitHub says for any other repository rule: that message must reach the person unchanged.
+  const other = "remote: error: GH013: Repository rule violations found for refs/heads/x.\nremote: - Commits must have verified signatures.";
+  assert.equal(describePushFailure(other), other);
 });
 
 test("run: a critical change says so when no stronger review model is configured, and uses one when it is", async () => {

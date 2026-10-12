@@ -25,6 +25,7 @@ test("requirements in a folder, constraints files and a Pipfile are read", () =>
 test("a base image in a Dockerfile or a compose file is a dependency; a tag bump is the same one; stages and scratch are not", () => {
   assert.deepEqual(parseDependencies("docker-compose.yml", "services:\n  db:\n    image: postgres:16\n  app:\n    image: \"ghcr.io/o/app:1.2@sha256:abc\"\n    # image: old:1\n"), ["image:ghcr.io/o/app", "image:postgres"]);
   assert.deepEqual(parseDependencies("Dockerfile", "FROM node:20 AS build\nFROM --platform=linux/amd64 python:3.11-slim\nFROM build\nFROM scratch\n"), ["image:node", "image:python"]);
+  assert.deepEqual(parseDependencies("Dockerfile", "FROM --platform=linux/amd64 node:20 AS build\nFROM build\nFROM --platform=$BUILDPLATFORM golang:1.22 AS base\nFROM base AS test\n"), ["image:golang", "image:node"], "a stage named after a --platform FROM is not an image");
   assert.deepEqual(parseDependencies("compose.prod.yaml", "services:\n  a:\n    image: ${REGISTRY}/a:1\n"), [], "an unresolved variable names nothing");
   assert.deepEqual(parseDependencies("docker-compose.yml", "services:\n  db:\n    image: postgres:15\n"), parseDependencies("docker-compose.yml", "services:\n  db:\n    image: postgres:16\n"), "15 to 16 is the same name");
 });

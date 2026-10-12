@@ -27,7 +27,7 @@ npx @drix10/agent-flow run "<task with observable acceptance criteria>"
 npx @drix10/agent-flow run 42
 ```
 
-The CLI owns the state transitions, report validation, risk checks and role launches. It keeps reviewed work in a local worktree; `--pr` pushes and opens a pull request; `--auto-merge` is a separate opt-in that also needs `pipeline.auto_merge_low_risk: true`; `--dry-run` previews. Then relay its result and stop. A waiting issue says what to decide (`agent-flow status`). A run takes one to two hours: start it in the background with your shell tool's longest time limit (Claude Code's background default is 30 minutes and kills it mid-run), and if it is stopped, `agent-flow run <issue>` resumes.
+The CLI owns the state transitions, report validation, risk checks and role launches. It keeps reviewed work in a local worktree; `--pr` pushes and opens a pull request; `--auto-merge` is a separate opt-in that also needs `pipeline.auto_merge_low_risk: true`; `--dry-run` previews. Then relay its result and stop. A waiting issue says what to decide (`npx @drix10/agent-flow status`). A run takes one to two hours: start it in the background with your shell tool's longest time limit (Claude Code's background default is 30 minutes and kills it mid-run), and if it is stopped, `npx @drix10/agent-flow run <issue>` resumes.
 
 ## Other harnesses, or CLI unusable
 
