@@ -107,6 +107,24 @@ test("status: an issue that passed review, gates and QA is 'ready', not 'in prog
   }
 });
 
+test("status mentions `agent-flow clean` once agent/issue-N branches pile up, and not before", () => {
+  const dir = repo({});
+  try {
+    spawnSync("git", ["-c", "user.email=t@example.test", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: dir });
+    for (let n = 1; n <= 3; n++) spawnSync("git", ["branch", `agent/issue-${n}`], { cwd: dir });
+    assert.doesNotMatch(cli(dir, "status").stdout, /local agent\/issue-N branches/, "three is not a pile");
+    for (let n = 4; n <= 16; n++) spawnSync("git", ["branch", `agent/issue-${n}`], { cwd: dir });
+    spawnSync("git", ["branch", "agent/not-an-issue"], { cwd: dir });
+    const text = cli(dir, "status").stdout;
+    assert.match(text, /16 local agent\/issue-N branches/, "only agent/issue-N counts");
+    assert.match(text, /agent-flow clean {2}to preview removing the merged ones/);
+    const row = JSON.parse(cli(dir, "status", "--json").stdout).rows.find((r) => /local agent\/issue-N branches/.test(r.text));
+    assert.ok(row, "--json carries it too");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("status: a long run's dozens of finished issues collapse to a summary line, and --json still lists every one", () => {
   const dir = repo({});
   try {

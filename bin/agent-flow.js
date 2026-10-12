@@ -1760,6 +1760,10 @@ function cmdStatus(args) {
     const list = merged.issues.length > 12 ? `${merged.issues.slice(0, 12).map((n) => `#${n}`).join(", ")}, …` : merged.issues.map((n) => `#${n}`).join(", ");
     rows.push({ section: "Work", level: "info", text: `${merged.issues.length} finished issue${merged.issues.length === 1 ? " is" : "s are"} already merged into ${merged.base}: ${list}`, hint: "agent-flow state dismiss --merged  to clear them from the list", issues: merged.issues });
   }
+  // A long run leaves a branch per issue (one user had 114 local, 169 on the remote): mention `clean` once there is a pile.
+  const agentBranches = git.git(["for-each-ref", "--format=%(refname:short)", "refs/heads/agent/"], rt);
+  const branchCount = agentBranches.ok ? agentBranches.stdout.split("\n").filter((b) => /^agent\/issue-\d+$/.test(b)).length : 0;
+  if (branchCount >= 15) rows.push({ section: "Work", level: "info", text: `${branchCount} local agent/issue-N branches`, hint: "agent-flow clean  to preview removing the merged ones, with their worktrees" });
   for (const s of working.filter((x) => !mergedSet.has(x.issue))) {
     // The publish checkpoint is recorded once review, gates and QA have passed: finished, waiting for a person to publish.
     if (s.phase === "publish") add("Work", "info", `#${s.issue} is ready: reviewed, checked, not pushed`, `agent-flow run ${s.issue} --pr  to open the pull request`);
