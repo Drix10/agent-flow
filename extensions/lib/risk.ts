@@ -5,8 +5,9 @@
  *  - EVERY dependency is a surface (keyed per package), so "a new dependency
  *    appeared" is detected. v1.0.2 keyed deps by manifest file, so adding
  *    `stripe` to an existing package.json was never reported as new.
- *  - Parses package.json, requirements*.txt, pyproject.toml, go.mod,
- *    Cargo.toml and Gemfile (v1.0.2 globbed them but only parsed package.json).
+ *  - Parses package.json, requirements*.txt (and requirements/*.txt, constraints*.txt), pyproject.toml (PEP 621, PEP 735
+ *    groups, uv, poetry and poetry groups), Pipfile, go.mod, Cargo.toml, Gemfile, and the base images in a Dockerfile or
+ *    compose file (v1.0.2 globbed them but only parsed package.json).
  *  - Line-level, word-bounded patterns: `map.delete(` and `author` no longer
  *    light up every file in the repo. Alert fatigue kills audits.
  *  - Secret detection (values are NEVER echoed — only kind + line).
@@ -250,7 +251,7 @@ export function parseDependencies(file: string, content: string): string[] {
       for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
         for (const d of Object.keys(pkg[field] ?? {})) deps.add(d);
       }
-    } else if (/^requirements.*\.txt$/.test(name)) {
+    } else if (/^(requirements|constraints).*\.txt$/.test(name) || /(^|[\\/])requirements[\\/][^\\/]+\.txt$/.test(file)) {
       for (const line of content.split(/\r?\n/)) {
         const l = line.replace(/#.*/, "").trim();
         if (!l || l.startsWith("-")) continue;
@@ -261,9 +262,34 @@ export function parseDependencies(file: string, content: string): string[] {
       const optional = content.match(/\[project\.optional-dependencies\]([\s\S]*?)(\n\[|$)/)?.[1] ?? "";
       const lists = [...tomlArrays(content, /^\s*dependencies\s*=\s*\[/gm), ...tomlArrays(optional, /^\s*[\w-]+\s*=\s*\[/gm)];
       for (const list of lists) for (const m of list.matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)/g)) deps.add(m[1].toLowerCase());
+      // PEP 735 groups, uv's dev-dependencies list and poetry's `group.<name>` tables: where test and dev tools now live.
+      const groups = content.match(/\[dependency-groups\]([\s\S]*?)(\n\[|$)/)?.[1] ?? "";
+      for (const list of [...tomlArrays(groups, /^\s*[\w-]+\s*=\s*\[/gm), ...tomlArrays(content, /^\s*dev-dependencies\s*=\s*\[/gm)]) {
+        // `{ include-group = "x" }` names another group, not a package.
+        for (const m of list.replace(/\{[^}]*\}/g, "").matchAll(/["']([A-Za-z0-9][A-Za-z0-9._-]*)/g)) deps.add(m[1].toLowerCase());
+      }
+      for (const sec of content.matchAll(/\[tool\.poetry\.group\.[\w-]+\.dependencies\]([\s\S]*?)(?=\n\[|$)/g)) {
+        for (const m of sec[1].matchAll(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*=/gm)) if (m[1] !== "python") deps.add(m[1].toLowerCase());
+      }
       const poetry = content.match(/\[tool\.poetry\.(?:dev-)?dependencies\]([\s\S]*?)(\n\[|$)/);
       for (const m of poetry?.[1].matchAll(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*=/gm) ?? []) {
         if (m[1] !== "python") deps.add(m[1].toLowerCase());
+      }
+    } else if (name === "Pipfile") {
+      for (const sec of content.matchAll(/\[(?:dev-)?packages\]([\s\S]*?)(?=\n\[|$)/g)) {
+        for (const m of sec[1].matchAll(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*=/gm)) deps.add(m[1].toLowerCase());
+      }
+    } else if (/^Dockerfile/.test(name)) {
+      // Base images are dependencies too: a database or runtime upgrade can stop a service starting. Stage names are not images.
+      const stages = new Set([...content.matchAll(/^\s*FROM\s+\S+(?:\s+--\S+)*\s+AS\s+(\S+)/gim)].map((m) => m[1].toLowerCase()));
+      for (const m of content.matchAll(/^\s*FROM\s+(?:--\S+\s+)*([^\s]+)/gim)) {
+        const image = imageName(m[1]);
+        if (image && image !== "scratch" && !stages.has(image)) deps.add(`image:${image}`);
+      }
+    } else if (/^(docker-)?compose.*\.ya?ml$/.test(name)) {
+      for (const m of content.matchAll(/^\s*image:\s*["']?([^\s"'#]+)/gm)) {
+        const image = imageName(m[1]);
+        if (image && !image.includes("$")) deps.add(`image:${image}`);
       }
     } else if (name === "go.mod") {
       const block = content.match(/require\s*\(([\s\S]*?)\)/g) ?? [];
@@ -282,7 +308,12 @@ export function parseDependencies(file: string, content: string): string[] {
   return [...deps].sort();
 }
 
-const DEP_MANIFEST = /(^|\/)(package\.json|requirements[^/]*\.txt|pyproject\.toml|go\.mod|Cargo\.toml|Gemfile)$/;
+/** `registry/org/name:tag@digest` → `registry/org/name`: a tag bump is the same dependency (the touched file is what raises the risk). */
+function imageName(ref: string): string {
+  return ref.replace(/@.*$/, "").replace(/:[^/:]*$/, "").toLowerCase();
+}
+
+const DEP_MANIFEST = /(^|\/)(package\.json|(requirements|constraints)[^/]*\.txt|pyproject\.toml|Pipfile|go\.mod|Cargo\.toml|Gemfile|Dockerfile(\.(?!(md|txt|rst)$)[^/]+)?|[^/]+\.Dockerfile|(docker-)?compose[^/]*\.ya?ml)$|(^|\/)requirements\/[^/]+\.txt$/;
 export const isDependencyManifest = (p: string) => DEP_MANIFEST.test(p);
 
 function depCategory(dep: string): SurfaceType | null {

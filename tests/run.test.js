@@ -1221,6 +1221,34 @@ test("run: QA is not launched when its commands are exactly the gates that just 
   }
 });
 
+test("a push that GitHub's secret scanning blocks says which file and how to allow it, instead of a cut-off wall of remote: lines", async () => {
+  const { describePushFailure } = await import("../extensions/lib/orchestrate.js");
+  const blocked = [
+    "remote: error: GH013: Repository rule violations found for refs/heads/agent/issue-7.",
+    "remote: - GITHUB PUSH PROTECTION",
+    "remote:   ——————— GitHub Personal Access Token ————————",
+    "remote:     locations:",
+    "remote:       - commit: abc123",
+    "remote:         path: tests/test_signer.py:12",
+    "remote:       - commit: abc123",
+    "remote:         path: tests/test_signer.py:12",
+    "remote:   (?) To push, remove secret from commit(s) or follow this URL to allow the secret.",
+    "remote:   https://github.com/o/r/security/secret-scanning/unblock-secret/ABC123",
+    "To https://github.com/o/r.git",
+    " ! [remote rejected] agent/issue-7 -> agent/issue-7 (push declined due to repository rule violations)",
+  ].join("\n");
+  const msg = describePushFailure(blocked);
+  assert.match(msg, /push protection blocked the push/);
+  assert.match(msg, /in tests\/test_signer\.py:12\./, "the file, once");
+  assert.match(msg, /at https:\/\/github\.com\/o\/r\/security\/secret-scanning\/unblock-secret\/ABC123/);
+  assert.match(msg, /build the string at run time/);
+  assert.ok(msg.length < 520);
+  // Any other failure keeps the old behaviour: the first 300 characters.
+  assert.equal(describePushFailure("fatal: could not read Username"), "fatal: could not read Username");
+  assert.equal(describePushFailure("x".repeat(500)).length, 300);
+  assert.match(describePushFailure("remote: error: GH013 something with no path"), /blocked the push: it found something shaped like a secret\. A test fixture/);
+});
+
 test("run: a critical change says so when no stronger review model is configured, and uses one when it is", async () => {
   const env = makeRepo();
   try {

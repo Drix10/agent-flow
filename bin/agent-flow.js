@@ -55,7 +55,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline", "fail-on-no-trigger", "merged", "keep-runtime", "keep-hook", "no-brief", "statusline"]);
+const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline", "fail-on-no-trigger", "merged", "clean", "keep-runtime", "keep-hook", "no-brief", "statusline"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -126,7 +126,8 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
   state [show] [--issue <n>]  Print pipeline state
   state update --issue <n> --state "Working|Needs Me|Completed" [--phase p] [--round r] [--reason t] [--reopen]
   state dismiss --issue <n> --reason <why>
-  state dismiss --merged [--reason <why>]   drop every finished issue whose branch is already in the default branch
+  state dismiss --merged [--reason <why>] [--clean]   drop every finished issue whose branch is already in the default branch;
+                            --clean also removes their worktrees and local branches (never one with uncommitted work or unmerged commits)
                             Drop an issue from the list (you handled it by hand, or no longer want it); its files are kept
                             Exit 3 when the round cap escalated the issue to Needs Me
   worktree create <n> [--base <branch>] | remove <n> [--force] [--delete-branch] | list
@@ -940,10 +941,31 @@ function cmdState(args) {
       }
       if (state.dismissSession(rt, issue, reason).dismissed) dropped.push(issue);
     }
-    out(args, { base, dropped, skipped, reason }, () => {
+    // --clean: the leftovers of those issues. A worktree with uncommitted work stays, and a branch git doesn't consider merged stays.
+    const cleaned = [];
+    const kept = [];
+    if (args.clean) {
+      for (const issue of dropped) {
+        const r = worktree.removeWorktree(rt, issue, { deleteBranch: true });
+        if (r.error === "worktree_not_found") {
+          // No folder any more; a branch may be all that is left.
+          const b = git.git(["branch", "-d", `agent/issue-${issue}`], rt);
+          if (b.ok) cleaned.push({ issue, removed: ["branch"] });
+        } else if (r.error) {
+          kept.push({ issue, why: r.error === "worktree_dirty" ? "its worktree has uncommitted work" : r.error });
+        } else {
+          cleaned.push({ issue, removed: r.branch_deleted ? ["worktree", "branch"] : ["worktree"] });
+          if (!r.branch_deleted) kept.push({ issue, why: `branch kept (${r.branch_note})` });
+        }
+      }
+    }
+    out(args, { base, dropped, skipped, reason, cleaned, kept }, () => {
       if (!dropped.length && !skipped.length) return console.log(dim("no finished issue is merged into the default branch yet"));
       if (dropped.length) ok(`dropped ${dropped.length} merged issue${dropped.length === 1 ? "" : "s"}: ${dropped.map((n) => `#${n}`).join(", ")} (${reason}). Their files stay under .agent-flow/artifacts; remove a worktree with: agent-flow worktree remove <n>`);
       if (skipped.length) warn(`left ${skipped.map((n) => `#${n}`).join(", ")}: a run is working on ${skipped.length === 1 ? "it" : "them"} right now`);
+      if (cleaned.length) ok(`cleaned up: ${cleaned.map((x) => `#${x.issue} (${x.removed.join(" and ")})`).join(", ")}`);
+      for (const k of kept) warn(`#${k.issue}: ${k.why}`);
+      if (dropped.length && !args.clean) console.log(dim("  add --clean to remove their worktrees and local branches as well"));
     });
     return 0;
   }

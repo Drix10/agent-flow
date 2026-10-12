@@ -296,6 +296,20 @@ export function claudeArgs(role: Role, p: { prompt: string; model?: string; dirs
   return [...base, "--allowedTools", "Bash,PowerShell,Skill", "--output-format", "json", p.prompt];
 }
 
+/**
+ * Why a push failed, in words a person can act on. GitHub's push protection prints the file and an unblock URL in a long
+ * block of `remote:` lines; cut at 300 characters, the part that says what to do was lost.
+ */
+export function describePushFailure(output: string): string {
+  const text = output.trim();
+  if (/GH013|push protection|secret[- ]scanning/i.test(text)) {
+    const paths = [...new Set([...text.matchAll(/path:\s*(\S+)/g)].map((m) => m[1]))].slice(0, 5);
+    const url = text.match(/https:\/\/github\.com\/\S*\/security\/secret-scanning\/\S+/)?.[0];
+    return `GitHub's push protection blocked the push: it found something shaped like a secret${paths.length ? ` in ${paths.join(", ")}` : ""}. A test fixture should build the string at run time (split or join it), so nothing secret-shaped is committed. If a person has checked that it is safe, they can allow it${url ? ` at ${url}` : " in the repository's secret scanning settings"}`;
+  }
+  return text.slice(0, 300);
+}
+
 /** The same command resumed in the same Claude session, asked to fix its report; without a session, the prompt gets the sentence appended. */
 export function retryArgs(argv: string[], sessionId: string | undefined, problems: string[]): string[] {
   const sentence = `Your report was rejected by the validator: ${oneLine(problems.join("; "))}. Print only the corrected JSON report.`;
@@ -774,7 +788,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       writeFileSync(join(A, "pr.md"), body);
       log({ kind: "step", text: `pushing ${branch}` });
       const push = sh("git", ["-C", WT, "push", "-u", "origin", branch], root);
-      if (push.status !== 0) escalate("push_failed", `${(push.stderr || push.stdout).trim().slice(0, 300)}. The branch is kept locally. Decide: fix the remote or auth, then resume.`);
+      if (push.status !== 0) escalate("push_failed", `${describePushFailure(push.stderr || push.stdout)}. The branch is kept locally. Decide: fix the remote, the auth or what was blocked, then resume.`);
       let pr = sh("gh", ["pr", "list", "--head", branch, "--state", "open", "--json", "number,url"], root);
       let url = "";
       try {
@@ -787,7 +801,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
         // classify may name the base as `origin/main`; a pull request needs the branch name.
         const prBase = (cls.base ?? BASE).replace(/^origin\//, "");
         const created = sh("gh", ["pr", "create", "--base", prBase, "--head", branch, "--title", title, "--body-file", join(A, "pr.md"), ...(cls.risk_level === "critical" || cls.human_approval_required ? ["--draft"] : [])], root);
-        if (created.status !== 0) escalate("push_failed", `could not open the pull request: ${(created.stderr || created.stdout).trim().slice(0, 300)}`);
+        if (created.status !== 0) escalate("push_failed", `could not open the pull request: ${describePushFailure(created.stderr || created.stdout)}`);
         url = created.stdout.trim().split("\n").pop() ?? "";
       }
       log({ kind: "info", text: `pull request: ${url}` });

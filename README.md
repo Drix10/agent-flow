@@ -251,6 +251,12 @@ See [Security](SECURITY.md) and [known failure modes](FAILURE_MODES.md) for deta
 
 **What if my harness has no hooks?** The skills and the pre-commit gate still apply; the guard's per-call blocking does not. The harness matrix says which is which.
 
+**My run stopped after 30 minutes.** That is the background limit of the tool that launched it (Claude Code's default), not Agent Flow's: a pipeline takes one to two hours. Launch it with the tool's longest limit, and `agent-flow run <issue>` resumes a stopped one. `--timeout <seconds>` sets how long each role may run (default 3600).
+
+**Branches and worktrees pile up.** Turn on "Automatically delete head branches" in the repository's GitHub settings for the remote ones. For local ones, `agent-flow state dismiss --merged --clean` drops every finished issue already merged into the default branch and removes its worktree and branch (never one with uncommitted work).
+
+**GitHub blocked my push over a secret in a test.** Its push protection scans every commit and doesn't know a fixture from a leak. Build the fake value at run time (split or join the string) so nothing secret-shaped is committed. The run says which file it found and where a person can allow it.
+
 **How do I remove it?** `agent-flow uninstall` previews, `--yes` applies. Files you edited are kept.
 
 ## Development

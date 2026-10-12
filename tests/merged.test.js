@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,6 +88,60 @@ test("status folds merged issues into one line (and --json says which); state di
     const again = cli(dir, "state", "dismiss", "--merged");
     assert.match(again.stdout, /no finished issue is merged/);
     assert.equal(cli(dir, "state", "dismiss", "--merged", "--json").status, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("state dismiss --merged --clean removes the worktree and branch of what it drops, and nothing else", () => {
+  const dir = mkdtempSync(join(tmpdir(), "af-clean-"));
+  try {
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "config", "user.email", "t@example.test");
+    git(dir, "config", "user.name", "t");
+    git(dir, "config", "core.autocrlf", "false");
+    writeFileSync(join(dir, "AGENTS.md"), "# rules\n");
+    writeFileSync(join(dir, "CONTEXT_MANIFEST.json"), JSON.stringify({ version: "2", default_branch: "main", context_files: [{ path: "AGENTS.md", references: [] }] }));
+    git(dir, "add", "-A");
+    git(dir, "commit", "-qm", "init");
+    // #5 merged, clean worktree; #6 merged, worktree with uncommitted work; #7 never merged; #8 merged, worktree already gone.
+    const heads = {};
+    for (const n of [5, 6, 7, 8]) {
+      assert.equal(cli(dir, "worktree", "create", String(n)).status, 0);
+      const wt = join(dir, ".worktrees", `issue-${n}`);
+      writeFileSync(join(wt, `f${n}.txt`), "x\n");
+      git(wt, "add", "-A");
+      git(wt, "-c", "user.email=t@example.test", "-c", "user.name=t", "commit", "-qm", `issue ${n}`);
+      heads[n] = git(wt, "rev-parse", "HEAD");
+    }
+    for (const n of [5, 6, 8]) git(dir, "merge", "-q", "--no-ff", "-m", `merge ${n}`, `agent/issue-${n}`);
+    writeFileSync(join(dir, ".worktrees", "issue-6", "scratch.txt"), "unsaved\n"); // uncommitted
+    git(dir, "worktree", "remove", "--force", join(dir, ".worktrees", "issue-8")); // folder gone, branch still there
+    for (const n of [5, 6, 7, 8]) {
+      cli(dir, "state", "update", "--issue", String(n), "--state", "Working", "--phase", "publish", "--round", "1");
+      appendAudit(dir, { event: "role_run", role: "qa", issue: n, head: heads[n], ok: true });
+    }
+    const plain = cli(dir, "state", "dismiss", "--merged");
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.match(plain.stdout, /add --clean to remove their worktrees/);
+    // Put the sessions back for the clean run (plain dismiss only dropped the state).
+    for (const n of [5, 6, 8]) {
+      cli(dir, "state", "update", "--issue", String(n), "--state", "Working", "--phase", "publish", "--round", "1");
+    }
+    const r = cli(dir, "state", "dismiss", "--merged", "--clean");
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /cleaned up: #5 \(worktree and branch\), #8 \(branch\)/);
+    assert.match(r.stdout, /#6: its worktree has uncommitted work/);
+    const branches = git(dir, "branch", "--list", "agent/issue-*");
+    assert.doesNotMatch(branches, /issue-5\b/);
+    assert.doesNotMatch(branches, /issue-8\b/);
+    assert.match(branches, /issue-6\b/, "uncommitted work keeps its branch");
+    assert.match(branches, /issue-7\b/, "an unmerged issue is untouched");
+    assert.ok(existsSync(join(dir, ".worktrees", "issue-6", "scratch.txt")), "and its unsaved file");
+    assert.ok(existsSync(join(dir, ".worktrees", "issue-7")));
+    assert.ok(!existsSync(join(dir, ".worktrees", "issue-5")));
+    const json = JSON.parse(cli(dir, "state", "dismiss", "--merged", "--clean", "--json").stdout);
+    assert.deepEqual(json.dropped, [], "nothing left to drop");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
