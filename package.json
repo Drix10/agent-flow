@@ -1,6 +1,6 @@
 {
   "name": "@drix10/agent-flow",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "Leave your coding agent alone with your repo and come back to a reviewed pull request: separate agents implement, review and test, and a guard blocks what they must never touch.",
   "type": "module",
   "main": "extensions/index.js",

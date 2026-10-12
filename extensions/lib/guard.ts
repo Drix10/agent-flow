@@ -968,7 +968,7 @@ const DEVICE = /^(\/dev\/(null|stdout|stderr|tty|fd\/\d+)|\$null)$/;
 // The CLI twins of agent-flow's own mutating tools
 // ---------------------------------------------------------------------------
 
-const CLI_COMMANDS = new Set(["doctor", "init", "audit-risk", "baseline", "classify", "check-staged", "state", "worktree", "scan", "install", "hook", "schema", "template", "report", "repair", "guard", "audit", "gates", "manifest", "codeowners", "update", "uninstall", "debt", "brief", "statusline", "mcp", "run"]);
+const CLI_COMMANDS = new Set(["doctor", "init", "audit-risk", "baseline", "classify", "check-staged", "state", "worktree", "scan", "install", "hook", "schema", "template", "report", "repair", "guard", "audit", "gates", "manifest", "codeowners", "update", "uninstall", "clean", "debt", "brief", "statusline", "mcp", "run"]);
 
 /**
  * May `role` run `agent-flow <argv…>`? Returns a block reason, or null if allowed.
@@ -1007,6 +1007,7 @@ export function roleMayRunCli(role: Role | null, argv: readonly string[]): strin
               : null;
     // Dropping an issue from the list is a person's decision, for every role: an agent must not be able to make its own
     // escalation disappear from `status`.
+    if (sub === "clean") return `role "${role}" may not run \`agent-flow clean\`: deleting branches and worktrees is a person's decision.`;
     if (sub === "state" && act === "dismiss") return `role "${role}" may not run \`agent-flow state dismiss\`: dropping an issue from the list is a person's decision.`;
     if (tool && !ROLE_TOOL_ALLOW[role].has(tool)) return `role "${role}" may not run \`agent-flow ${sub}${tool === "stale_repair" || tool === "bootstrap_write" ? "" : ` ${act}`}\` (the CLI twin of ${tool}).`;
     if (sub === "gates" && act === "run" && READ_ONLY_ROLES.includes(role)) {

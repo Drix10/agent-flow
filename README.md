@@ -163,7 +163,7 @@ Or use the [composite GitHub Action](action.yml), which also classifies pull req
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0 }
-- uses: Drix10/agent-flow@v1.2.6
+- uses: Drix10/agent-flow@v1.2.7
 ```
 
 </details>
@@ -191,6 +191,7 @@ npx @drix10/agent-flow doctor       # read-only context report
 npx @drix10/agent-flow scan         # read-only repository reconnaissance
 npx @drix10/agent-flow hook install # install the pre-commit gate
 npx @drix10/agent-flow debt         # the shortcuts agents left, and which have no trigger to revisit them
+npx @drix10/agent-flow clean        # preview removing merged agent/issue-N branches and worktrees (--yes to do it)
 npx @drix10/agent-flow uninstall    # preview taking back out what install wrote (--yes to do it)
 npx @drix10/agent-flow state dismiss --issue 100000 --reason "did it by hand"   # drop an issue from the list
 npx @drix10/agent-flow state dismiss --merged                                   # drop every finished issue already merged into the default branch
@@ -253,7 +254,7 @@ See [Security](SECURITY.md) and [known failure modes](FAILURE_MODES.md) for deta
 
 **My run stopped after 30 minutes.** That is the background limit of the tool that launched it (Claude Code's default), not Agent Flow's: a pipeline takes one to two hours. Launch it with the tool's longest limit, and `agent-flow run <issue>` resumes a stopped one. `--timeout <seconds>` sets how long each role may run (default 3600).
 
-**Branches and worktrees pile up.** Turn on "Automatically delete head branches" in the repository's GitHub settings for the remote ones. For local ones, `agent-flow state dismiss --merged --clean` drops every finished issue already merged into the default branch and removes its worktree and branch (never one with uncommitted work).
+**Branches and worktrees pile up.** Every `run --pr` pushes `agent/issue-N`, and nothing removes it after the merge: one user had 169 on the remote. `agent-flow clean` previews and `agent-flow clean --yes` removes the ones whose work is already in the default branch, local and on `origin`, with their worktrees. It never touches uncommitted work, an issue with a run or decision still open, or a branch that isn't named `agent/issue-N`; a squash merge is recognised through `gh`. To stop the remote ones piling up at the source, turn on "Automatically delete head branches" in the repository's GitHub settings.
 
 **GitHub blocked my push over a secret in a test.** Its push protection scans every commit and doesn't know a fixture from a leak. Build the fake value at run time (split or join the string) so nothing secret-shaped is committed. The run says which file it found and where a person can allow it.
 

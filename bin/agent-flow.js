@@ -15,10 +15,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..");
 const lib = (m) => import(new URL(`../extensions/lib/${m}.js`, import.meta.url).href);
 
-let launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib, debtLib, uninstallLib, briefLib, statuslineLib, mcpLib;
+let launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib, debtLib, uninstallLib, briefLib, statuslineLib, mcpLib, cleanLib;
 try {
-  [launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib, debtLib, uninstallLib, briefLib, statuslineLib, mcpLib] = await Promise.all(
-    ["launch", "orchestrate", "update", "fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners", "debt", "uninstall", "brief", "statusline", "mcp"].map(lib),
+  [launchLib, orchestrateLib, updateLib, fsutil, manifestLib, stale, risk, state, classify, worktree, git, scan, guardLib, report, initLib, mergeLib, auditLib, gatesLib, policyLib, sarifLib, bindingLib, stopGateLib, codeownersLib, debtLib, uninstallLib, briefLib, statuslineLib, mcpLib, cleanLib] = await Promise.all(
+    ["launch", "orchestrate", "update", "fsutil", "manifest", "stale", "risk", "state", "classify", "worktree", "git", "scan", "guard", "report", "init", "merge", "audit", "gates", "policy", "sarif", "binding", "stopgate", "codeowners", "debt", "uninstall", "brief", "statusline", "mcp", "clean"].map(lib),
   );
 } catch (e) {
   console.error(`agent-flow: compiled library missing (${e.message}). Run \`npm run build\` in the agent-flow package.`);
@@ -146,6 +146,7 @@ Pipeline (the CLI twin of the Pi tools — same rules, any harness):
                             a role that hits a usage limit is run again after the reset, if that is within --limit-wait <hours> (default 6; 0 never waits)
   update [--yes] [--check] [--force]  Bring installed skills, hooks and the vendored runtime up to this version; edited files are kept
                             run it as: npx @drix10/agent-flow@latest update --yes   (--check exits 10 when an update is available, for scheduled CI)
+  clean [--yes] [--offline]   Remove the agent/issue-N branches and worktrees whose work is already merged (local and on origin); previews until --yes
   uninstall [--harness <name>] [--yes] [--keep-runtime] [--keep-hook]
                             Remove what install wrote and nothing else: unedited skills, agents and the vendored runtime, agent-flow's own
                             hook entries (your other hooks stay), the pre-commit gate. Previews unless --yes. AGENTS.md, the manifest and your state are never touched
@@ -563,6 +564,57 @@ function cmdBrief(args) {
     /* see above */
   }
   return 0;
+}
+
+/** gh as `clean` calls it: null when it can't run at all (not installed). `AGENT_FLOW_GH` names another binary, as for codeowners. */
+function ghForClean(rt) {
+  const bin = process.env.AGENT_FLOW_GH ?? "gh";
+  return (a) => {
+    const r = spawnSync(launchLib.resolveExecutable(bin), a, { cwd: rt, encoding: "utf-8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
+    return r.error ? null : { status: r.status ?? 1, stdout: r.stdout ?? "" };
+  };
+}
+
+/**
+ * `clean [--yes] [--offline]`: the branches and worktrees a pipeline leaves behind. Every `run --pr` pushes agent/issue-N and
+ * nothing removes it once the pull request is merged. Previews until --yes, touches only agent/issue-N branches whose work is
+ * provably in the default branch, and leaves any issue with a run or a decision still open.
+ */
+function cmdClean(args) {
+  const rt = root();
+  const sessions = state.readState(rt).sessions ?? [];
+  const mergedNow = new Set(bindingLib.mergedFinished(rt, sessions).issues);
+  const active = new Set(sessions.filter((s) => (s.state === "Working" || s.state === "Needs Me") && !mergedNow.has(s.issue)).map((s) => s.issue));
+  const plan = cleanLib.planClean(rt, { active, gh: args.offline ? null : ghForClean(rt), remote: !args.offline });
+  const removing = plan.items.filter((i) => i.action === "remove");
+  const apply = !!args.yes && !args["dry-run"];
+  const result = apply ? cleanLib.applyClean(rt, plan) : null;
+  if (result) state.appendAudit(rt, { event: "clean", via: "cli", removed: result.removed.length, failed: result.failed.length, local: result.removed.filter((r) => r.where === "local").length, remote: result.removed.filter((r) => r.where === "remote").length });
+  out(args, { applied: apply, base: plan.base, items: plan.items, notes: plan.notes, result }, () => {
+    const list = (items, n = 8) => items.slice(0, n).map((i) => `#${i.issue}${i.pr ? ` (PR #${i.pr})` : ""}`).join(", ") + (items.length > n ? `, … ${items.length - n} more` : "");
+    for (const where of ["local", "remote"]) {
+      const rows = removing.filter((i) => i.where === where);
+      if (!rows.length) continue;
+      const trees = rows.filter((i) => i.worktree).length;
+      console.log(`${apply ? "" : "would remove  "}${rows.length} merged ${where} branch${rows.length === 1 ? "" : "es"}${where === "local" && trees ? ` (${trees} with a worktree)` : ""}: ${list(rows)}`);
+    }
+    const kept = plan.items.filter((i) => i.action === "keep");
+    const keptIssues = [...new Map(kept.map((i) => [i.issue, i])).values()];
+    if (keptIssues.length) {
+      const open = keptIssues.filter((i) => /still open/.test(i.why ?? ""));
+      const unmerged = keptIssues.filter((i) => !/still open/.test(i.why ?? ""));
+      if (open.length) console.log(dim(`left alone: ${list(open)}: a run or a decision is still open`));
+      if (unmerged.length) console.log(dim(`left alone: ${list(unmerged)}: work that is not in ${plan.base} yet`));
+    }
+    for (const n of plan.notes) console.log(dim(`note: ${n}`));
+    if (!removing.length) console.log(dim("  nothing to clean: no merged agent/issue-N branch is left"));
+    if (result) {
+      if (result.removed.length) ok(`removed ${result.removed.filter((r) => r.where === "local").length} local and ${result.removed.filter((r) => r.where === "remote").length} remote branch(es)`);
+      for (const f of result.failed) warn(`#${f.issue} (${f.where}): ${f.why}`);
+    } else if (removing.length) console.log(dim("nothing changed: re-run with --yes to remove them"));
+    if (mergedNow.size) console.log(dim(`${mergedNow.size} finished issue${mergedNow.size === 1 ? " is" : "s are"} also merged but still listed: agent-flow state dismiss --merged`));
+  });
+  return result && result.failed.length ? 1 : 0;
 }
 
 /** `debt`: the `lean:` shortcuts in the code, one row each, so a deferral can't quietly become permanent. */
@@ -2668,6 +2720,7 @@ const table = {
   manifest: cmdManifest,
   update: cmdUpdate,
   uninstall: cmdUninstall,
+  clean: cmdClean,
   run: cmdRun,
   status: cmdStatus,
   codeowners: cmdCodeowners,

@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-flow",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "Leave your coding agent alone with your repo and come back to a reviewed pull request: separate agents implement, review and test, and a guard blocks what they must never touch.",
   "author": {
     "name": "Drix10",
