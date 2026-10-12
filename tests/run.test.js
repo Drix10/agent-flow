@@ -1130,6 +1130,7 @@ test("run: a new test that no gate names is reported, in the log, the result and
     assert.equal(result.status, "ready", JSON.stringify(result));
     assert.ok(logs.some((l) => l.kind === "warn" && /1 new test file\(s\) no gate runs.*tests\/test_c\.py/.test(l.text)), "the log says which test no gate ran: " + JSON.stringify(logs.map((l) => l.text)));
     assert.match(result.reason, /Not run by any gate .*tests\/test_c\.py/);
+    assert.deepEqual(result.not_gated, ["tests/test_c.py"], "and as a field, so the summary and scripts can show it");
     const pr = await run(env, agent, { pr: true });
     assert.equal(pr.result.status, "pr", JSON.stringify(pr.result));
     const body = readFileSync(join(env.repo, ".agent-flow", "artifacts", `issue-${pr.result.issue}`, "pr.md"), "utf-8");
@@ -1144,6 +1145,7 @@ test("run: a new test that no gate names is reported, in the log, the result and
     const { result, logs } = await run(quiet, agent);
     assert.equal(result.reason, "reviewed, gated and tested; nothing was pushed");
     assert.ok(!logs.some((l) => /no gate runs/.test(l.text)));
+    assert.equal(result.not_gated, undefined, "no field when there is nothing to say");
   } finally {
     quiet.cleanup();
   }

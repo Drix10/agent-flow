@@ -764,7 +764,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
     async function finish(rev: any, qa: any, cls: any, LIMIT: number): Promise<RunOutcome> {
       if (!i.pr) {
         log({ kind: "info", text: `ready on ${branch} (worktree .worktrees/issue-${N}); not pushed` });
-        return done({ status: "ready", reason: `reviewed, gated and tested; nothing was pushed${notGated.length ? `. Not run by any gate (add ${notGated.length === 1 ? "it" : "them"} to a gate in CONTEXT_MANIFEST.json): ${notGated.join(", ")}` : ""}` });
+        return done({ status: "ready", ...(notGated.length ? { not_gated: notGated } : {}), reason: `reviewed, gated and tested; nothing was pushed${notGated.length ? `. Not run by any gate (add ${notGated.length === 1 ? "it" : "them"} to a gate in CONTEXT_MANIFEST.json): ${notGated.join(", ")}` : ""}` });
       }
       const flaky: any[] = qa.flaky ?? [];
       const stale: any[] = rev.context_stale_flags ?? [];
@@ -826,7 +826,7 @@ export async function runIssue(i: RunInput): Promise<RunOutcome> {
       }
       const removed = af(["worktree", "remove", String(N)]);
       if (removed.status !== 0) log({ kind: "warn", text: `PR is open; worktree cleanup failed: ${(removed.stderr || removed.stdout).trim().slice(0, 200)}` });
-      return done({ status: "pr", pr: url });
+      return done({ status: "pr", pr: url, ...(notGated.length ? { not_gated: notGated } : {}) });
     }
   } catch (e) {
     if (e instanceof Stop) return e.outcome;

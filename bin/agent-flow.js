@@ -1610,12 +1610,17 @@ ${signal}: stopped ${stopped} running role${stopped === 1 ? "" : "s"}. Progress 
   out(args, result, (r) => {
     console.log("");
     const cost = r.cost_usd ? dim(`  ($${r.cost_usd.toFixed(2)}${r.unreported_runs ? ", some runs didn't report cost" : ""})`) : "";
-    if (r.status === "pr") ok(`Pull request ready: ${r.pr}${cost}`);
-    else if (r.status === "ready") {
+    // A new test no gate names was run by neither the gates nor QA; only a person can add it to a gate.
+    const notGated = () => { if (Array.isArray(r.not_gated) && r.not_gated.length) warn(`No gate runs ${r.not_gated.join(", ")}, so the pipeline never ran ${r.not_gated.length === 1 ? "it" : "them"}: add ${r.not_gated.length === 1 ? "it" : "them"} to a gate in CONTEXT_MANIFEST.json (CI is the only check until then)`); };
+    if (r.status === "pr") {
+      ok(`Pull request ready: ${r.pr}${cost}`);
+      notGated();
+    } else if (r.status === "ready") {
       ok(`Done and checked, not pushed. Branch ${r.branch}${cost}`);
       console.log(dim(`  risk:     ${r.risk ?? "unknown"}`));
       if (r.risk === "critical") warn(`This touches a critical area. Read the diff yourself before publishing: \`run ${r.issue} --pr\` opens a draft pull request that waits for your review`);
       else if (r.human_review) warn(`This changes CI or test configuration (review-only paths). Read the diff before publishing: \`run ${r.issue} --pr\` opens a draft pull request that waits for your review`);
+      notGated();
       console.log(dim(`  look:     git -C ${relative(rt, r.worktree) || r.worktree} log --oneline -5 && git -C ${relative(rt, r.worktree) || r.worktree} diff --stat`));
       console.log(dim(`  publish:  agent-flow run ${r.issue} --pr`));
     } else if (r.status === "completed") ok(`Already finished: ${r.reason ?? ""}`);
