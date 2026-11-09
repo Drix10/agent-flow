@@ -170,15 +170,15 @@ verdicts, and turn them into the reworked agent-flow. Budget 10-30M input
 tokens (~10M planned, 30M hard ceiling); log everything; never re-read what
 is already filed.
 
-- [ ] 7.1 Normalization: `skl export` every whale to Simple docs
+- [x] 7.1 Normalization: `skl export` every whale to Simple docs
       (machine-local). txcript is the cross-harness normalizer — no custom
       parsers for claude/pi/codex stores. Disk budget ~5-10GB, untracked.
-- [ ] 7.2 Deterministic extraction ($0 tokens): per whale, script-build
+- [x] 7.2 Deterministic extraction ($0 tokens): per whale, script-build
       intent spine (user prompts verbatim), template-collapsed command
       ledger (template x count x outcomes), guard strip (each enforcement
       + 5-command neighborhood), human-intervention log, cost autopsy
       (burn-over-time, cache-churn ratio, subagent fan-out), outcome record.
-- [ ] 7.3 Knowledge tree (machine-local `knowledge/`, Markdown only):
+- [x] 7.3 Knowledge tree (machine-local `knowledge/`, Markdown only):
       `whales/<id>/` holds 8 files (`00-README`, `01-INTENT`,
       `02-COMMANDS`, `03-GUARD`, `04-HUMAN`, `05-COST`, `06-VERDICTS`,
       `07-POWERS-WEAKNESSES`); `patterns/Pnn-*.md` one file per pattern
@@ -187,34 +187,34 @@ is already filed.
       `rework/MAP.md` maps principle -> scorecard fate -> build item;
       `00-INDEX.md` master map, `01-LOOP-STATE.md` resume tracker +
       per-whale token-spent ledger (learning ROI).
-- [ ] 7.4 Classification headers: every pattern/principle file carries a
+- [x] 7.4 Classification headers: every pattern/principle file carries a
       fixed grep-able header (`class:`, `harness:`, `severity:`,
       `confidence:`, `generality:`, `evidence:`). Placement + headers do
       the classifying — no JSON stores, no tooling needed to browse.
-- [ ] 7.5 Fifth verdict `by-design`: prompt explicitly required the flagged
+- [x] 7.5 Fifth verdict `by-design`: prompt explicitly required the flagged
       action (e.g. user-ordered main push). Feeds the intent-hierarchy
       requirement: explicit user instruction outranks guard defaults, with
       the override logged. Event-level labels (worked / missed /
       false-block / could-have / by-design) on every guard-relevant moment.
-- [ ] 7.6 Loop protocol (compact-safe): one whale per cycle — extract,
+- [x] 7.6 Loop protocol (compact-safe): one whale per cycle — extract,
       read (spine + ledger + guard/human threads fully; full-text dives on
       budget), label + inventory into whale files, mint/extend patterns
       then principles, append ~20-line carry-forward brief to
       `01-LOOP-STATE.md`, compact, continue. State on disk; chat holds
       nothing irreplaceable.
-- [ ] 7.7 Order: pilot `01a1b7ed` (validates scripts; already exported) ->
+- [x] 7.7 Order: pilot `01a1b7ed` (validates scripts; already exported) ->
       `110fe80e` whale (token autopsy first) -> `6666fa97` (same-repo
       contrast) -> `01a1b54f` (GPT cross-model) -> Sep-18 arena pi pair
       (natural experiment + secret handling) -> rest by size -> Oct-18
       codex cluster last (zst handling + skl-coverage gap).
-- [ ] 7.8 Repo mirror (tracked, small): `evals/learnings/` gets principles
+- [x] 7.8 Repo mirror (tracked, small): `evals/learnings/` gets principles
       + index only. Whale-sized material stays machine-local. No secrets,
       keys, tokens, or machine paths in tracked files — evidence by
       `skl view <id>#n` reference.
 - [ ] 7.9 **Checkpoint C5.** Synthesis + rework map reviewed before any
       code changes. Phase 5 rebuild consumes principles in rework/MAP.md
       order; new guardrails must score clean on ledger + whale events.
-- [ ] 7.10 Standing rule: every whale posts a 10-line summary (verdicts,
+- [x] 7.10 Standing rule: every whale posts a 10-line summary (verdicts,
       new patterns, tokens spent vs tokens it burned) before the next
       starts.
 
@@ -226,7 +226,7 @@ is already filed.
 - [x] C3 ledger + rubric — self-passed, autonomous mode (N=5)
 - [x] C4 scorecard approval — SIGNED OFF (all sign-offs granted pre-Phase-5)
 - [ ] Rebuild implemented, ledger-green (Phase 5, awaiting kickoff)
-- [ ] C5 whale-loop synthesis approval (Phase 7 end; build starts after)
+- [ ] C5 whale-loop synthesis approval (SYNTHESIS COMPLETE, PENDING YOUR REVIEW on GitHub; build starts after)
 - [x] Phase 7 APPROVED by maintainer — pilot whale running
 
 ## C1 notes (from Phase 1 review)
