@@ -143,10 +143,9 @@ enforcing* flow setup would have caught) / `fine-without`.
       classes, admitted only if the same data shows acceptable FP cost.
       DONE: 1 admitted (escalation telemetry); secret-read narrowing + 4
       rebuild requirements instead of new blocks.
-- [ ] 4.4 **Checkpoint C4.** PENDING YOUR REVIEW (autonomous run ends here):
-      `evals/scorecard.md` + rule fates (keep / narrow / delete / add) +
-      4 rebuild requirements. Destructive changes need explicit sign-off
-      per rule. Phase 5 starts only on your approval.
+- [x] 4.4 **Checkpoint C4.** SIGNED OFF (standing; feeds Phase 5 and the
+      Phase 7 rework map — superseded as a gate by C5, retained as evidence).
+      Fates + 4 rebuild requirements stand as approved.
 
 ## Phase 5 — Rebuild
 
@@ -228,6 +227,7 @@ is already filed.
 - [x] C4 scorecard approval — SIGNED OFF (all sign-offs granted pre-Phase-5)
 - [ ] Rebuild implemented, ledger-green (Phase 5, awaiting kickoff)
 - [ ] C5 whale-loop synthesis approval (Phase 7 end; build starts after)
+- [x] Phase 7 APPROVED by maintainer — pilot whale running
 
 ## C1 notes (from Phase 1 review)
 
