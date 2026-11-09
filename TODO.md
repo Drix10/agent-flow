@@ -37,14 +37,17 @@ enforcing* flow setup would have caught) / `fine-without`.
 
 ## Phase 1 — Inventory and baselines
 
-- [ ] 1.1 Export session index per harness (`pi`, `claude_code`, `codex`):
+- [x] 1.1 Export session index per harness (`pi`, `claude_code`, `codex`):
       counts, date ranges, cwds. Prefer structured output (MCP
       `list_sessions`) over parsing CLI tables; paginate with
       `--since/--until` windows. Save index outside the repo (untracked).
-- [ ] 1.2 Establish current baselines from `.agent-flow/audit.jsonl`
+- [x] 1.2 Establish current baselines from `.agent-flow/audit.jsonl`
       (all checkouts, not just this repo): blocks/day, block reasons,
       distinct rules firing. Same methodology as the README dogfood stats.
-- [ ] 1.3 Write the **flow-attribution decision rule**: a session counts as
+      DONE 2026-11-10: 234 sessions (pi 42 / claude_code 190 / codex 2);
+      7 audit logs, 2,307 events, 756 guard_blocks; full numbers in
+      `baseline.md` (untracked, machine-local). push family = 13 blocks total.
+- [x] 1.3 Write the **flow-attribution decision rule**: a session counts as
       a flow session iff >=1 of: (a) cwd inside a flow-managed repo
       **including its worktrees** (`git worktree list` per repo — worktree
       cwds do NOT match the repo path); (b) flow skill/guard/audit terms in
@@ -131,7 +134,7 @@ enforcing* flow setup would have caught) / `fine-without`.
 ## Status
 
 - [x] Repo and checkout synced (`origin/main`).
-- [ ] C1 attribution + baselines
+- [ ] C1 attribution + baselines — PENDING REVIEW (see C1 notes below)
 - [ ] C2 signal sweep
 - [ ] C3 ledger + rubric
 - [ ] C4 scorecard approval
