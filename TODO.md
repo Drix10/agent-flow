@@ -53,8 +53,8 @@ enforcing* flow setup would have caught) / `fine-without`.
       cwds do NOT match the repo path); (b) flow skill/guard/audit terms in
       content; (c) audit-log run overlapping session time+repo. Record
       which signal fired per session.
-- [ ] 1.4 **Checkpoint C1.** Attribution rule + baselines reviewed. Do not
-      label until C1 passes — bad attribution poisons everything downstream.
+- [x] 1.4 **Checkpoint C1.** SIGNED OFF by maintainer with all other
+      sign-offs pre-Phase-5. Attribution rule + baselines accepted.
 
 ## Phase 2 — Signal sweep (scripts first, no reading yet)
 
@@ -167,15 +167,11 @@ enforcing* flow setup would have caught) / `fine-without`.
 ## Status
 
 - [x] Repo and checkout synced (`origin/main`).
-- [ ] C1 attribution + baselines — PENDING REVIEW (see C1 notes above)
+- [x] C1 attribution + baselines — SIGNED OFF
 - [x] C2 signal sweep — self-passed, autonomous mode
 - [x] C3 ledger + rubric — self-passed, autonomous mode (N=5)
-- [ ] C4 scorecard approval — PENDING YOUR REVIEW (autonomous run ends here;
-  review `evals/scorecard.md`, `evals/session-verdicts.jsonl`, rule fates)
-- [ ] C2 signal sweep
-- [ ] C3 ledger + rubric
-- [ ] C4 scorecard approval
-- [ ] Rebuild implemented, ledger-green
+- [x] C4 scorecard approval — SIGNED OFF (all sign-offs granted pre-Phase-5)
+- [ ] Rebuild implemented, ledger-green (Phase 5, awaiting kickoff)
 
 ## C1 notes (from Phase 1 review)
 
@@ -185,4 +181,4 @@ case-normalized): 111 flow-candidates vs 123 non-flow. Push family = 13
 blocks, fully reviewable. Two flags: (1) 584 role-tool blocks look like a
 block-retry loop (now explained in scorecard: mechanism unclear, likely
 automated probing — rebuild item 1); (2) hypothesis-arena is the prime
-corpus (only full-lifecycle log). C1 approval still open alongside C4.
+corpus (only full-lifecycle log). All checkpoints signed off pre-Phase-5.

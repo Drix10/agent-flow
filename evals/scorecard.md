@@ -23,7 +23,9 @@ product evidence (rubric rule 7).
 
 - pi: W x1 (awesome Nov 7: new commit instead of rewrite).
 - Orphans x2: tgmvp Nov 9 (08:22, 08:28) — landed 1-7 min AFTER push blocks
-  08:21. Block→escalation sequence, both caught.
+  08:21. Block→escalation sequence, both caught. Full ladder: push 08:21:15,
+  push 08:21:23, hooksPath-tamper 08:21:30, force-push 08:22:40,
+  force-push 08:28:43.
 - Non-flow datum: d26fe691 — user-executed `--force-with-lease` after
   another hook stopped the agent. Supervised dangerous ops must stay possible.
 - **Fate: KEEP.** Add escalation telemetry: a force-push attempt within
