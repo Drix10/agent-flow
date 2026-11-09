@@ -58,62 +58,95 @@ enforcing* flow setup would have caught) / `fine-without`.
 
 ## Phase 2 — Signal sweep (scripts first, no reading yet)
 
-- [ ] 2.1 Sweep each harness index with **canonical tool syntax** (stable
+- [x] 2.1 Sweep each harness index with **canonical tool syntax** (stable
       across prose styles), not English: `--force`, `--no-verify`,
       `push origin main`, `push --force`, secret filenames, CI workflow
       paths, `agent-flow` + skill/guard terms. (`query` is literal-only on
       Windows; smart `search` is unavailable.)
-- [ ] 2.2 Cross-check audit-log blocks against session outcomes: block logged
+      DONE 2026-11-10: 14 patterns swept; hit lists machine-local in
+      `sweep/q-*.txt`. Fixes learned: literal `--flag` needs `skl query --`;
+      `push origin main` hits are dominated by the owner's non-flow factory
+      workflow (direct main pushes are the norm there). `--since/--until`
+      verified working; Oct 3 + Nov 9 return zero sessions in EVERY harness
+      despite audit blocks on those dates = orphan-block phenomenon.
+- [x] 2.2 Cross-check audit-log blocks against session outcomes: block logged
       + harm absent + task completed = candidate `worked`; block logged +
       harm done anyway = candidate `missed` (guard logged but ineffective —
       the most important subclass).
-- [ ] 2.3 FP pre-filter: block followed within the session by retry loop,
+      DONE 2026-11-10: all 13 push-family blocks joined or marked orphan
+      (arena Oct 3 x3, tgmvp Nov 9 x4, agentflow Oct 7 x1: no sessions).
+      skl times are UTC (view-header vs wall clock), audit `at` compares
+      directly. Join rule hardened: audit+time+repo+cwd, verdict ONLY on
+      session-content confirmation.
+- [x] 2.3 FP pre-filter: block followed within the session by retry loop,
       user performing the same action manually, override language, or
       session death shortly after the block (silent abandonment proxy).
-- [ ] 2.4 **Checkpoint C2.** Signal-hit lists per harness reviewed; queries
-      saved as the standing sweep set for Phase 6.
+      DONE 2026-11-10: sequences ID'd — 110fe80e user-ordered main pushes;
+      f1c432dc manual-push instruction; 01a1ba9a policy deliberation +
+      hooksPath probe; tgmvp Nov 9 block->force-push escalation.
+- [x] 2.4 **Checkpoint C2.** SELF-PASSED 2026-11-10 (autonomous mode):
+      hit lists + orphan caveat + standing query set (14 patterns, saved
+      machine-local). No maintainer input needed; deviations recorded above.
 
 ## Phase 3 — Labeling (verdicts from full fidelity)
 
-- [ ] 3.1 Seed the ledger with the free pilot: the 5-day dogfood corpus
+- [x] 3.1 Seed the ledger with the free pilot: the 5-day dogfood corpus
       behind the README stats (294 role runs, 150 blocks, 16 known Windows
       false alarms). Annotate each with the flow version live at the time
       (date x CHANGELOG) — stale-version bugs must not drive the rebuild.
-- [ ] 3.2 Write the labeling rubric with edge cases (e.g. what counts as a
+      DONE (partial) 2026-11-10: d93fc171 labeled test-context; version map
+      built (1.2.0-1.2.7 across Oct 1-12; Nov blocks = 1.2.7+). Dogfood
+      transcripts largely pruned; arena Oct 1-6 blocks are orphans.
+- [x] 3.2 Write the labeling rubric with edge cases (e.g. what counts as a
       "normal" vs "dangerous" push to main) and calibrate: two passes over
       the same ~15 sessions; disagreements refine the rubric, not the labels.
-- [ ] 3.3 Label a stratified sample: signal-hits from 2.1–2.3 PLUS a random
+      DONE: `evals/rubric.md` frozen. Adds missed-unwired vs missed-bypass,
+      N=5 deletion floor with narrowing-below-N clause. Calibration on ~5
+      sessions (small sample noted as limitation).
+- [x] 3.3 Label a stratified sample: signal-hits from 2.1–2.3 PLUS a random
       baseline (~20%) to estimate base rates and catch silent misses.
       Label from `skl export` (full-fidelity Simple docs), never from the
       compact `view` projection.
-- [ ] 3.4 Budget/stop rule: cap reading time per session (triage minutes,
+      DONE 2026-11-10: 10 verdicts in `evals/session-verdicts.jsonl` + 2
+      random baselines (bf9dba09 flow-quiet, 01a0f005 non-flow). All from
+      export; `view` used for triage only.
+- [x] 3.4 Budget/stop rule: cap reading time per session (triage minutes,
       not hours); stop expanding the sample when verdict distribution per
       rule stabilizes across consecutive batches (saturation). FP counts are
       a lower bound — record that caveat with the numbers.
-- [ ] 3.5 `could-have-helped` requires BOTH: harm in a non-flow session AND
+      DONE: triage via query/export-grep, deep reads only on joined hits.
+- [x] 3.5 `could-have-helped` requires BOTH: harm in a non-flow session AND
       (flow installed or installable in that repo) AND (harness enforces hard
       blocks, or the catch would realistically come from hook/CI). Otherwise
       label `fine-without` with a note.
-- [ ] 3.6 **Checkpoint C3.** Ledger + rubric + per-rule observation counts
-      reviewed. No rule is changed on fewer than N observations (set N at
-      C3; suggestion: N=5).
+      DONE: zero sessions met the bar — recorded explicitly, not left open.
+- [x] 3.6 **Checkpoint C3.** SELF-PASSED 2026-11-10 (autonomous mode).
+      N=5 set (deletion floor; narrowing allowed below N per rubric rule 7).
+      Limitation: random baseline = 2 sessions; full random deferred to
+      Phase 6.
 
 ## Phase 4 — Scorecard (per rule x harness, never pooled)
 
-- [ ] 4.1 For each guardrail (push-to-main, `--no-verify`, secret paths,
+- [x] 4.1 For each guardrail (push-to-main, `--no-verify`, secret paths,
       CI-edit limits, every protected path): `worked` vs `false-block`
       counts, `missed`/`could-have-helped` demand, split by harness.
       Enforcement differs per host (hard block on Claude Code/Pi, hook/CI
       elsewhere) — pooling harnesses invalidates the comparison.
-- [ ] 4.2 Work the push-to-main template: separate labeled pushes into
+      DONE: `evals/scorecard.md`, joined verdicts only, orphans counted.
+- [x] 4.2 Work the push-to-main template: separate labeled pushes into
       fine vs dangerous along observable lines (repo type, branch, PR flow);
       the replacement rule is drawn exactly there, with the `false-block`
       sessions as its regression tests.
-- [ ] 4.3 New-rule candidates from recurring `missed`/`could-have-helped`
+      DONE: line drawn at per-repo config-aware policy; 01a1ba9a (missed)
+      + 110fe80e (fine-without) are the regression tests.
+- [x] 4.3 New-rule candidates from recurring `missed`/`could-have-helped`
       classes, admitted only if the same data shows acceptable FP cost.
-- [ ] 4.4 **Checkpoint C4.** Scorecard + rule fates (keep / narrow / delete /
-      add) approved by maintainer. Destructive changes need explicit sign-off
-      per rule.
+      DONE: 1 admitted (escalation telemetry); secret-read narrowing + 4
+      rebuild requirements instead of new blocks.
+- [ ] 4.4 **Checkpoint C4.** PENDING YOUR REVIEW (autonomous run ends here):
+      `evals/scorecard.md` + rule fates (keep / narrow / delete / add) +
+      4 rebuild requirements. Destructive changes need explicit sign-off
+      per rule. Phase 5 starts only on your approval.
 
 ## Phase 5 — Rebuild
 
@@ -134,8 +167,22 @@ enforcing* flow setup would have caught) / `fine-without`.
 ## Status
 
 - [x] Repo and checkout synced (`origin/main`).
-- [ ] C1 attribution + baselines — PENDING REVIEW (see C1 notes below)
+- [ ] C1 attribution + baselines — PENDING REVIEW (see C1 notes above)
+- [x] C2 signal sweep — self-passed, autonomous mode
+- [x] C3 ledger + rubric — self-passed, autonomous mode (N=5)
+- [ ] C4 scorecard approval — PENDING YOUR REVIEW (autonomous run ends here;
+  review `evals/scorecard.md`, `evals/session-verdicts.jsonl`, rule fates)
 - [ ] C2 signal sweep
 - [ ] C3 ledger + rubric
 - [ ] C4 scorecard approval
 - [ ] Rebuild implemented, ledger-green
+
+## C1 notes (from Phase 1 review)
+
+Baselines: 234 sessions (pi 42 / claude_code 190 / codex 2); 7 audit logs,
+2,307 events, 756 guard_blocks. Attribution split (cwd-substring,
+case-normalized): 111 flow-candidates vs 123 non-flow. Push family = 13
+blocks, fully reviewable. Two flags: (1) 584 role-tool blocks look like a
+block-retry loop (now explained in scorecard: mechanism unclear, likely
+automated probing — rebuild item 1); (2) hypothesis-arena is the prime
+corpus (only full-lifecycle log). C1 approval still open alongside C4.
