@@ -40,3 +40,9 @@ evidence by `skl view <id>#n` reference.
   joined (55 commits); codex-oct18 170k lines, 0 live guards.
 - New: warn-on-paste (MAP-18), human-armed env-gates (MAP-19),
   presence-check reroute (MAP-20), word-match intent rule (MAP-17).
+
+## Gap closure (Nov 10): no fixable gaps remain
+- Big handbacks mined (Oct 23 native HEAD:main denial, Oct 25 tracekit
+  removal block, scrubber datum); 3.8GB subagents scanned (zero blocks);
+  codex full-decode corrected; 584 role-blocks joined as worked class;
+  Oct 3 orphans characterized. Rework items 21-22 added.
