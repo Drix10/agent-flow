@@ -67,14 +67,16 @@ enforcing* flow setup would have caught) / `fine-without`.
       `sweep/q-*.txt`. Fixes learned: literal `--flag` needs `skl query --`;
       `push origin main` hits are dominated by the owner's non-flow factory
       workflow (direct main pushes are the norm there). `--since/--until`
-      verified working; Oct 3 + Nov 9 return zero sessions in EVERY harness
-      despite audit blocks on those dates = orphan-block phenomenon.
+      verified working; Oct 3 returns zero sessions in EVERY harness
+      despite audit blocks = orphan-block phenomenon. (Nov 9 RESOLVED Nov
+      10: raw pi transcript 01a1ba9a covers the ladder; not orphan.)
 - [x] 2.2 Cross-check audit-log blocks against session outcomes: block logged
       + harm absent + task completed = candidate `worked`; block logged +
       harm done anyway = candidate `missed` (guard logged but ineffective —
       the most important subclass).
       DONE 2026-11-10: all 13 push-family blocks joined or marked orphan
-      (arena Oct 3 x3, tgmvp Nov 9 x4, agentflow Oct 7 x1: no sessions).
+      (arena Oct 3 x3, agentflow Oct 7 x1: no sessions; tgmvp Nov 6 x4 +
+      Nov 9 x5 joined to pi transcripts 01a1af0d / 01a1ba9a — CORR Nov 10).
       skl times are UTC (view-header vs wall clock), audit `at` compares
       directly. Join rule hardened: audit+time+repo+cwd, verdict ONLY on
       session-content confirmation.

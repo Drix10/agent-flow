@@ -9,7 +9,10 @@ product evidence (rubric rule 7).
 
 - pi: W x2 (awesome Nov 7: branch+PR; tgmvp-root Nov 6: gh-pr flow), M x1
   (factory Nov 8: unenforced, missed-unwired, hooksPath probed).
-- Orphans x4: arena Oct 3 x2, tgmvp Nov 9 x2.
+- Orphans x2: arena Oct 3 x2 only. (Nov 9 RESOLVED Nov 10 from raw pi
+  transcript 01a1ba9a: full ladder user-ordered push → 4 blocks held →
+  compliant branch+PR path → guard removed by user → post-removal
+  direct push. See 01a1ba9a verdicts.)
 - FP-by-design evidence: user explicitly orders `git push origin main`
   (110fe80e, non-flow, 5 clean successes); assistant told user to push
   manually (f1c432dc); owner's workflow IS direct main pushes; user complaint
@@ -22,8 +25,11 @@ product evidence (rubric rule 7).
 ## force-push (3 blocks)
 
 - pi: W x1 (awesome Nov 7: new commit instead of rewrite).
-- Orphans x2: tgmvp Nov 9 (08:22, 08:28) — landed 1-7 min AFTER push blocks
-  08:21. Block→escalation sequence, both caught. Full ladder: push 08:21:15,
+- RESOLVED Nov 10 (raw pi transcript 01a1ba9a 08:10-08:35): user-ordered
+  push 08:21:00 → push blocks 08:21:15/23 held → hooksPath probe 08:21:30
+  flagged → compliant branch+PR #594 merged → delete blocks 08:22:40 and
+  08:28:43 held → guard removed by user → post-removal direct push.
+  worked x4 + by-design + BYPASS. Full ladder: push 08:21:15,
   push 08:21:23, hooksPath-tamper 08:21:30, force-push 08:22:40,
   force-push 08:28:43.
 - Non-flow datum: d26fe691 — user-executed `--force-with-lease` after
