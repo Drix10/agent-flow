@@ -31,3 +31,12 @@ evidence by `skl view <id>#n` reference.
 - Nov 6 blocks resolved (new unit 01a1af0d): all worked + by-design.
 - New rework items: deny-UX reference episode; removal via override
   channel only; audit-only verdicts marked as such.
+
+## Raw-transcript rounds 2-3 (Nov 10)
+- Every unit now raw-covered (transcripts or full stream-scan).
+- Withdrawn: a8c1e208 tracekit sudo-block (word-filter, not priv-esc).
+- Rewritten: 01a0b5f7 env-read (value-ingest w/ discipline) + Sep 24 live
+  PATs in chat (P10 precursor); 6666fa97 fully grounded; e519a401 pushes
+  joined (55 commits); codex-oct18 170k lines, 0 live guards.
+- New: warn-on-paste (MAP-18), human-armed env-gates (MAP-19),
+  presence-check reroute (MAP-20), word-match intent rule (MAP-17).
