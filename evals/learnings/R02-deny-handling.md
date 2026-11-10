@@ -10,3 +10,8 @@ blocked-edit→full-rewrite (benign here, must count as edit).
 confidence: medium | generality: universal
 rework: deny policy table per rule (halt / reroute-with-enumerated-
 alternates); rewrite-counts-as-edit narrowing.
+
+Structural gap (deep pass): Oct 21 credential incident — live payment +
+OAuth secrets entered via chat paste with zero audit trace in any of 7 logs,
+while the secret rule fires only on tool-side reads. Guard the door secrets
+actually use (paste-into-chat), not just read-of-file.

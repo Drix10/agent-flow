@@ -8,3 +8,9 @@ PR — worked by judgment, not by rule); 01a1ba9a missed (same shape, failed
 open); d26fe691 fine-without (supervised force-push).
 confidence: high | generality: universal
 rework: new build item (override channel + audit). Scorecard item 4 input.
+
+Grounded exhibits (deep pass): 6666fa97 msg#4717-4721 — tracekit refused the
+agent, agent briefed hazards, user ran the force-push in their own terminal
+(the ultimate override channel: the user's own hands); 01a1ba9a U19-U23 —
+user disabled the guard, then ordered main push (BYPASS: removal itself must
+go through the channel, logged + scoped).
