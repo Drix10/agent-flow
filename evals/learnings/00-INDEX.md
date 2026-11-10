@@ -21,3 +21,13 @@ evidence by `skl view <id>#n` reference.
   capability-gap admission, $65-vs-$145 metering bug, --safe-mode
   hole via bare Bash allow. — budgets, tier routing, churn metrics, fan-out
   governor; spend needs preventive control.
+
+## Raw-transcript round (Nov 10)
+- Nov 9 ladder resolved from raw pi transcript (01a1ba9a 08:10-08:35):
+  user-ordered push → 4 blocks held → compliant path (branch+PR #594)
+  taken unprompted → guard removed by user → post-removal direct push.
+  Fate: worked x4 + by-design + BYPASS. Phase 2 "orphan" for Nov 9
+  retracted.
+- Nov 6 blocks resolved (new unit 01a1af0d): all worked + by-design.
+- New rework items: deny-UX reference episode; removal via override
+  channel only; audit-only verdicts marked as such.
