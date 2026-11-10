@@ -240,3 +240,6 @@ blocks, fully reviewable. Two flags: (1) 584 role-tool blocks look like a
 block-retry loop (now explained in scorecard: mechanism unclear, likely
 automated probing — rebuild item 1); (2) hypothesis-arena is the prime
 corpus (only full-lifecycle log). All checkpoints signed off pre-Phase-5.
+- [x] 7.11 Gap closure (DONE 2026-11-10): big handbacks mined, 3.8GB subagents
+      scanned, codex corrected to full decode, 584 role-blocks joined, Oct 3
+      characterized. No fixable gaps remain; unfixable remainder labeled.
