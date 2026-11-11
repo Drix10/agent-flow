@@ -151,6 +151,8 @@ enforcing* flow setup would have caught) / `fine-without`.
 
 ## Phase 5 — Rebuild
 
+Plan, status and next steps: `docs/phase5/HANDOFF.md` (design in `docs/phase5/PLAN.md`). Stage 1-2 guard code is built and unreleased; the context layer, adapters, docs and gates remain.
+
 - [ ] 5.1 Implement the approved rule set as configurable strictness levels
       (thresholds), not hardcoded allows — see 4.2 template.
 - [ ] 5.2 Every new/changed rule gets a regression test built from ledger
@@ -227,7 +229,7 @@ is already filed.
 - [x] C2 signal sweep — self-passed, autonomous mode
 - [x] C3 ledger + rubric — self-passed, autonomous mode (N=5)
 - [x] C4 scorecard approval — SIGNED OFF (all sign-offs granted pre-Phase-5)
-- [ ] Rebuild implemented, ledger-green (Phase 5, awaiting kickoff)
+- [ ] Rebuild implemented, ledger-green (Phase 5, in progress: see docs/phase5/HANDOFF.md)
 - [ ] C5 whale-loop synthesis approval (SYNTHESIS COMPLETE, PENDING YOUR REVIEW on GitHub; build starts after)
 - [x] Phase 7 APPROVED by maintainer — pilot whale running
 

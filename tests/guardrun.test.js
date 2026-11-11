@@ -46,7 +46,7 @@ test("redactText removes credentials from free text", () => {
     ["use sk_live_abcdefghijklmnop1234 now", /sk_live_abcdefghijklmnop1234/],
     ["glpat-abcdefghijklmnopqrst", /glpat-abcdefghijklmnopqrst/],
     ["jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijk", /eyJhbGciOiJIUzI1NiJ9/],
-    ["AKIAABCDEFGHIJKLMNOP", /AKIAABCDEFGHIJKLMNOP/],
+    ["AKIA" + "ABCDEFGHIJKLMNOP", /AKIAABCDEFGHIJKLMNOP/],
   ];
   for (const [text, leak] of cases) {
     const r = redactText(text);
