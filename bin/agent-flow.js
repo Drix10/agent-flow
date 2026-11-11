@@ -67,7 +67,7 @@ function fixBools(args) {
   return args;
 }
 
-const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner", "timeout", "commands", "limit-wait", "event", "until", "days", "hours", "rule"];
+const VALUE_FLAGS = ["file", "manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner", "timeout", "commands", "limit-wait", "event", "until", "days", "hours", "rule"];
 const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
 
 /** Closest candidate within edit distance 2, or null. */
@@ -104,6 +104,10 @@ What YOU widen (run these yourself, with \`!\` or from another terminal; the gua
                             Switch the guard, or one rule, off for role-less sessions (default 8 hours): the kill switch
   grants [--json]           What is granted or paused here right now
   revoke <id> | --all       End a grant or pause early
+
+Credentials stay out of the agent's context:
+  env-check [NAME...] [--file <path>] [--json]
+                            Says whether each variable is set in .env / .env.local (or the process environment) and how long it is, never its value. With no names, lists the names
 
 Audit log (a hash chain: edits, removals and reordering are detectable):
   audit verify [--anchor <hash>]  Check .agent-flow/audit.jsonl; exit 1 if the chain is broken or the anchor is missing
@@ -1360,6 +1364,42 @@ async function cmdGrants(args) {
     for (const p of list.pauses) console.log(`${c(33, "pause")}  ${p.scope}  until ${p.until}  ${p.repo === "*" ? "every repository" : ""} ${p.reason ? dim(`"${p.reason}"`) : ""} ${dim(`id ${p.id}`)}`);
   });
   return 0;
+}
+
+
+// ---- env-check: is a variable set? never what it is ----
+
+/** Variable names and value lengths from env files, never the values: this is what an agent may ask instead of reading `.env`. */
+function cmdEnvCheck(args) {
+  const rt = root();
+  const files = typeof args.file === "string" ? [args.file] : [".env", ".env.local", ".env.development", ".env.production"];
+  const found = new Map();
+  for (const f of files) {
+    let text = "";
+    try {
+      text = readFileSync(fsutil.resolveInside(rt, f), "utf-8");
+    } catch {
+      continue;
+    }
+    for (const line of text.split(/\r?\n/)) {
+      const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+      if (!m || m[1].startsWith("#")) continue;
+      const value = m[2].replace(/^(['"])(.*)\1$/, "$2");
+      if (!found.has(m[1]) || value) found.set(m[1], { file: f, length: value.length });
+    }
+  }
+  const names = args._.slice(1);
+  const rows = (names.length ? names : [...found.keys()]).map((name) => {
+    const hit = found.get(name);
+    if (hit && hit.length) return { name, set: true, length: hit.length, source: hit.file };
+    if (process.env[name]) return { name, set: true, length: process.env[name].length, source: "process environment" };
+    return { name, set: false, source: hit ? `${hit.file} (empty)` : null };
+  });
+  out(args, rows, () => {
+    if (!rows.length) return console.log(dim("no env file here defines any variable (looked in " + files.join(", ") + ")"));
+    for (const r of rows) console.log(r.set ? `${c(32, "set")}      ${r.name}  ${dim(`${r.length} characters, in ${r.source}`)}` : `${c(31, "MISSING")}  ${r.name}${r.source ? dim(`  ${r.source}`) : ""}`);
+  });
+  return names.length && rows.some((r) => !r.set) ? 1 : 0;
 }
 
 async function cmdGuard(args) {
@@ -2845,6 +2885,7 @@ const table = {
   pause: cmdPause,
   revoke: cmdRevoke,
   grants: cmdGrants,
+  "env-check": cmdEnvCheck,
 };
 
 if (args.version || cmd === "version") {

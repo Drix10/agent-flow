@@ -96,7 +96,7 @@ const ROLE_TOOL_ALLOW: Record<Role, Set<string>> = {
 };
 
 /** Files only agent-flow's own tools may write — trust signals must not be forgeable. */
-const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/state.lock", ".agent-flow/stop-gate.json", ".agent-flow/gates/", ".risk-baseline.json", ".git/"];
+const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/audit.lock", ".agent-flow/state.lock", ".agent-flow/stop-gate.json", ".agent-flow/gates/", ".risk-baseline.json", ".git/"];
 /**
  * The wiring that makes the guard run: the hook registration and the installed copy of agent-flow itself.
  * No session edits these, whether or not the repo configures protected paths, and no AGENT_FLOW_ALLOW_* lifts it: an agent that could
@@ -1078,6 +1078,7 @@ function decideWrite(g: GuardInput, p: string, protectedPaths: string[], ctxFile
   const { role, cwd, root } = g;
   const lexical = resolve(cwd, p);
   if (underStore(lexical)) return block("grant-store", `${toPosix(p)} holds the human's grants and pauses; a human changes it (with \`!\`).`);
+  if (homeWiring(lexical) || homeWiring(landingPath(lexical))) return block("self-disable", `${toPosix(p)} is a harness's user-level config, where this guard is registered or switched off; a human edits it (with \`!\`).`);
   const landing = landingPath(lexical);
   const rootReal = landingPath(root);
   const views = [
@@ -1163,7 +1164,11 @@ const GIT_PUSH_VALUE = /^(-o|--push-option|--repo|--receive-pack|--exec|--depth|
 function gitPushFromWords(argv: readonly ShWord[]): GitCall | null {
   if (cmdName(argv[0]) !== "git") return null;
   let i = 1;
-  while (i < argv.length && argv[i].text.startsWith("-")) i += GIT_GLOBAL_VALUE.has(argv[i].text) ? 2 : 1;
+  let dir: string | undefined;
+  while (i < argv.length && argv[i].text.startsWith("-")) {
+    if (argv[i].text === "-C" && argv[i + 1]) dir = dir && !isAbsolute(argv[i + 1].text) ? join(dir, argv[i + 1].text) : argv[i + 1].text;
+    i += GIT_GLOBAL_VALUE.has(argv[i].text) ? 2 : 1;
+  }
   const sub = argv[i]?.text.toLowerCase();
   if (sub !== "push" && sub !== "fetch") return null;
   const args: string[] = [];
@@ -1172,7 +1177,7 @@ function gitPushFromWords(argv: readonly ShWord[]): GitCall | null {
     if (GIT_PUSH_VALUE.test(t)) j++;
     else if (!/^--(push-option|repo|receive-pack|exec|depth|deepen|shallow-since|shallow-exclude|jobs|upload-pack|refmap|filter|server-option|negotiation-tip)=/.test(t)) args.push(t.replace(/\s/g, "_"));
   }
-  return { sub, args: args.join(" "), configs: [] };
+  return { sub, args: args.join(" "), configs: [], ...(dir ? { dir } : {}) };
 }
 
 /** `git config` options that choose what it does, and the options that take a separate value. */
@@ -1247,6 +1252,8 @@ function decideGit(gc: GitCall, protectedBranches: Set<string>, ctx: PushCtx): G
     return block("no-verify", "`--no-verify` skips the pre-commit hook. Fix the hook failure instead.");
   }
   if (gc.sub !== "push" && gc.sub !== "fetch" && gc.sub !== "update-ref" && gc.sub !== "replace") return null;
+  // The text pass can't see quoting or follow a `cd`; the word pass (gitPushFromWords) decides every push and fetch.
+  if (ctx.textOnly && (gc.sub === "push" || gc.sub === "fetch")) return null;
   if (gc.sub === "fetch") {
     // A refspec (`main:main`, `+HEAD:main`) rewrites LOCAL refs — including the
     // default branch — while looking like a read. Plain fetches only move
@@ -1285,7 +1292,9 @@ function decideGit(gc: GitCall, protectedBranches: Set<string>, ctx: PushCtx): G
   }
   if (gc.sub !== "push") return null;
   const a = gc.args;
-  const cwd = gc.dir ? resolve(ctx.cwd, gc.dir) : ctx.cwd;
+  const dirAbs = gc.dir ? resolveShellPath(ctx.cwd, gc.dir) : ctx.cwd;
+  const cwd = dirAbs ?? ctx.cwd;
+  if (!dirAbs) ctx = { ...ctx, moved: true };
   const forceBlock = (why = "force-push / delete rewrites shared history. Push a new commit instead.") => block("force-push", why);
   const deleting = /(^|\s)-[a-zA-Z]*d[a-zA-Z]*(\s|$)/.test(a) || hasLong(a, "--delete", 4);
   const lease = hasLong(a, "--force-with-lease", 9) || hasLong(a, "--force-if-includes", 9);
@@ -1386,8 +1395,200 @@ interface PushCtx {
   landing: boolean;
   probe: GitProbe;
   cwd: string;
-  /** The command changes directory or repository before the push, so the repository the guard sees is not the one git will use. */
+  /** The command changes directory or repository in a way the guard can't follow, so the repository it sees is not the one git will use. */
   moved: boolean;
+  /** The text pass (quote-stripped segments): it leaves push and fetch to the word pass. */
+  textOnly?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Remote-write doors: the hosting API is the same act as a push or a merge
+// ---------------------------------------------------------------------------
+
+/** `gh api` options that take a separate value. */
+const GH_API_VALUE = /^(-X|--method|-H|--header|-f|-F|--field|--raw-field|--input|-q|--jq|-t|--template|--hostname|--cache|-p|--preview|-R|--repo)$/;
+const GH_FIELD_FLAG = /^(-f|-F|--field|--raw-field)$/;
+const GRAPHQL_WRITE = /\b(mergePullRequest|enablePullRequestAutoMerge|deleteRef|updateRef|createRef|createCommitOnBranch|deleteBranchProtectionRule|updateBranchProtectionRule|createBranchProtectionRule|deleteRepository|archiveRepository|updateRepository|mergeBranch)\b/;
+const REMOTE_WRITE_WHY = "can't be checked from here, and it does what a push or a merge does. Open a pull request and let a human (or the pipeline's orchestrator) merge it.";
+
+/** A GitHub REST write by path, method and the body fields it sets ("?" = a value the guard can't read). Returns why it is refused, or null. */
+function githubWriteWhy(rest: string, method: string, field: (k: string) => string | undefined, protectedBranches: Set<string>, dynamicPath: boolean): string | null {
+  if (method === "GET" || method === "HEAD") return null;
+  const m = /^repos\/[^/]+\/[^/]+(?:\/(.*))?$/.exec(rest.replace(/^api\/v3\//, ""));
+  const tail = m ? (m[1] ?? "") : rest;
+  const long = (b: string | undefined) => b === undefined || b === "?" || isProtectedLike(b, protectedBranches);
+  if (!m) return dynamicPath && rest.startsWith("$") ? "calls an API endpoint the guard can't read" : null;
+  if (tail === "") return method === "DELETE" ? "deletes the repository" : method === "PATCH" && field("default_branch") !== undefined ? "changes the repository's default branch" : null;
+  if (/^merges$/.test(tail)) return "merges one branch into another";
+  if (/^pulls\/[^/]+\/merge$/.test(tail)) return "merges a pull request";
+  if (/^branches\/.+\/protection(\/|$)/.test(tail) || /^rulesets(\/|$)/.test(tail)) return "changes branch protection";
+  if (/^git\/refs(\/|$)/.test(tail)) {
+    if (method === "DELETE") return "deletes a ref on the remote (a merged branch can be deleted with `git push origin --delete <name>`, which the guard checks)";
+    const name = /^git\/refs\/heads\/(.+)$/.exec(tail)?.[1] ?? (field("ref") ?? "?").replace(/^refs\/heads\//, "");
+    if (name === "?" || !staticName(name) || isProtectedLike(name, protectedBranches)) return `writes the ref ${name === "?" || !staticName(name) ? "(unreadable)" : name}`;
+    const force = field("force");
+    if (method !== "POST" && force !== undefined && force !== "false") return "force-updates a ref";
+    return null;
+  }
+  if (/^contents\/.+/.test(tail)) return long(field("branch")) ? `commits a file to ${field("branch") && field("branch") !== "?" ? field("branch") : "the default branch"}` : null;
+  return dynamicPath && /(merge|git\/refs|contents|branches|protection)/.test(tail) ? "calls a write endpoint whose path is computed" : null;
+}
+
+function decideRemoteWrite(g: GuardInput, cmd: string, protectedBranches: Set<string>): GuardDecision | null {
+  const deny = (why: string) => block("remote-write", `this ${why}; it ${REMOTE_WRITE_WHY}`);
+  for (const sc of lexShell(cmd)) {
+    const argv = effectiveArgv(sc.words);
+    const verb = cmdName(argv[0]);
+    const words = argv.slice(1);
+    if (verb === "gh") {
+      const pos: ShWord[] = [];
+      for (let i = 0; i < words.length; i++) {
+        const t = words[i].text;
+        if (t === "-R" || t === "--repo" || t === "--hostname") i++;
+        else if (!t.startsWith("-")) pos.push(words[i]);
+      }
+      const [a, b] = pos.map((w) => w.text);
+      const flags = words.map((w) => w.text);
+      if (a === "pr" && b === "merge") {
+        if (flags.includes("--admin")) return deny("`gh pr merge --admin` skips branch protection");
+        if (flags.includes("--auto")) return deny("`gh pr merge --auto` merges later, when nobody is looking");
+        if (g.role && g.role !== "orchestrator") return block("role-tool", `role "${g.role}" may not merge pull requests (gh pr merge). The orchestrator or a human merges.`);
+      }
+      if (a === "repo" && b === "delete") return deny("`gh repo delete` removes the repository");
+      if (a === "repo" && b === "edit" && flags.some((f) => /^--default-branch(=|$)/.test(f))) return deny("`gh repo edit --default-branch` changes what the default branch is");
+      if (a === "api") {
+        let method = "";
+        let implicit = false;
+        let input = false;
+        const fields = new Map<string, string>();
+        let endpoint: ShWord | undefined;
+        for (let i = 0; i < words.length; i++) {
+          const t = words[i].text;
+          if (t === "-X" || t === "--method") method = (words[++i]?.text ?? "").toUpperCase();
+          else if (/^--method=/.test(t)) method = t.slice(9).toUpperCase();
+          else if (GH_FIELD_FLAG.test(t)) {
+            const kv = words[++i];
+            implicit = true;
+            if (kv) {
+              const eq = kv.text.indexOf("=");
+              fields.set(eq < 0 ? kv.text : kv.text.slice(0, eq), kv.dynamic ? "?" : eq < 0 ? "" : kv.text.slice(eq + 1));
+              if (eq >= 0 && !kv.dynamic && kv.text.slice(eq + 1).startsWith("@")) fields.set(kv.text.slice(0, eq), "?");
+            }
+          } else if (/^(--field|--raw-field)=/.test(t)) {
+            implicit = true;
+            const kv = t.slice(t.indexOf("=") + 1);
+            const eq = kv.indexOf("=");
+            fields.set(eq < 0 ? kv : kv.slice(0, eq), eq < 0 ? "" : kv.slice(eq + 1));
+          } else if (t === "--input" || /^--input=/.test(t)) {
+            input = true;
+            implicit = true;
+            if (t === "--input") i++;
+          } else if (GH_API_VALUE.test(t)) i++;
+          else if (!t.startsWith("-") && t !== "api" && !endpoint) endpoint = words[i];
+        }
+        if (!endpoint) continue;
+        const m = method || (implicit ? "POST" : "GET");
+        if (m === "GET" || m === "HEAD") continue;
+        const path = endpoint.text.replace(/^\/+/, "").replace(/\?.*$/, "");
+        if (/^graphql$/i.test(path)) {
+          const q = fields.get("query") ?? "";
+          if (q === "?" || input || GRAPHQL_WRITE.test(q)) return deny("GraphQL mutation (merge, ref write, branch protection or repository change)");
+          continue;
+        }
+        const why = input && /^repos\/[^/]+\/[^/]+\/(contents|git\/refs|merges|pulls\/[^/]+\/merge)/.test(path) ? "sends a request body from a file, so the branch it writes can't be read" : githubWriteWhy(path, m, (k) => fields.get(k), protectedBranches, endpoint.dynamic);
+        if (why) return deny(`\`gh api ${m}\` ${why}`);
+      }
+    } else if (/^(curl|wget|http|https|xh)$/.test(verb)) {
+      const urls = words.filter((w) => /^https?:\/\/api\.github\.com\//i.test(w.text) || /^https?:\/\/[^/]+\/api\/v3\/repos\//i.test(w.text));
+      if (!urls.length) continue;
+      let method = "";
+      let hasBody = false;
+      let body = "";
+      for (let i = 0; i < words.length; i++) {
+        const t = words[i].text;
+        if (t === "-X" || t === "--request") method = (words[++i]?.text ?? "").toUpperCase();
+        else if (/^--request=/.test(t)) method = t.slice(10).toUpperCase();
+        else if (/^(-d|--data|--data-raw|--data-binary|--data-urlencode|--json|-F|--form|-T|--upload-file)$/.test(t)) {
+          hasBody = true;
+          body += ` ${words[++i]?.text ?? "@"}`;
+        } else if (/^--(data|data-raw|data-binary|json|form)=/.test(t)) {
+          hasBody = true;
+          body += ` ${t.slice(t.indexOf("=") + 1)}`;
+        }
+      }
+      const m = method || (hasBody ? "POST" : "GET");
+      if (m === "GET" || m === "HEAD") continue;
+      for (const u of urls) {
+        const path = u.text.replace(/^https?:\/\/[^/]+\//i, "").replace(/\?.*$/, "");
+        if (/^graphql$/i.test(path) && GRAPHQL_WRITE.test(body)) return deny("GraphQL mutation sent with curl");
+        const opaque = /(^|\s)@/.test(body) || /[$`]/.test(body);
+        const jsonField = (k: string) => {
+          const mm = new RegExp(`"${k}"\\s*:\\s*("([^"]*)"|true|false)`).exec(body);
+          return mm ? (mm[2] ?? mm[1]) : opaque ? "?" : undefined;
+        };
+        const why = githubWriteWhy(path, m, jsonField, protectedBranches, u.dynamic);
+        if (why) return deny(`\`${verb} -X ${m}\` against the GitHub API ${why}`);
+      }
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Self-protection: what an agent must not do to the guard, the default branch, the remotes or the history
+// ---------------------------------------------------------------------------
+
+/** The host harness's user-level config, where a hook registration lives or is switched off. Relative to `~`. */
+const HOME_WIRING = [".pi/agent/settings.json", ".pi/agent/extensions/", ".claude/settings.json", ".claude/settings.local.json", ".codex/config.toml", ".codex/hooks.json", ".gemini/settings.json", ".cursor/hooks.json", ".config/opencode/"];
+
+/** Whether `abs` is one of those files. */
+function homeWiring(abs: string): string | null {
+  const home = toPosix(homedir()).replace(/\/+$/, "");
+  const p = toPosix(abs);
+  const f = (x: string) => (CASE_INSENSITIVE_FS ? x.toLowerCase() : x);
+  if (!f(p).startsWith(`${f(home)}/`)) return null;
+  const rel = f(p.slice(home.length + 1));
+  return HOME_WIRING.find((w) => rel === w.replace(/\/$/, "") || (w.endsWith("/") && rel.startsWith(w))) ?? null;
+}
+
+/** Environment variables that switch a child harness's guard off or point it at another config. */
+const KILL_SWITCH_ENV = /^(OPENCODE_DISABLE_PROJECT_CONFIG|OPENCODE_CONFIG_PROJECT_DISABLE|OPENCODE_CONFIG_CONTENT|PI_CODING_AGENT_DIR)=/;
+
+function decideSelfProtection(cmd: string, protectedBranches: Set<string>): GuardDecision | null {
+  const human = "A human does that (with `!`, which never passes the hook).";
+  const refuse = (rule: string, why: string) => block(rule, `${why}. ${human}`);
+  const mentionsFlow = (x: string) => /agent-flow/i.test(x);
+  for (const sc of lexShell(cmd)) {
+    const bad = sc.words.find((w) => KILL_SWITCH_ENV.test(w.text));
+    if (bad) return refuse("self-disable", `\`${bad.text.split("=")[0]}\` makes a harness run without this guard's configuration`);
+    const argv = effectiveArgv(sc.words);
+    const verb = cmdName(argv[0]);
+    const rest = argv.slice(1);
+    const flags = rest.map((w) => w.text);
+    const pos = rest.filter((w) => !w.text.startsWith("-")).map((w) => w.text);
+
+    // ---- the guard itself ----
+    if (verb === "pi" && (flags.includes("-ne") || flags.includes("--no-extensions") || flags.includes("--no-extension"))) return refuse("self-disable", "`pi --no-extensions` starts pi without the guard");
+    if (verb === "pi" && /^(remove|uninstall)$/.test(pos[0] ?? "") && pos.slice(1).some(mentionsFlow)) return refuse("self-disable", "removing agent-flow from pi removes this guard");
+    if (/^(npm|pnpm|yarn|bun)$/.test(verb) && /^(uninstall|remove|rm|un|unlink)$/.test(pos[0] ?? "") && pos.slice(1).some(mentionsFlow)) return refuse("self-disable", `\`${verb} ${pos[0]}\` of agent-flow removes this guard`);
+    if (verb === "claude" && flags.some((f, i) => /^--settings(=|$)/.test(f) && /disableAllHooks/i.test(f.includes("=") ? f : (flags[i + 1] ?? "")))) return refuse("self-disable", "`claude --settings` with disableAllHooks starts a session without hooks");
+    if (verb === "codex" && flags.some((f) => /bypass-hook-trust/.test(f) || /hooks\s*=\s*false/.test(f))) return refuse("self-disable", "that codex flag runs without its hooks");
+    const cli = agentFlowArgv(argv);
+    if (cli && (cli[0] === "uninstall" || (cli[0] === "hook" && cli[1] === "uninstall"))) return refuse("self-disable", "`agent-flow uninstall` removes this guard");
+
+    // ---- the default branch and the remotes ----
+    if (verb === "git") {
+      const gc = parseGit(argv.map((w) => w.text).join(" "));
+      const sub = gc?.sub;
+      const gp = gc ? gc.args.split(/\s+/).filter((t) => t && !t.startsWith("-")) : [];
+      if (sub === "branch" && /(^|\s)(-[a-zA-Z]*[fMC][a-zA-Z]*|--force|--move|--copy)(\s|$)/.test(gc!.args) && gp.some((n) => isProtectedLike(n, protectedBranches) && !/^(HEAD)$/.test(n))) return refuse("default-ref-move", "`git branch` with a force or move flag would repoint the default (or a release) branch locally, which the push rules trust");
+      if ((sub === "checkout" || sub === "switch") && /(^|\s)(-[a-zA-Z]*[BC][a-zA-Z]*|--force-create)(\s|$)/.test(gc!.args) && gp.some((n) => isProtectedLike(n, protectedBranches))) return refuse("default-ref-move", `\`git ${sub} -B/-C\` would reset the default (or a release) branch to the current commit`);
+      if (sub === "symbolic-ref" && gp.length >= 2) return refuse("default-ref-move", "`git symbolic-ref` with a value repoints HEAD or a remote's default branch");
+      if (sub === "remote" && /^(set-url|set-head|add|rm|remove|rename|set-branches)$/.test(gp[0] ?? "")) return refuse("remote-edit", `\`git remote ${gp[0]}\` changes where pushes and fetches go`);
+      if ((sub === "gc" && /--prune(=|\s|$)/.test(gc!.args) && !/--prune=(never|false)/.test(gc!.args)) || (sub === "prune" && !/(^|\s)(-n|--dry-run)(\s|$)/.test(gc!.args)) || (sub === "reflog" && /^(expire|delete)$/.test(gp[0] ?? "")) || sub === "filter-branch" || sub === "filter-repo") return refuse("history-destroy", `\`git ${sub}\` destroys objects or history that cannot be recovered`);
+    }
+  }
+  return null;
 }
 
 /** Long-lived names a session never deletes or force-pushes, whatever the manifest says the default branch is. */
@@ -1678,6 +1879,42 @@ const NAME_ONLY_VERBS = new Set(["ls", "dir", "stat", "test", "[", "[[", "cd", "
 const READ_TOOL = /^(read|notebook_?read|view|read_file|read_many_files|grep|grep_search|search_file_content|glob|cat|open_file)$/;
 
 /** The deny-read pattern (or "env file") that a repo-relative path falls under, or null. */
+/** Files in the home directory that hold credentials for a service or for the host agent itself. Relative to `~`, forward slashes, matched case-insensitively. */
+const HOME_CREDENTIALS = [
+  /^\.aws\/(credentials|sso\/cache\/|cli\/cache\/)/,
+  /^\.ssh\/(?!.*\.pub$)(?!known_hosts)(?!config$)(?!authorized_keys)[^/]+$/,
+  /^\.config\/gh\/hosts\.yml$/,
+  /^\.(npmrc|netrc|_netrc|pypirc|git-credentials)$/,
+  /^_netrc$/,
+  /^\.docker\/config\.json$/,
+  /^\.kube\/config$/,
+  /^\.gnupg\//,
+  /^\.config\/(gcloud|doctl)\//,
+  /^\.azure\//,
+  /^\.cargo\/credentials/,
+  /^\.gem\/credentials$/,
+  /^\.terraform\.d\/credentials\.tfrc\.json$/,
+  /^\.claude\/\.credentials\.json$/,
+  /^\.codex\/auth\.json$/,
+  /^\.gemini\/oauth_creds\.json$/,
+  /^\.pi\/agent\/auth\.json$/,
+  /^\.local\/share\/opencode\/auth\.json$/,
+];
+/** Credential files wherever they sit: private keys, key stores, and the files package managers keep tokens in. */
+const ANY_CREDENTIAL = /(^|\/)(id_(rsa|dsa|ecdsa|ed25519)|\.npmrc|\.netrc|\.pypirc|\.git-credentials)$|\.(pem|p12|pfx|jks|keystore)$/i;
+
+/** Why `abs` is a credential store, or null. `~/.ssh/id_rsa.pub`, `known_hosts` and `config` are not. */
+function credentialStore(abs: string): string | null {
+  const p = toPosix(abs);
+  const home = toPosix(homedir()).replace(/\/+$/, "");
+  const f = (x: string) => (CASE_INSENSITIVE_FS ? x.toLowerCase() : x);
+  if (f(p).startsWith(`${f(home)}/`)) {
+    const rel = p.slice(home.length + 1);
+    if (HOME_CREDENTIALS.some((re) => re.test(CASE_INSENSITIVE_FS ? rel.toLowerCase() : rel))) return `credential store (~/${rel})`;
+  }
+  return ANY_CREDENTIAL.test(p) && !/\.pub$/.test(p) ? `credential file (${basename(p)})` : null;
+}
+
 function deniedRead(g: GuardInput, abs: string): string | null {
   const deny = denyReadPathsOf(g.manifest);
   for (const rel of shellRels(g, abs)) {
@@ -1685,11 +1922,11 @@ function deniedRead(g: GuardInput, abs: string): string | null {
     const hit = matchAny(deny, rel);
     if (hit) return hit;
   }
-  return null;
+  return credentialStore(abs);
 }
 
 function secretReadBlock(what: string, why: string): GuardDecision {
-  return block("secret-read", `${what} reads ${why}. Real credentials stay out of agent context: use the variable name (\`agent-flow env-check NAME\` once it exists), or ask the human to run the read with \`!\`.`);
+  return block("secret-read", `${what} reads ${why}. Real credentials stay out of agent context: use the variable name: \`agent-flow env-check NAME\` says whether it is set without printing it. Or ask the human to run the read with \`!\`.`);
 }
 
 const RG_FAMILY = new Set(["rg", "ag", "ack"]);
@@ -1744,6 +1981,8 @@ function firstDeniedUnder(g: GuardInput, dir: string, o: SweepOpts): Swept {
       if (!sweepReads(e.name, o)) continue;
       // Plain string work: this runs for every file of a sweep, so no realpath calls.
       if (isEnvFile(e.name)) return { file: rel, rule: "environment file" };
+      const cred = credentialStore(join(dir, rel));
+      if (cred) return { file: rel, rule: cred };
       const inRepo = toPosix(relative(g.root, join(dir, rel)));
       const hit = inRepo && !escapesBase(inRepo) ? matchAny(deny, inRepo) : null;
       if (hit) return { file: rel, rule: hit };
@@ -1764,6 +2003,8 @@ function listedDenied(g: GuardInput, dir: string, o: SweepOpts): Swept {
     if (parts.includes("node_modules") || (!o.hiddenToo && parts.slice(0, -1).some((p) => p.startsWith(".")))) continue;
     if (!sweepReads(name, o)) continue;
     if (isEnvFile(name)) return { file: rel, rule: "environment file" };
+    const cred = credentialStore(join(dir, rel));
+    if (cred) return { file: rel, rule: cred };
     const inRepo = toPosix(relative(g.root, join(dir, rel)));
     const hit = inRepo && !escapesBase(inRepo) ? matchAny(deny, inRepo) : null;
     if (hit) return { file: rel, rule: hit };
@@ -1875,6 +2116,19 @@ function decideSecretRead(g: GuardInput, cmd: string): GuardDecision | null {
         if (!value.dynamic && (!value.text.startsWith("-") || value === w)) words.push(value);
       }
     }
+    // Commands whose whole job is to print a stored credential.
+    const sub = argv.slice(1).filter((w) => !w.text.startsWith("-")).map((w) => w.text);
+    if (verb === "gh" && sub[0] === "auth" && (sub[1] === "token" || argv.some((w) => /^(-t|--show-token)$/.test(w.text)))) return secretReadBlock("`gh auth`", "the GitHub CLI's stored token (credential store)");
+    if (verb === "git" && sub[0] === "credential" && /^(fill|approve|reject)$/.test(sub[1] ?? "")) return secretReadBlock("`git credential`", "a credential from the git credential helpers (credential store)");
+    if (verb === "security" && /^find-(generic|internet)-password$/.test(sub[0] ?? "") && argv.some((w) => /^-[a-z]*[wg]/.test(w.text))) return secretReadBlock("`security`", "a password from the macOS keychain (credential store)");
+    if (verb === "git" && sub[0] === "add" && argv.some((w) => /^(-[a-zA-Z]*f[a-zA-Z]*|--force)$/.test(w.text))) {
+      // `git add -f` stages what .gitignore keeps out: the next commit would publish an env file. Name each file; none may be an env file.
+      for (const w of argv.slice(1)) {
+        if (w.text.startsWith("-") || w.text === "add") continue;
+        const abs = w.dynamic || w.glob ? null : resolveShellPath(g.cwd, w.text);
+        if (!abs || isDir(abs) || isEnvFile(basename(abs))) return block("secret-read", `\`git add -f ${w.text}\` stages ${!abs || isDir(abs) ? "everything .gitignore keeps out, which can include an environment file" : "an environment file"}, and the next commit would publish it. Name each ignored file you mean to add; never an env file.`);
+      }
+    }
     const swept = recursiveSearchHit(g, verb, argv);
     if (swept) return secretReadBlock(`\`${verb}\``, swept.file ? `${swept.dir} recursively, which holds ${swept.file} (${swept.rule})` : `${swept.dir} recursively, and the search is too large to check for environment files. Search a narrower directory, or use \`git grep\` (tracked files only)`);
     for (const w of words) {
@@ -1904,6 +2158,7 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
   if (DEVICE.test(w.text)) return null;
   // Deleting the home directory, the filesystem root or a system directory is never part of a task, wherever the repo is.
   const abs = w.dynamic ? null : resolveShellPath(t.cwd, w.text);
+  if (abs && (homeWiring(abs) || homeWiring(landingPath(abs)))) return block("self-disable", `command writes ${toPosix(w.text)}, a harness's user-level config where this guard is registered or switched off; a human edits it (with \`!\`).`);
   if (abs && underStore(abs)) return block("grant-store", `command writes ${toPosix(w.text)}, which holds the human's grants and pauses; a human changes it (with \`!\`).`);
   if (t.destructive && !t.dest && !g.allowProtected) {
     const hit = catastrophicTarget(w.text, abs, !!w.glob);
@@ -1929,7 +2184,7 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
     for (const rel of shellRels(g, p)) {
       // Git internals stay writable for a plain session (`.git/info/exclude`), but its hooks never are:
       // deleting or `chmod -x`-ing the pre-commit hook silently turns the commit gate off.
-      const tamper = underAny(rel, TAMPER_PROOF);
+      const tamper = underAny(rel, TAMPER_PROOF) ?? (t.destructive && /^\.agent-flow\/?$/.test(rel) ? ".agent-flow/" : null);
       if (tamper && (role || tamper !== ".git/" || t.destructive || /^\.git\/hooks(\/|$)/i.test(rel))) {
         return block("tamper-proof", `command writes ${rel}, which only agent-flow tools may change.`);
       }
@@ -2018,17 +2273,35 @@ function decideShellCore(g: GuardInput, cmd: string, protectedPaths: string[], c
   }
   const defaultBranch = manifest?.default_branch;
   const protectedBranches = new Set(["main", "master", ...(typeof defaultBranch === "string" && defaultBranch ? [defaultBranch] : [])]);
-  const moved = lexShell(cmd).some((sc) => /^(cd|pushd|popd)$/.test(cmdName(effectiveArgv(sc.words)[0])) || sc.words.some((w) => /^GIT_(DIR|WORK_TREE)=/.test(w.text))) || /--(git-dir|work-tree)\b/.test(cmd);
-  const ctx: PushCtx = { landing: landingGranted(g), probe: g.probe ?? gitProbe, cwd: g.cwd, moved };
+  // Read-only roles are refused for any mutating command further down (read-only-role), which is the more useful message for them.
+  const remote = role && READ_ONLY_ROLES.includes(role) ? null : decideRemoteWrite(g, cmd, protectedBranches);
+  if (remote) return remote;
+  const selfp = decideSelfProtection(cmd, protectedBranches);
+  if (selfp) return selfp;
+  const ctx: PushCtx = { landing: landingGranted(g), probe: g.probe ?? gitProbe, cwd: g.cwd, moved: false };
   for (const seg of segs) {
     const gc = parseGit(seg);
-    const d = gc && decideGit(gc, protectedBranches, ctx);
+    const d = gc && decideGit(gc, protectedBranches, { ...ctx, textOnly: true });
     if (d) return d;
   }
   // The text pass above sees a quoted word as empty (`git push origin 'HEAD~0:main'`), so a push is read again from real words.
+  // A literal `cd <dir>` is followed (`cd ~/repo && git push` is how most pushes are written); a computed one, `popd`, a subshell or a command
+  // substitution that changes directory, `GIT_DIR` or `--git-dir` leave the repository unknown, and a push that needs it keeps its block.
+  let cwdNow = g.cwd;
+  let lost = /(?:\$\(|`|(?:^|[^$])\()[^)`]*\b(?:cd|pushd|popd)\b/.test(cmd) || /--(git-dir|work-tree)\b/.test(cmd);
   for (const sc of lexShell(cmd)) {
-    const gc = gitPushFromWords(effectiveArgv(sc.words));
-    const d = gc && decideGit(gc, protectedBranches, ctx);
+    const argv = effectiveArgv(sc.words);
+    const verb = cmdName(argv[0]);
+    if (sc.words.some((w) => /^GIT_(DIR|WORK_TREE)=/.test(w.text))) lost = true;
+    if (verb === "cd" || verb === "pushd" || verb === "popd") {
+      const target = argv.slice(1).find((w) => !w.text.startsWith("-"));
+      const abs = verb === "popd" || !target || target.dynamic || target.glob || target.text === "-" ? null : resolveShellPath(cwdNow, target.text);
+      if (abs) cwdNow = abs;
+      else lost = true;
+      continue;
+    }
+    const gc = gitPushFromWords(argv);
+    const d = gc && decideGit(gc, protectedBranches, { ...ctx, cwd: cwdNow, moved: lost });
     if (d) return d;
   }
 
