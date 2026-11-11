@@ -238,7 +238,7 @@ test("guard CLI speaks Claude Code's PreToolUse contract: exit 2 + stderr blocks
     }
 
     const audit = readFileSync(join(dir, ".agent-flow", "audit.jsonl"), "utf-8");
-    assert.match(audit, /"harness":"claude"/);
+    assert.match(audit, /"harness":"unknown"/, "an event that names no harness is logged as unknown, never guessed as claude");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -30,6 +30,7 @@ import { CASE_INSENSITIVE_FS, escapesBase, landingPath, toPosix, walk } from "./
 import { denyCommandsOf, matchDenyCommand } from "./denycmd.js";
 import { ContextManifest, MANIFEST_FILE, contextFilePaths, denyReadPathsOf, matchAny, matchesPattern, protectedPathsOf, reviewPathsOf } from "./manifest.js";
 import { isEnvFile } from "./risk.js";
+import { storeDir, type Active } from "./grants.js";
 
 export const ROLES = ["orchestrator", "implementer", "reviewer", "qa", "gardener", "bootstrap"] as const;
 export type Role = (typeof ROLES)[number];
@@ -53,6 +54,10 @@ export interface GuardInput {
   /** Most entries (default 20000) and milliseconds (default 1500) a recursive-search sweep may spend before the guard asks git for the file list instead. */
   sweepLimit?: number;
   sweepMs?: number;
+  /** What the human has granted or paused for this repository (`agent-flow grant|pause`). Honoured for role-less sessions only. */
+  grants?: Active;
+  /** Repository facts for the push rules (current branch, remote-tracking refs, ancestry). Defaults to asking git; a test injects a stub. */
+  probe?: GitProbe;
   /**
    * Set when CONTEXT_MANIFEST.json exists but can't be loaded. Protected paths are
    * then unknown, so writes fail closed (a trailing comma must not switch the guard off).
@@ -1063,9 +1068,16 @@ function agentFlowArgv(argv: readonly ShWord[]): string[] | null {
 // File writes
 // ---------------------------------------------------------------------------
 
+/** The directories that hold grants and pauses (`$AGENT_FLOW_HOME` and the default `~/.agent-flow`): no tool call writes there. */
+function underStore(abs: string): boolean {
+  const dirs = [...new Set([storeDir(), join(homedir(), ".agent-flow")])];
+  return dirs.some((d) => within(d, abs) || within(landingPath(d), landingPath(abs)));
+}
+
 function decideWrite(g: GuardInput, p: string, protectedPaths: string[], ctxFiles: string[]): GuardDecision | null {
   const { role, cwd, root } = g;
   const lexical = resolve(cwd, p);
+  if (underStore(lexical)) return block("grant-store", `${toPosix(p)} holds the human's grants and pauses; a human changes it (with \`!\`).`);
   const landing = landingPath(lexical);
   const rootReal = landingPath(root);
   const views = [
@@ -1225,7 +1237,7 @@ function decideHooksPath(cmd: string): GuardDecision | null {
   return null;
 }
 
-function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision | null {
+function decideGit(gc: GitCall, protectedBranches: Set<string>, ctx: PushCtx): GuardDecision | null {
   if (gc.configs.some((c) => /^core\.hookspath=/i.test(c))) {
     return block("no-verify", "changing core.hooksPath disables the pre-commit hook. Fix the hook failure instead.");
   }
@@ -1250,7 +1262,18 @@ function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision |
   // Plumbing with no legitimate agent use: direct ref writes, and object
   // replacement that changes what every branch (including the default one) shows.
   if (gc.sub === "update-ref") {
-    return block("ref-rewrite", "git update-ref rewrites refs directly, bypassing every branch protection here. There is no agent workflow that needs it.");
+    // A custom namespace (`refs/snapshots/…`, `refs/agent-flow/…`, a script's `refs/<name>/…`) is not a branch, a tag or a remote-tracking ref:
+    // snapshot scripts write them (19 of the owner's trace denies). `--stdin` batches and everything under heads, tags, remotes, replace or notes stay blocked.
+    const words = gc.args.split(/\s+/).filter(Boolean);
+    const pos: string[] = [];
+    for (let i = 0; i < words.length; i++) {
+      if (words[i] === "-m") i++;
+      else if (words[i].startsWith("-")) {
+        if (/^(--stdin|-z)$/.test(words[i])) return block("ref-rewrite", "git update-ref --stdin applies a batch the guard can't read, and it can rewrite any ref.");
+      } else pos.push(words[i]);
+    }
+    if (pos[0] && /^refs\/(?!(heads|tags|remotes|replace|notes|stash|original|bisect|worktree|rewritten)\/)[A-Za-z0-9._-]+\/[A-Za-z0-9._\/-]+$/.test(pos[0]) && !pos[0].includes("..")) return null;
+    return block("ref-rewrite", "git update-ref rewrites that ref directly, bypassing every branch protection here. Custom namespaces (refs/snapshots/…) are allowed; branches, tags and remote-tracking refs are not.");
   }
   if (gc.sub === "replace") {
     // Bare or list-only (`-l`, `--format=…`) reads; anything else names objects to swap.
@@ -1262,37 +1285,156 @@ function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision |
   }
   if (gc.sub !== "push") return null;
   const a = gc.args;
-  const forced =
-    hasFlag(a, "f", []) ||
-    /(^|\s)-[a-zA-Z]*d[a-zA-Z]*(\s|$)/.test(a) ||
-    /(^|\s)\+\S/.test(a) ||
-    ["--force", "--force-with-lease", "--force-if-includes"].some((n) => hasLong(a, n, 5)) ||
-    hasLong(a, "--mirror", 4) ||
-    hasLong(a, "--delete", 4) ||
-    hasLong(a, "--prune", 5);
-  if (forced) return block("force-push", "force-push / delete rewrites shared history. Push a new commit instead.");
+  const cwd = gc.dir ? resolve(ctx.cwd, gc.dir) : ctx.cwd;
+  const forceBlock = (why = "force-push / delete rewrites shared history. Push a new commit instead.") => block("force-push", why);
+  const deleting = /(^|\s)-[a-zA-Z]*d[a-zA-Z]*(\s|$)/.test(a) || hasLong(a, "--delete", 4);
+  const lease = hasLong(a, "--force-with-lease", 9) || hasLong(a, "--force-if-includes", 9);
+  const plainForce = hasFlag(a, "f", []) || /(^|\s)\+\S/.test(a) || hasLong(a, "--force", 5) || hasLong(a, "--mirror", 4) || hasLong(a, "--prune", 5);
+  if (plainForce) return forceBlock();
   if (hasLong(a, "--all", 4)) return block("push-default-branch", "`push --all` pushes the default branch too — push agent/issue-N only.");
   // No refspec: git pushes the current branch, which may be the default one.
   // (`--dry-run`/`-n` and tag-only pushes transfer no branch, so they stay allowed;
   // git itself rejects `--dry-run=<value>`, so a prefix match can't hide a real push.)
-  const refspecs = a
+  const toks = a
     .replace(/(^|\s)(-o|--push-option|--repo|--receive-pack|--exec)(=|\s+)\S+/g, " ")
     .split(/\s+/)
-    .filter((t) => t && !t.startsWith("-"))
-    .slice(1); // first positional is the remote
-  if (!refspecs.length && !hasLong(a, "--dry-run", 5) && !hasFlag(a, "n", []) && !hasLong(a, "--tags", 4)) {
-    return block("explicit-refspec", "push without a refspec pushes the current branch — name it explicitly (e.g. `git push origin agent/issue-N`).");
+    .filter((t) => t && !t.startsWith("-"));
+  const remote = toks[0];
+  const specs = toks.slice(1); // the first positional is the remote
+  const named = { remote, cwd, ctx };
+  if (deleting) return deleteVerdict(named, specs.map((x) => x.replace(/^refs\/heads\//, "")), protectedBranches);
+  const unresolved = (what: string) => block("explicit-refspec", what);
+  const dests: string[] = [];
+  const deletes: string[] = [];
+  if (!specs.length) {
+    if (hasLong(a, "--dry-run", 5) || hasFlag(a, "n", []) || hasLong(a, "--tags", 4)) return null;
+    const d = pushedBranch(ctx, cwd);
+    if (!d) return unresolved("push without a refspec pushes the current branch, and this one can't be resolved here — name it explicitly (e.g. `git push origin agent/issue-N`).");
+    dests.push(d);
   }
-  for (const spec of refspecs) {
+  for (const spec of specs) {
     const s = spec.replace(/^\+/, "");
-    const dest = (s.includes(":") ? s.slice(s.lastIndexOf(":") + 1) : s).replace(/^refs\/heads\//, "");
-    // `HEAD`/`@` name whatever is checked out (main, if the agent is on it), and `$(…)`, `` `…` `` or a glob
-    // can expand to anything: the guard can't see the branch, so they get the same answer as a bare `git push`.
-    if ((dest === "" && !s.startsWith(":")) || dest === "HEAD" || dest === "@" || /[$`*?]/.test(dest)) return block("explicit-refspec", `\`git push <remote> ${spec}\` doesn't name its target branch — spell it out (e.g. \`git push origin agent/issue-N\`).`);
+    let dest = (s.includes(":") ? s.slice(s.lastIndexOf(":") + 1) : s).replace(/^refs\/heads\//, "");
+    // `HEAD`/`@` name whatever is checked out. It is resolved from the repository when the command didn't move (`cd`, `--git-dir`);
+    // `$(…)`, `` `…` `` or a glob can expand to anything, so they get the same answer as a bare `git push`.
+    if (!s.startsWith(":") && (dest === "HEAD" || dest === "@") && !/[$`*?]/.test(dest)) {
+      const d = pushedBranch(ctx, cwd);
+      if (!d) return unresolved(`\`git push <remote> ${spec}\` doesn't name its target branch, and the checked-out one can't be resolved here — spell it out (e.g. \`git push origin agent/issue-N\`).`);
+      dest = d;
+    } else if ((dest === "" && !s.startsWith(":")) || dest === "HEAD" || dest === "@" || /[$`*?]/.test(dest)) {
+      return unresolved(`\`git push <remote> ${spec}\` doesn't name its target branch — spell it out (e.g. \`git push origin agent/issue-N\`).`);
+    }
     // `:` alone pushes every matching branch, the default one included.
-    if (protectedBranches.has(dest) || s === ":") return block("push-default-branch", "agents never push to the default branch — push agent/issue-N and open a PR.");
-    // An empty source (`:branch`) deletes the remote branch.
-    if (s.startsWith(":")) return block("force-push", `\`git push <remote> ${spec}\` deletes the remote branch. Push a new commit instead.`);
+    if (s === ":") return block("push-default-branch", "agents don't push to the default branch without a grant — push agent/issue-N and open a PR, or ask the human to run `! agent-flow grant push-default --until <date>`.");
+    // An empty source (`:branch`) deletes the remote branch; the default branch is never deleted, grant or not.
+    if (s.startsWith(":") && protectedBranches.has(dest)) return block("push-default-branch", "`git push <remote> :" + dest + "` deletes the default branch. A human does that.");
+    if (s.startsWith(":")) deletes.push(dest);
+    else dests.push(dest);
+  }
+  if (deletes.length) {
+    const v = deleteVerdict(named, deletes, protectedBranches);
+    if (v) return v;
+  }
+  if (lease) {
+    const bad = dests.find((d) => isProtectedLike(d, protectedBranches) || !trackedBranch(named, d));
+    if (bad !== undefined || !dests.length) return forceBlock(`\`--force-with-lease\` is allowed only on a branch you have been working on (it exists locally and tracks ${remote ?? "the remote"}), never the default or a release branch${bad ? ` — not ${bad}` : ""}. Push a new commit instead.`);
+  }
+  for (const dest of dests) {
+    if (!protectedBranches.has(dest)) continue;
+    // A grant covers landing a commit, not deleting the branch (`:main`) or pushing every matching one (`:`).
+    if (ctx.landing) continue;
+    return block("push-default-branch", "agents don't push to the default branch without a grant — push agent/issue-N and open a PR, or ask the human to run `! agent-flow grant push-default --until <date>`.");
+  }
+  return null;
+}
+
+/** Repository facts the push rules read, injected so a test (or a harness without git on the PATH) can stand in for them. */
+export interface GitProbe {
+  /** The checked-out branch in `cwd`, or null when HEAD is detached or `cwd` isn't a repository. */
+  currentBranch(cwd: string): string | null;
+  config(cwd: string, key: string): string | null;
+  remotes(cwd: string): string[];
+  /** The commit a ref points to, or null. */
+  tip(cwd: string, ref: string): string | null;
+  isAncestor(cwd: string, ancestor: string, descendant: string): boolean;
+  hasBranch(cwd: string, branch: string): boolean;
+}
+
+export const gitProbe: GitProbe = {
+  currentBranch: (cwd) => {
+    const r = git(["symbolic-ref", "-q", "--short", "HEAD"], cwd, 5_000);
+    return r.ok && r.stdout ? r.stdout : null;
+  },
+  config: (cwd, key) => {
+    const r = git(["config", "--get", key], cwd, 5_000);
+    return r.ok && r.stdout ? r.stdout : null;
+  },
+  remotes: (cwd) => {
+    const r = git(["remote"], cwd, 5_000);
+    return r.ok ? r.stdout.split(/\r?\n/).filter(Boolean) : [];
+  },
+  tip: (cwd, ref) => {
+    const r = git(["rev-parse", "--verify", "-q", `${ref}^{commit}`], cwd, 5_000);
+    return r.ok && r.stdout ? r.stdout : null;
+  },
+  isAncestor: (cwd, a, b) => git(["merge-base", "--is-ancestor", a, b], cwd, 5_000).ok,
+  hasBranch: (cwd, b) => git(["show-ref", "--verify", "-q", `refs/heads/${b}`], cwd, 5_000).ok,
+};
+
+interface PushCtx {
+  /** A `push-default` grant is active (role-less sessions only). */
+  landing: boolean;
+  probe: GitProbe;
+  cwd: string;
+  /** The command changes directory or repository before the push, so the repository the guard sees is not the one git will use. */
+  moved: boolean;
+}
+
+/** Long-lived names a session never deletes or force-pushes, whatever the manifest says the default branch is. */
+const isProtectedLike = (name: string, protectedBranches: Set<string>) => protectedBranches.has(name) || name === "HEAD" || /^(release|production|prod|staging|stable|develop|trunk)(\/.*)?$/i.test(name);
+const staticName = (name: string) => !!name && !/[$`*?[\]{}~^\\\s]/.test(name) && !name.startsWith("-");
+
+/** The branch a bare `git push` or `git push <remote> HEAD` sends, from the repository's own settings; null when it can't be known. */
+function pushedBranch(ctx: PushCtx, cwd: string): string | null {
+  if (ctx.moved) return null;
+  const cur = ctx.probe.currentBranch(cwd);
+  if (!cur) return null;
+  const pd = (ctx.probe.config(cwd, "push.default") ?? "simple").toLowerCase();
+  if (pd === "matching" || pd === "nothing") return null;
+  if (pd === "upstream" || pd === "tracking") {
+    const m = ctx.probe.config(cwd, `branch.${cur}.merge`);
+    return m ? m.replace(/^refs\/heads\//, "") : null;
+  }
+  return cur;
+}
+
+/** A local branch that tracks `remote`: one the session has been working on, so a lease-guarded force can only replace its own commits. */
+function trackedBranch(n: { remote?: string; cwd: string; ctx: PushCtx }, branch: string): boolean {
+  if (!staticName(branch) || !n.ctx.probe.hasBranch(n.cwd, branch)) return false;
+  const tracked = n.ctx.probe.config(n.cwd, `branch.${branch}.remote`);
+  return !!tracked && (n.remote === undefined || tracked === n.remote);
+}
+
+/**
+ * Deleting remote branches. Allowed offline, with no network, only when every named branch is fully merged into the default branch
+ * according to the repository's own remote-tracking refs: nothing is lost by removing it. Anything dynamic, a URL remote, a long-lived name,
+ * a branch at the default branch's tip or one that isn't merged keeps today's block. (A stale remote-tracking ref can hide a newer commit
+ * on the remote: fetch first. The pull request keeps the work restorable.)
+ */
+function deleteVerdict(n: { remote?: string; cwd: string; ctx: PushCtx }, names: string[], protectedBranches: Set<string>): GuardDecision | null {
+  const why = (m: string) => block("force-push", `deleting a remote branch rewrites shared history unless it is already merged: ${m}. Name the branches literally after a \`git fetch\`; a branch fully merged into the default branch is allowed.`);
+  const { remote, cwd, ctx } = n;
+  if (!names.length || !remote || ctx.moved || !ctx.probe.remotes(cwd).includes(remote)) return why("the remote or the branch names can't be resolved here");
+  let defTip: string | null = null;
+  for (const d of protectedBranches) defTip ??= ctx.probe.tip(cwd, `refs/remotes/${remote}/${d}`);
+  if (!defTip) return why(`no remote-tracking ref for the default branch of ${remote}`);
+  for (const name of names) {
+    if (!staticName(name)) return why(`\`${name || "(empty)"}\` is not a plain branch name`);
+    if (isProtectedLike(name, protectedBranches)) return why(`${name} is the default or a long-lived branch`);
+    const tip = ctx.probe.tip(cwd, `refs/remotes/${remote}/${name}`);
+    if (!tip) return why(`${name} is not known locally (fetch first)`);
+    if (tip === defTip) return why(`${name} points at the default branch's tip`);
+    if (!ctx.probe.isAncestor(cwd, tip, defTip)) return why(`${name} has commits the default branch doesn't`);
   }
   return null;
 }
@@ -1306,10 +1448,17 @@ export function auditTarget(input: unknown, max = 240): string | undefined {
   if (!input || typeof input !== "object") return undefined;
   const o = input as Record<string, unknown>;
   const raw = [o.command, o.cmd, o.script, o.path, o.file_path, o.filePath, o.notebook_path].find((v) => typeof v === "string" && v) as string | undefined;
-  if (!raw) return undefined;
+  return raw ? redactText(raw, max) : undefined;
+}
+
+/** One line, at most `max` characters, with anything that looks like a credential replaced: tokens, bearer headers, `password=` values, `curl -u user:pass`, URL userinfo, JWTs. */
+export function redactText(raw: string, max = 240): string {
   const clean = raw
-    .replace(/\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})/g, "[REDACTED]")
-    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, "$1 [REDACTED]")
+    .replace(/\b(sk-[A-Za-z0-9_-]{16,}|[sr]k_(?:live|test)_[A-Za-z0-9]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{16,}|npm_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/g, "[REDACTED]")
+    .replace(/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{12,}/gi, "$1 [REDACTED]")
+    .replace(/(:\/\/[^\s:/@]+:)[^\s@/]+@/g, "$1[REDACTED]@")
+    .replace(/(\bcurl\b[^|;&\n]*?\s(?:-u|--user)[\s=]+[^\s:]+:)(?:"[^"]*"|'[^']*'|\S+)/gi, "$1[REDACTED]")
+    .replace(/(--(?:password|passwd|pass|token|secret|api-?key)[\s=]+)("[^"]*"|'[^']*'|\S+)/gi, "$1[REDACTED]")
     .replace(/((?:pass(?:word|wd)?|secret|token|api[_-]?key|auth)[A-Za-z_]*\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1[REDACTED]")
     .replace(/\s+/g, " ")
     .trim();
@@ -1755,6 +1904,7 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
   if (DEVICE.test(w.text)) return null;
   // Deleting the home directory, the filesystem root or a system directory is never part of a task, wherever the repo is.
   const abs = w.dynamic ? null : resolveShellPath(t.cwd, w.text);
+  if (abs && underStore(abs)) return block("grant-store", `command writes ${toPosix(w.text)}, which holds the human's grants and pauses; a human changes it (with \`!\`).`);
   if (t.destructive && !t.dest && !g.allowProtected) {
     const hit = catastrophicTarget(w.text, abs, !!w.glob);
     if (hit) return block("catastrophic-delete", `command removes or moves ${w.text}, ${hit}. A human does that.`);
@@ -1861,17 +2011,24 @@ function decideShellCore(g: GuardInput, cmd: string, protectedPaths: string[], c
   // (`-c "core.hooksPath=…"`) must not hide it.
   const hooks = decideHooksPath(cmd);
   if (hooks) return hooks;
+  // `agent-flow grant|pause|revoke` widen what the guard allows: a human runs them (with `!`, which never passes the hook), an agent never.
+  for (const sc of lexShell(cmd)) {
+    const cli = agentFlowArgv(effectiveArgv(sc.words));
+    if (cli?.some((a) => /^(grant|pause|revoke)$/.test(a))) return block("grant-store", "`agent-flow grant|pause|revoke` change what this guard allows; only a human runs them. Ask the human to run it with `!`.");
+  }
   const defaultBranch = manifest?.default_branch;
   const protectedBranches = new Set(["main", "master", ...(typeof defaultBranch === "string" && defaultBranch ? [defaultBranch] : [])]);
+  const moved = lexShell(cmd).some((sc) => /^(cd|pushd|popd)$/.test(cmdName(effectiveArgv(sc.words)[0])) || sc.words.some((w) => /^GIT_(DIR|WORK_TREE)=/.test(w.text))) || /--(git-dir|work-tree)\b/.test(cmd);
+  const ctx: PushCtx = { landing: landingGranted(g), probe: g.probe ?? gitProbe, cwd: g.cwd, moved };
   for (const seg of segs) {
     const gc = parseGit(seg);
-    const d = gc && decideGit(gc, protectedBranches);
+    const d = gc && decideGit(gc, protectedBranches, ctx);
     if (d) return d;
   }
   // The text pass above sees a quoted word as empty (`git push origin 'HEAD~0:main'`), so a push is read again from real words.
   for (const sc of lexShell(cmd)) {
     const gc = gitPushFromWords(effectiveArgv(sc.words));
-    const d = gc && decideGit(gc, protectedBranches);
+    const d = gc && decideGit(gc, protectedBranches, ctx);
     if (d) return d;
   }
 
@@ -2058,7 +2215,18 @@ function decideMentions(g: GuardInput, named: (patterns: readonly string[]) => s
 
 // ---------------------------------------------------------------------------
 
+/** A human-run `agent-flow pause` (all rules, or this rule) switches a block off for a role-less session; pipeline roles are never relaxed. */
 export function decide(g: GuardInput): GuardDecision | null {
+  const d = decideAll(g);
+  const ga = g.role ? undefined : g.grants;
+  if (d && ga && (ga.pauseAll || ga.pausedRules.has(d.rule))) return null;
+  return d;
+}
+
+/** A `push-default` grant is active for this role-less session: a plain push to the default branch is allowed (never a force, a delete or `--all`). */
+const landingGranted = (g: GuardInput) => !g.role && !!g.grants?.pushDefault;
+
+function decideAll(g: GuardInput): GuardDecision | null {
   const d = decideKnown(g);
   if (d || !g.manifestError) return d;
   const { toolName, input } = g;
@@ -2123,7 +2291,7 @@ function decideKnown(g: GuardInput): GuardDecision | null {
     const defaults = new Set(["main", "master", ...(typeof man === "string" && man ? [man] : [])]);
     if (remoteWrite) {
       const branch = typeof input.branch === "string" ? input.branch.replace(/^refs\/heads\//, "") : "";
-      if (!branch || defaults.has(branch)) {
+      if ((!branch || defaults.has(branch)) && !landingGranted(g)) {
         return block("push-default-branch", `${toolName} ${branch ? `writes to ${branch}` : "names no branch, so it writes to the default branch"} through the remote API. Push agent/issue-N and open a PR.`);
       }
     } else if (role && role !== "orchestrator") {

@@ -9,14 +9,14 @@ import { fileURLToPath } from "node:url";
 const BIN = fileURLToPath(new URL("../../__AGENT_FLOW_BIN__", import.meta.url));
 const NODE = process.env.AGENT_FLOW_NODE ?? (/^node(?:\.exe)?$/i.test(basename(process.execPath)) ? process.execPath : "node");
 
-function check(tool, input, cwd) {
+function check(tool, input, cwd, session) {
   const args = input && typeof input === "object" ? { ...input } : {};
   // v1 names the path `filePath`, v2 names it `path`; the guard reads `file_path`.
   if (args.file_path === undefined) {
     const p = args.filePath ?? args.path;
     if (typeof p === "string") args.file_path = p;
   }
-  const event = { tool_name: String(tool ?? ""), tool_input: args, cwd: cwd ?? process.cwd() };
+  const event = { harness: "opencode", tool_name: String(tool ?? ""), tool_input: args, cwd: cwd ?? process.cwd(), ...(typeof session === "string" ? { session_id: session } : {}) };
   const r = spawnSync(NODE, [BIN, "guard"], { input: JSON.stringify(event), encoding: "utf-8", cwd: event.cwd, timeout: 30000 });
   if (r.status === 0) return;
   // Fail closed: a guard that could not run is not a pass.
@@ -25,7 +25,7 @@ function check(tool, input, cwd) {
 
 // OpenCode v1 (older builds): every named function export is loaded as a plugin.
 export const AgentFlowGuard = async (ctx = {}) => ({
-  "tool.execute.before": async (input, output) => check(input?.tool, output?.args, ctx.directory),
+  "tool.execute.before": async (input, output) => check(input?.tool, output?.args, ctx.directory, input?.sessionID),
 });
 
 // v2 loads the default export's `setup`; newer v1 loads its `server`. Plain object, no SDK import needed.
@@ -33,11 +33,11 @@ export default {
   id: "agent-flow-guard",
   async setup(ctx) {
     const cwd = ctx.location?.directory ?? ctx.directory ?? process.cwd();
-    await ctx.tool.hook("execute.before", async (event) => check(event?.tool, event?.input, cwd));
+    await ctx.tool.hook("execute.before", async (event) => check(event?.tool, event?.input, cwd, event?.sessionID));
   },
   async server(ctx = {}) {
     return {
-      "tool.execute.before": async (input, output) => check(input?.tool, output?.args, ctx.directory ?? process.cwd()),
+      "tool.execute.before": async (input, output) => check(input?.tool, output?.args, ctx.directory ?? process.cwd(), input?.sessionID),
     };
   },
 };

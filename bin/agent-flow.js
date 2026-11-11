@@ -55,7 +55,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline", "fail-on-no-trigger", "merged", "clean", "keep-runtime", "keep-hook", "no-brief", "statusline"]);
+const BOOL_FLAGS = new Set(["auto-merge", "no-auto-merge", "pr", "check", "json", "no-prose", "ctxlint", "fail-on-new", "include-tests", "all", "yes", "fail-on-protected", "fail-on-critical", "fail-on-policy", "fail-on-heuristic", "sarif", "reopen", "force", "delete-branch", "dry-run", "help", "strict", "stop-gate", "vendor", "allow-stale", "offline", "fail-on-no-trigger", "merged", "clean", "keep-runtime", "keep-hook", "no-brief", "statusline", "standing", "everywhere"]);
 function fixBools(args) {
   // `--json doctor` would otherwise swallow the next word as the flag's value.
   for (const k of Object.keys(args)) {
@@ -67,7 +67,7 @@ function fixBools(args) {
   return args;
 }
 
-const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner", "timeout", "commands", "limit-wait", "event"];
+const VALUE_FLAGS = ["manifest", "baseline", "base", "head", "issue", "state", "phase", "round", "reason", "dir", "out", "harness", "exit", "seconds", "model", "argv-file", "anchor", "name", "owner", "timeout", "commands", "limit-wait", "event", "until", "days", "hours", "rule"];
 const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...VALUE_FLAGS, "version"]);
 
 /** Closest candidate within edit distance 2, or null. */
@@ -96,6 +96,14 @@ Start here (no setup needed):
   status                    One screen: is anything protecting this repo, what is waiting on you, is agent-flow current
   doctor                    Check every path your AGENTS.md / CLAUDE.md / .cursorrules / … mention
   init [--yes] [--dry-run]  Write a starter CONTEXT_MANIFEST.json (+ AGENTS.md if missing) from a scan
+
+What YOU widen (run these yourself, with \`!\` or from another terminal; the guard refuses them when an agent tries):
+  grant push-default [--until <ISO> | --days N | --hours N | --standing] [--reason "why"] [--everywhere]
+                            Let agents in this repo push to the default branch (default 30 days). Force pushes, deletes and --all stay blocked
+  pause (--all | --rule <name>) [--until <ISO> | --hours N | --days N]
+                            Switch the guard, or one rule, off for role-less sessions (default 8 hours): the kill switch
+  grants [--json]           What is granted or paused here right now
+  revoke <id> | --all       End a grant or pause early
 
 Audit log (a hash chain: edits, removals and reordering are detectable):
   audit verify [--anchor <hash>]  Check .agent-flow/audit.jsonl; exit 1 if the chain is broken or the anchor is missing
@@ -1258,6 +1266,102 @@ function guardCheck(args) {
   return okay ? 0 : 1;
 }
 
+
+// ---- grants and pauses: what a human widens, kept in user scope (see extensions/lib/grants.ts) ----
+
+function grantScope(args, grants) {
+  if (args.everywhere) return { repo: "*", rt: null, label: "every repository" };
+  const rt = root();
+  return { repo: grants.repoKey(rt), rt, label: rt };
+}
+
+function logGrantEvent(rt, entry) {
+  try {
+    if (rt) state.appendAudit(rt, entry);
+  } catch {
+    /* the store is the record; the audit line is a courtesy */
+  }
+}
+
+async function cmdGrant(args) {
+  const grants = await lib("grants");
+  if (args._[1] !== "push-default") {
+    console.error('usage: agent-flow grant push-default [--until <ISO time> | --days N | --hours N | --standing] [--reason "why"] [--everywhere]\n  Lets agents in this repo (role-less sessions) push to the default branch. Force pushes, deletes and --all stay blocked. Default: 30 days.');
+    return 2;
+  }
+  const scope = grantScope(args, grants);
+  let until = null;
+  try {
+    if (!args.standing) until = grants.untilFrom(args, 24 * 30);
+  } catch (e) {
+    console.error(`agent-flow grant: ${e.message}`);
+    return 1;
+  }
+  const store = grants.readStore();
+  const g = grants.addGrant(store, { kind: "push-default", repo: scope.repo, until, reason: typeof args.reason === "string" ? args.reason : undefined });
+  grants.writeStore(store);
+  logGrantEvent(scope.rt, { event: "grant", rule: "push-default", target: until ? `until ${g.until}` : "standing", reason: g.reason });
+  out(args, g, () => {
+    ok(`push-default granted for ${scope.label} ${until ? `until ${g.until}` : "(standing: no end date)"}  ${dim(`id ${g.id}`)}`);
+    console.log(dim("  Agents here may now push to the default branch. Force pushes, deletes and `--all` stay blocked. Undo: `agent-flow revoke " + g.id + "`"));
+    if (!until) warn("a standing grant never ends; `agent-flow grants` lists it and `agent-flow revoke --all` removes it");
+  });
+  return 0;
+}
+
+async function cmdPause(args) {
+  const grants = await lib("grants");
+  const rule = typeof args.rule === "string" ? args.rule : null;
+  if (!args.all && !rule) {
+    console.error("usage: agent-flow pause (--all | --rule <name>) [--until <ISO time> | --hours N | --days N] [--reason \"why\"] [--everywhere]\n  Switches the guard (or one rule) off for role-less sessions until then. Default: 8 hours. `agent-flow revoke --all` ends it early.");
+    return 2;
+  }
+  const scope = grantScope(args, grants);
+  let until;
+  try {
+    until = grants.untilFrom(args, 8);
+  } catch (e) {
+    console.error(`agent-flow pause: ${e.message}`);
+    return 1;
+  }
+  const store = grants.readStore();
+  const p = grants.addPause(store, { scope: args.all ? "all" : rule, repo: scope.repo, until, reason: typeof args.reason === "string" ? args.reason : undefined });
+  grants.writeStore(store);
+  logGrantEvent(scope.rt, { event: "pause", rule: p.scope, target: `until ${p.until}`, reason: p.reason });
+  out(args, p, () => {
+    warn(`${p.scope === "all" ? "the guard is paused" : `rule ${p.scope} is paused`} for ${scope.label} until ${p.until}  ${dim(`id ${p.id}`)}`);
+    console.log(dim("  End it early: `agent-flow revoke " + p.id + "`"));
+  });
+  return 0;
+}
+
+async function cmdRevoke(args) {
+  const grants = await lib("grants");
+  const target = args.all ? "all" : args._[1];
+  if (!target) {
+    console.error("usage: agent-flow revoke <id> | --all   (ids are shown by `agent-flow grants`)");
+    return 2;
+  }
+  const rt = root();
+  const store = grants.readStore();
+  const n = grants.revoke(store, target, rt);
+  if (n) grants.writeStore(store);
+  logGrantEvent(rt, { event: "revoke", rule: target, target: `${n} removed` });
+  out(args, { removed: n }, () => (n ? ok(`${n} grant/pause entr${n === 1 ? "y" : "ies"} removed`) : warn(`nothing matched ${target}`)));
+  return n ? 0 : 1;
+}
+
+async function cmdGrants(args) {
+  const grants = await lib("grants");
+  const list = grants.listActive(root());
+  out(args, list, () => {
+    if (!list.grants.length && !list.pauses.length) return console.log(dim("no grants or pauses: agents here follow the guard as written"));
+    for (const g of list.grants) console.log(`${c(32, "grant")}  ${g.kind}  ${g.until ? `until ${g.until}` : c(33, "standing")}  ${g.repo === "*" ? "every repository" : ""} ${g.reason ? dim(`"${g.reason}"`) : ""} ${dim(`id ${g.id}`)}`);
+    for (const p of list.pauses) console.log(`${c(33, "pause")}  ${p.scope}  until ${p.until}  ${p.repo === "*" ? "every repository" : ""} ${p.reason ? dim(`"${p.reason}"`) : ""} ${dim(`id ${p.id}`)}`);
+  });
+  return 0;
+}
+
 async function cmdGuard(args) {
   if (args.check) return guardCheck(args);
   // A guard that broke must not become a way past it: refuse whenever a role, a manifest (on disk or
@@ -1289,6 +1393,7 @@ async function cmdGuard(args) {
     // `workdir` / `dir_path` move a shell call to another directory: judge it from there.
     const cwd = ev.tool_input && typeof ev.tool_input === "object" && guardLib.isShellTool(String(ev.tool_name ?? "").toLowerCase(), String(ev.tool_name ?? "").replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[-\s]+/g, "_").toLowerCase()) ? guardLib.workdirOf(ev.tool_input, baseCwd) : baseCwd;
     const loaded = manifestLib.loadManifestForGuard(rt);
+    const grantsLib = await lib("grants");
     const decision = guardLib.decide({
       role,
       toolName: String(ev.tool_name ?? ""),
@@ -1300,10 +1405,12 @@ async function cmdGuard(args) {
       worktree: process.env.AGENT_FLOW_WORKTREE ? resolve(rt, process.env.AGENT_FLOW_WORKTREE) : undefined,
       allowProtected: process.env.AGENT_FLOW_ALLOW_PROTECTED === "1",
       allowSecretRead: process.env.AGENT_FLOW_ALLOW_SECRET_READ === "1",
+      grants: grantsLib.activeFor(rt),
     });
     if (!decision) return 0;
     try {
-      state.appendAudit(rt, { event: "guard_block", harness: "claude", role, tool: ev.tool_name, target: guardLib.auditTarget(ev.tool_input), rule: decision.rule, reason: decision.reason });
+      const run = await lib("guardrun");
+      state.appendAudit(rt, run.blockEntry({ harness: run.harnessOf(ev, args.harness), ev, role, decision, root: rt, cwd }));
     } catch {
       /* the block matters more than the log line */
     }
@@ -2734,6 +2841,10 @@ const table = {
   status: cmdStatus,
   codeowners: cmdCodeowners,
   guard: cmdGuard,
+  grant: cmdGrant,
+  pause: cmdPause,
+  revoke: cmdRevoke,
+  grants: cmdGrants,
 };
 
 if (args.version || cmd === "version") {
