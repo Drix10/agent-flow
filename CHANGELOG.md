@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+Guard rebuild (plan in `plan/PHASE5-PLAN.md`), stage 1: close the holes found by replaying real sessions.
+
+- **A quoted refspec no longer hides a push.** `git push origin 'HEAD~0:main'`, `"HEAD^{commit}:main"` and `'+refs/heads/*:refs/heads/*'` were read as an empty word and allowed. The push is now also read from the lexed words, so quoting changes nothing.
+- **CRLF text is read like LF text.** A heredoc closed by `EOF
+` never matched its terminator, so every command after it (`cat .env`, `git push origin main`) went unchecked. The command is normalised once.
+- **A heredoc that only feeds text to a command is data.** A line such as `git push origin main` inside `git commit -F - <<EOF` (or `cat <<EOF`) was blocked as a push; heredocs fed to a shell or interpreter are still read as code.
+
 ## [1.2.7] - 2026-10-12
 
 From a heavy user's report (461 agent runs, about $632, every feature of their last release built through the pipeline):

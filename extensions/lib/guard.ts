@@ -136,7 +136,8 @@ export const isShellTool = (tool: string, words: string) => tool === "cmd" || SH
 
 /** The command line a shell tool was given: a string, or an argv array (Codex `["bash","-lc","rm -rf x"]`). */
 function commandText(input: Record<string, unknown>): string {
-  const raw = rawCommandText(input);
+  // CRLF text must lex like LF text: a heredoc terminator `EOF\r` never matches `EOF`, which would hide every command after it.
+  const raw = rawCommandText(input).replace(/\r\n/g, "\n");
   // PowerShell has no backslash escapes (its escape is the backtick) and Windows paths use `\`: read them as `/`, or `secrets\\k.txt` lexes as `secretsk.txt`.
   return PS_CMDLET.test(raw) ? raw.replace(/\\/g, "/") : raw;
 }
@@ -269,6 +270,26 @@ export function unquoteBareWords(cmd: string): string {
     }
   }
   return out;
+}
+
+/**
+ * The command without the bodies of heredocs that only feed data to a command (`git commit -F - <<EOF`, `cat <<EOF`).
+ * A line inside such a body is text, not a command. A heredoc fed to a shell or interpreter keeps its body: that is code.
+ */
+export function dropHeredocBodies(cmd: string): string {
+  if (!cmd.includes("<<")) return cmd;
+  const out: string[] = [];
+  let pending: { delim: string; strip: boolean } | null = null;
+  for (const line of cmd.split("\n")) {
+    if (pending) {
+      if ((pending.strip ? line.replace(/^\t+/, "") : line).replace(/\r$/, "") === pending.delim) pending = null;
+      continue;
+    }
+    out.push(line);
+    const m = line.match(/(?<!<)<<(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2(?!<)/);
+    if (m && !OPAQUE_SCRIPT.test(line)) pending = { delim: m[3], strip: m[1] === "-" };
+  }
+  return out.join("\n");
 }
 
 function stripQuoted(cmd: string): string {
@@ -1117,6 +1138,26 @@ function decideWrite(g: GuardInput, p: string, protectedPaths: string[], ctxFile
  * Never legitimate for an AI agent, and the guard only sees agent tool calls,
  * so this applies to every session — role or not.
  */
+/** Options of `git` itself (before the subcommand) that take a separate value. */
+const GIT_GLOBAL_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"]);
+/** `git push` options that take a separate value, which must not be read as the remote or a refspec. */
+const GIT_PUSH_VALUE = /^(-o|--push-option|--repo|--receive-pack|--exec)$/;
+
+/** `git [opts] push …` as a GitCall built from lexed words, so quoting cannot hide a refspec or a flag. */
+function gitPushFromWords(argv: readonly ShWord[]): GitCall | null {
+  if (cmdName(argv[0]) !== "git") return null;
+  let i = 1;
+  while (i < argv.length && argv[i].text.startsWith("-")) i += GIT_GLOBAL_VALUE.has(argv[i].text) ? 2 : 1;
+  if (argv[i]?.text.toLowerCase() !== "push") return null;
+  const args: string[] = [];
+  for (let j = i + 1; j < argv.length; j++) {
+    const t = argv[j].text;
+    if (GIT_PUSH_VALUE.test(t)) j++;
+    else if (!/^--(push-option|repo|receive-pack|exec)=/.test(t)) args.push(t.replace(/\s/g, "_"));
+  }
+  return { sub: "push", args: args.join(" "), configs: [] };
+}
+
 function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision | null {
   if (gc.configs.some((c) => /^core\.hookspath=/i.test(c)) || (gc.sub === "config" && /\bcore\.hookspath\b/i.test(gc.args) && !/(^|\s)(--get\S*|--list|-l|--show-\S+)(\s|$)/.test(gc.args))) {
     return block("no-verify", "changing core.hooksPath disables the pre-commit hook. Fix the hook failure instead.");
@@ -1652,7 +1693,7 @@ function catastrophicTarget(text: string, abs: string | null, glob: boolean): st
 function decideShell(g: GuardInput, cmd: string, protectedPaths: string[], ctxFiles: string[], top = true): GuardDecision | null {
   const specific = decideShellCore(g, cmd, protectedPaths, ctxFiles, top);
   if (specific) return specific;
-  for (const seg of segments(stripQuoted(unquoteBareWords(cmd)))) {
+  for (const seg of segments(stripQuoted(unquoteBareWords(dropHeredocBodies(cmd))))) {
     const gc = parseGit(seg);
     const d = gc && decideGitBulk(g, gc, protectedPaths);
     if (d) return d;
@@ -1664,7 +1705,7 @@ function decideShellCore(g: GuardInput, cmd: string, protectedPaths: string[], c
   const { role, manifest } = g;
   const raw = cmd;
   cmd = unquoteBareWords(cmd);
-  const segs = segments(stripQuoted(cmd));
+  const segs = segments(stripQuoted(dropHeredocBodies(cmd)));
 
   if (role && role !== "orchestrator") {
     // Only the orchestrator (or a human) launches agents or picks roles —
@@ -1687,6 +1728,12 @@ function decideShellCore(g: GuardInput, cmd: string, protectedPaths: string[], c
   const protectedBranches = new Set(["main", "master", ...(typeof defaultBranch === "string" && defaultBranch ? [defaultBranch] : [])]);
   for (const seg of segs) {
     const gc = parseGit(seg);
+    const d = gc && decideGit(gc, protectedBranches);
+    if (d) return d;
+  }
+  // The text pass above sees a quoted word as empty (`git push origin 'HEAD~0:main'`), so a push is read again from real words.
+  for (const sc of lexShell(cmd)) {
+    const gc = gitPushFromWords(effectiveArgv(sc.words));
     const d = gc && decideGit(gc, protectedBranches);
     if (d) return d;
   }

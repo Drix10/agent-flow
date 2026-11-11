@@ -34,6 +34,7 @@ test(`red-team corpus: ${entries.length} cases against the guard`, (t) => {
       const blocked = !!d;
       stats[e.expect]++;
       if (e.expect === "block" && !blocked) wrong.push(`MISSED   ${e.label}`);
+      if (e.expect === "block" && blocked && e.rule && d.rule !== e.rule) wrong.push(`WRONG RULE ${e.label}: wanted ${e.rule}, got ${d.rule}`);
       if (e.expect === "allow" && blocked) wrong.push(`FALSE+   ${e.label} (${d.rule})`);
       if (e.expect === "gap" && blocked) wrong.push(`NOW BLOCKED, move to "block": ${e.label} (${d.rule})`);
     }

@@ -127,7 +127,19 @@
     { "cmd": "kub\"ectl\" delete ns x", "expect": "block", "note": "quote splitting" },
     { "cmd": "psql <<EOF\nDROP TABLE t;\nEOF", "expect": "block", "note": "heredoc" },
     { "cmd": "K=kubectl; $K delete ns x", "expect": "gap", "note": "a variable holds the program" },
-    { "cmd": "psql -f drop.sql", "expect": "gap", "note": "SQL in a file" }
+    { "cmd": "psql -f drop.sql", "expect": "gap", "note": "SQL in a file" },
+    { "cmd": "git push origin 'HEAD~0:main'", "expect": "block", "rule": "push-default-branch", "note": "quoted refspec (H1)" },
+    { "cmd": "git push origin \"HEAD^{commit}:main\"", "expect": "block", "rule": "push-default-branch", "note": "quoted refspec (H1)" },
+    { "cmd": "git push 'origin' \"main\"", "expect": "block", "rule": "push-default-branch", "note": "quoted words (H1)" },
+    { "cmd": "git push origin '+HEAD~0:agent/x'", "expect": "block", "rule": "force-push", "note": "quoted forced refspec (H1)" },
+    { "cmd": "git push origin '+refs/heads/*:refs/heads/*'", "expect": "block", "rule": "force-push", "note": "quoted forced glob (H1)" },
+    { "cmd": "git push origin 'HEAD'", "expect": "block", "rule": "explicit-refspec", "note": "quoted HEAD names no branch (H1)" },
+    { "cmd": "git push origin 'agent/issue-1'", "expect": "allow", "note": "quoted own branch" },
+    { "cmd": "git push origin agent/issue-1 -o 'ci skip'", "expect": "allow", "note": "a quoted push option holds a space" },
+    { "cmd": "git commit -m 'push origin main'", "expect": "allow", "note": "message text is data" },
+    { "cmd": "cat <<EOF\r\nhi\r\nEOF\r\ncat .env", "expect": "block", "rule": "secret-read", "note": "CRLF heredoc must not hide the next command (H3)" },
+    { "cmd": "cat <<EOF\r\nhi\r\nEOF\r\ngit push origin main", "expect": "block", "rule": "push-default-branch", "note": "CRLF heredoc (H3)" },
+    { "cmd": "cat <<EOF\r\ngit push origin main\r\nEOF\r\n", "expect": "allow", "note": "a CRLF heredoc body is still data" }
   ],
   "tools": [
     { "tool": "Write", "input": { "file_path": "research/ledger/b.jsonl", "content": "x" }, "expect": "block" },
