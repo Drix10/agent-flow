@@ -345,10 +345,18 @@ function loadManifestForGuardInner(r: LoadResult, head: ContextManifest | null, 
     if (!extra.length && !extraDeny.length) return { manifest: withCmds(disk) };
     return { manifest: withCmds({ ...disk, protected_paths: [...protectedPathsOf(disk), ...extra], deny_read: [...denyReadPathsOf(disk), ...extraDeny] }) };
   }
-  if (r.error !== "manifest_not_found") return { manifest: null, error: r.error };
+  // A manifest that exists but can't be parsed keeps what the repo committed: writing `{` over it must not switch deny_read off.
+  const held = committedFloor(head, base);
+  if (r.error !== "manifest_not_found") return { manifest: held, error: r.error };
   // A manifest that was committed and then deleted still governs: absence is not permission.
-  const held = head ?? base;
-  return held ? { manifest: head && base ? { ...head, protected_paths: [...new Set([...protectedPathsOf(head), ...protectedPathsOf(base)])], deny_read: [...new Set([...denyReadPathsOf(head), ...denyReadPathsOf(base)])], ...(unionDenyCommands(head, base) ? { policy: { ...((head as { policy?: object }).policy ?? {}), deny_commands: unionDenyCommands(head, base) } } : {}) } as ContextManifest : held, fromHead: true } : { manifest: null };
+  return held ? { manifest: held, fromHead: true } : { manifest: null };
+}
+
+/** What HEAD and the default branch committed: their protections added together (either one alone when only one has a copy). */
+function committedFloor(head: ContextManifest | null, base: ContextManifest | null): ContextManifest | null {
+  if (!head || !base) return head ?? base;
+  const deny = unionDenyCommands(head, base);
+  return { ...head, protected_paths: [...new Set([...protectedPathsOf(head), ...protectedPathsOf(base)])], deny_read: [...new Set([...denyReadPathsOf(head), ...denyReadPathsOf(base)])], ...(deny ? { policy: { ...((head as { policy?: object }).policy ?? {}), deny_commands: deny } } : {}) } as ContextManifest;
 }
 
 /**
