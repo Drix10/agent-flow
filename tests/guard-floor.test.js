@@ -46,3 +46,16 @@ test("a corrupted manifest still allows ordinary reads and the write that repair
     assert.equal(hook(dir, "Write", { file_path: join(dir, "CONTEXT_MANIFEST.json"), content: "{}" }).status, 0, "fixing the manifest is how you get out");
   });
 });
+
+// The hook registration is protected in every repo, with or without protected_paths, and no override lifts it.
+import { decide } from "../extensions/lib/guard.js";
+const wired = (input, extra = {}, toolName = "Write") => decide({ role: null, toolName, input, cwd: "/repo", root: "/repo", manifest: { default_branch: "main" }, ...extra });
+
+test("guard wiring is protected without protected_paths and survives AGENT_FLOW_ALLOW_PROTECTED", () => {
+  for (const f of [".claude/settings.json", ".claude/settings.local.json", ".codex/hooks.json", ".gemini/settings.json", ".cursor/hooks.json", ".pi/settings.json", "opencode.json", ".opencode/plugins/agent-flow-guard.js"]) {
+    assert.equal(wired({ file_path: `/repo/${f}`, content: "{}" })?.rule, "guard-wiring", f);
+    assert.equal(wired({ file_path: `/repo/${f}`, content: "{}" }, { allowProtected: true })?.rule, "guard-wiring", `${f} with the override`);
+  }
+  assert.equal(wired({ command: "echo '{}' > .claude/settings.json" }, {}, "Bash")?.rule, "guard-wiring");
+  assert.equal(wired({ file_path: "/repo/src/a.ts", content: "x" }), null, "ordinary files are untouched");
+});

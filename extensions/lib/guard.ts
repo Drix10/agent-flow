@@ -50,6 +50,9 @@ export interface GuardInput {
   allowSecretRead?: boolean;
   /** Most files inspected under a directory being removed before the guard assumes it holds a protected path (default 20000). */
   walkLimit?: number;
+  /** Most entries (default 20000) and milliseconds (default 1500) a recursive-search sweep may spend before the guard asks git for the file list instead. */
+  sweepLimit?: number;
+  sweepMs?: number;
   /**
    * Set when CONTEXT_MANIFEST.json exists but can't be loaded. Protected paths are
    * then unknown, so writes fail closed (a trailing comma must not switch the guard off).
@@ -91,9 +94,10 @@ const ROLE_TOOL_ALLOW: Record<Role, Set<string>> = {
 const TAMPER_PROOF = [".agent-state.json", "AGENT_STATE.md", ".agent-flow/audit.jsonl", ".agent-flow/state.lock", ".agent-flow/stop-gate.json", ".agent-flow/gates/", ".risk-baseline.json", ".git/"];
 /**
  * The wiring that makes the guard run: the hook registration and the installed copy of agent-flow itself.
- * While protection is configured, no session edits these; a human does (AGENT_FLOW_ALLOW_PROTECTED=1).
+ * No session edits these, whether or not the repo configures protected paths, and no AGENT_FLOW_ALLOW_* lifts it: an agent that could
+ * rewrite its own hook registration could switch the guard off. A human changes them (with `!`, which never passes the hook).
  */
-const GUARD_WIRING = [".claude/settings.json", ".claude/settings.local.json", ".gemini/settings.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".opencode/plugins/agent-flow-guard.js", "node_modules/@drix10/agent-flow/", ".agent-flow-runtime/"];
+const GUARD_WIRING = [".claude/settings.json", ".claude/settings.local.json", ".gemini/settings.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".opencode/plugins/agent-flow-guard.js", "opencode.json", "opencode.jsonc", ".opencode/opencode.json", ".pi/settings.json", "node_modules/@drix10/agent-flow/", ".agent-flow-runtime/"];
 
 const GOVERNANCE_REASON = `${MANIFEST_FILE} holds the protected paths, the gates and the review policy; the Implementer doesn't change the rules it is checked by. Escalate to Needs Me instead.`;
 
@@ -1085,7 +1089,7 @@ function decideWrite(g: GuardInput, p: string, protectedPaths: string[], ctxFile
     }
     const prot = matchAny(protectedPaths, v.rel);
     if (prot && !g.allowProtected) return block("protected-path", `${v.rel} is protected (${prot} in ${MANIFEST_FILE}). Escalate to Needs Me instead of editing it.`);
-    const wiring = protectedPaths.length && !g.allowProtected ? underAny(v.rel, GUARD_WIRING) : null;
+    const wiring = underAny(v.rel, GUARD_WIRING);
     if (wiring) return block("guard-wiring", `${v.rel} is what runs the guard (${wiring}); editing it would let an agent switch its own protection off. A human changes it.`);
   }
   if (role && landing !== lexical && views[1].outside && !views[0].outside) {
@@ -1141,21 +1145,22 @@ function decideWrite(g: GuardInput, p: string, protectedPaths: string[], ctxFile
 /** Options of `git` itself (before the subcommand) that take a separate value. */
 const GIT_GLOBAL_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"]);
 /** `git push` options that take a separate value, which must not be read as the remote or a refspec. */
-const GIT_PUSH_VALUE = /^(-o|--push-option|--repo|--receive-pack|--exec)$/;
+const GIT_PUSH_VALUE = /^(-o|--push-option|--repo|--receive-pack|--exec|--depth|--deepen|--shallow-since|--shallow-exclude|-j|--jobs|--upload-pack|--refmap|--filter|--server-option|--negotiation-tip)$/;
 
-/** `git [opts] push …` as a GitCall built from lexed words, so quoting cannot hide a refspec or a flag. */
+/** `git [opts] push|fetch …` as a GitCall built from lexed words, so quoting cannot hide a refspec or a flag. */
 function gitPushFromWords(argv: readonly ShWord[]): GitCall | null {
   if (cmdName(argv[0]) !== "git") return null;
   let i = 1;
   while (i < argv.length && argv[i].text.startsWith("-")) i += GIT_GLOBAL_VALUE.has(argv[i].text) ? 2 : 1;
-  if (argv[i]?.text.toLowerCase() !== "push") return null;
+  const sub = argv[i]?.text.toLowerCase();
+  if (sub !== "push" && sub !== "fetch") return null;
   const args: string[] = [];
   for (let j = i + 1; j < argv.length; j++) {
     const t = argv[j].text;
     if (GIT_PUSH_VALUE.test(t)) j++;
-    else if (!/^--(push-option|repo|receive-pack|exec)=/.test(t)) args.push(t.replace(/\s/g, "_"));
+    else if (!/^--(push-option|repo|receive-pack|exec|depth|deepen|shallow-since|shallow-exclude|jobs|upload-pack|refmap|filter|server-option|negotiation-tip)=/.test(t)) args.push(t.replace(/\s/g, "_"));
   }
-  return { sub: "push", args: args.join(" "), configs: [] };
+  return { sub, args: args.join(" "), configs: [] };
 }
 
 /** `git config` options that choose what it does, and the options that take a separate value. */
@@ -1236,7 +1241,8 @@ function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision |
     // remote-tracking refs, so they stay allowed. URLs hold colons too, so
     // they (and flag words) are excluded before looking for a refspec.
     const toks = gc.args.split(/\s+/).filter((t) => t && !t.startsWith("-") && !/^[a-z][a-z0-9+.-]*:\/\//i.test(t));
-    if (toks.slice(1).some((t) => t.includes(":"))) {
+    // A destination under refs/remotes/ is a remote-tracking ref, which a fetch moves anyway (01a1af0d: `git fetch o main:refs/remotes/o/main` was blocked).
+    if (toks.slice(1).some((t) => t.includes(":") && !t.slice(t.lastIndexOf(":") + 1).startsWith("refs/remotes/"))) {
       return block("fetch-refspec", "fetch with a <src>:<dst> refspec rewrites local branches — fetch the remote (or a branch name) without a refspec instead.");
     }
     return null;
@@ -1534,7 +1540,7 @@ function deniedRead(g: GuardInput, abs: string): string | null {
 }
 
 function secretReadBlock(what: string, why: string): GuardDecision {
-  return block("secret-read", `${what} reads ${why}. Real credentials stay out of agent context: use the variable name, ask a human, or (human only) launch with AGENT_FLOW_ALLOW_SECRET_READ=1.`);
+  return block("secret-read", `${what} reads ${why}. Real credentials stay out of agent context: use the variable name (\`agent-flow env-check NAME\` once it exists), or ask the human to run the read with \`!\`.`);
 }
 
 const RG_FAMILY = new Set(["rg", "ag", "ack"]);
@@ -1548,13 +1554,29 @@ const SEARCH_LONG_WITH_VALUE = /^--(regexp|file|max-count|context|after-context|
 const SWEEP_BUDGET = 20_000;
 const SWEEP_MS = 1_500;
 
-/** First file under `dir` that is denied to agents, looking at no more than `budget` entries. Never follows symlinks. */
-function firstDeniedUnder(g: GuardInput, dir: string, hiddenToo: boolean, budget = SWEEP_BUDGET): { file: string; rule: string } | null {
+type Swept = { file: string; rule: string } | "unknown" | null;
+interface SweepOpts {
+  hiddenToo: boolean;
+  /** Only files whose name matches one of these are read (a positive `rg -g` glob, `grep --include`). Negative globs and excludes are never honoured. */
+  names?: RegExp[];
+}
+
+/** Whether a sweep reads a file with this name, given the tool's own hidden-file and glob rules. */
+function sweepReads(name: string, o: SweepOpts): boolean {
+  const named = !o.names || o.names.some((re) => re.test(name));
+  return named && (o.hiddenToo || !name.startsWith(".") || !!o.names);
+}
+
+/** First file under `dir` that is denied to agents. Never follows symlinks. "unknown" when the entry or time budget ran out first. */
+function firstDeniedUnder(g: GuardInput, dir: string, o: SweepOpts): Swept {
   const stack = [""];
   const deny = denyReadPathsOf(g.manifest);
+  const budget = g.sweepLimit ?? SWEEP_BUDGET;
+  const ms = g.sweepMs ?? SWEEP_MS;
   const t0 = Date.now();
   let seen = 0;
-  while (stack.length && seen < budget && Date.now() - t0 < SWEEP_MS) {
+  while (stack.length) {
+    if (seen >= budget || Date.now() - t0 >= ms) return "unknown";
     const relDir = stack.pop()!;
     let entries;
     try {
@@ -1563,14 +1585,14 @@ function firstDeniedUnder(g: GuardInput, dir: string, hiddenToo: boolean, budget
       continue;
     }
     for (const e of entries) {
-      if (++seen > budget) return null;
+      if (++seen > budget) return "unknown";
       if (e.isSymbolicLink()) continue;
       const rel = relDir ? `${relDir}/${e.name}` : e.name;
-      if (!hiddenToo && e.name.startsWith(".")) continue;
       if (e.isDirectory()) {
-        if (e.name !== ".git" && e.name !== "node_modules") stack.push(rel);
+        if (e.name !== ".git" && e.name !== "node_modules" && (o.hiddenToo || !e.name.startsWith("."))) stack.push(rel);
         continue;
       }
+      if (!sweepReads(e.name, o)) continue;
       // Plain string work: this runs for every file of a sweep, so no realpath calls.
       if (isEnvFile(e.name)) return { file: rel, rule: "environment file" };
       const inRepo = toPosix(relative(g.root, join(dir, rel)));
@@ -1581,10 +1603,45 @@ function firstDeniedUnder(g: GuardInput, dir: string, hiddenToo: boolean, budget
   return null;
 }
 
+/** The same question answered from git's file list (tracked, untracked and ignored files): fast on a repo too big to walk. */
+function listedDenied(g: GuardInput, dir: string, o: SweepOpts): Swept {
+  const r = git(["ls-files", "-z", "-c", "-o"], dir, 5_000);
+  if (!r.ok) return "unknown";
+  const deny = denyReadPathsOf(g.manifest);
+  for (const rel of r.stdout.split("\0")) {
+    if (!rel) continue;
+    const parts = rel.split("/");
+    const name = parts[parts.length - 1];
+    if (parts.includes("node_modules") || (!o.hiddenToo && parts.slice(0, -1).some((p) => p.startsWith(".")))) continue;
+    if (!sweepReads(name, o)) continue;
+    if (isEnvFile(name)) return { file: rel, rule: "environment file" };
+    const inRepo = toPosix(relative(g.root, join(dir, rel)));
+    const hit = inRepo && !escapesBase(inRepo) ? matchAny(deny, inRepo) : null;
+    if (hit) return { file: rel, rule: hit };
+  }
+  return null;
+}
+
+/** A sweep of one directory: walk it; when the walk can't finish use git's list; when that can't either say "unknown" (the caller blocks). */
+function sweepDir(g: GuardInput, abs: string, o: SweepOpts): Swept {
+  // From the filesystem root or the home directory every env file on the machine is in scope: no walk can show it is absent.
+  if (abs === parsePath(abs).root || fold(resolve(abs)) === fold(resolve(homedir()))) return "unknown";
+  const hit = firstDeniedUnder(g, abs, o);
+  return hit === "unknown" ? listedDenied(g, abs, o) : hit;
+}
+
+const isDir = (p: string) => {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
 /**
  * `grep -r KEY .` and `rg KEY` never name .env, but read every file under the directory.
- * Returns the first denied file such a sweep would open. rg/ag/ack skip hidden files unless told not to.
- * Looks at no more than SWEEP_BUDGET entries, so `grep -r x /` answers fast instead of walking the disk.
+ * Returns the first denied file such a sweep would open (an empty `file` when it could not be checked). rg/ag/ack skip hidden files unless told not to,
+ * but `-g '.env*'` brings a matching one back. An operand that is a variable is searched from the cwd; a glob operand from every directory it expands to.
  */
 function recursiveSearchHit(g: GuardInput, verb: string, argv: ShWord[]): { dir: string; file: string; rule: string } | null {
   const rgLike = RG_FAMILY.has(verb);
@@ -1592,6 +1649,7 @@ function recursiveSearchHit(g: GuardInput, verb: string, argv: ShWord[]): { dir:
   if (!rgLike && !grepLike) return null;
   const operands: ShWord[] = [];
   const flags: string[] = [];
+  const globs: string[] = [];
   let patternFlag = false;
   const args = argv.slice(1);
   for (let i = 0; i < args.length; i++) {
@@ -1602,25 +1660,38 @@ function recursiveSearchHit(g: GuardInput, verb: string, argv: ShWord[]): { dir:
     }
     if (t.startsWith("--")) {
       flags.push(t);
-      if (/^--(regexp|file)(=|$)/.test(t)) patternFlag = true;
-      if (!t.includes("=") && SEARCH_LONG_WITH_VALUE.test(t)) i++;
+      const name = t.split("=")[0];
+      let val = t.includes("=") ? t.slice(t.indexOf("=") + 1) : undefined;
+      if (/^--(regexp|file)$/.test(name)) patternFlag = true;
+      if (val === undefined && SEARCH_LONG_WITH_VALUE.test(name)) val = args[++i]?.text;
+      if (val !== undefined && ((rgLike && /^--i?glob$/.test(name)) || (grepLike && name === "--include"))) globs.push(val);
     } else if (t.startsWith("-") && t.length > 1) {
       flags.push(t);
       const letters = t.slice(1);
       if (/[ef]/.test(letters)) patternFlag = true;
       // `-A 3`, `-g '*.py'`, `-rnA 3`: a value-taking flag at the end of the cluster consumes the next word.
-      if (/^[a-zA-Z]+$/.test(letters) && SEARCH_SHORT_WITH_VALUE[rgLike ? "rg" : "grep"].has(letters[letters.length - 1])) i++;
+      if (/^[a-zA-Z]+$/.test(letters) && SEARCH_SHORT_WITH_VALUE[rgLike ? "rg" : "grep"].has(letters[letters.length - 1])) {
+        const val = args[++i]?.text;
+        if (rgLike && letters.endsWith("g") && val !== undefined) globs.push(val);
+      }
     } else operands.push(args[i]);
   }
   if (grepLike && !flags.some((o) => /^-[a-zA-Z]*[rR]/.test(o) || /^--(recursive|dereference-recursive)$/.test(o))) return null;
   const hiddenToo = !rgLike || flags.some((o) => /^(--hidden|--unrestricted|-[a-zA-Z]*u|--no-ignore)/.test(o));
+  const positive = globs.filter((x) => x && !x.startsWith("!")).map((x) => new RegExp(globRegExp(x.replace(/^.*\//, "") || "*").source, "i"));
+  const opts: SweepOpts = { hiddenToo, ...(positive.length ? { names: positive } : {}) };
   const dirs = patternFlag ? operands : operands.slice(1);
+  const seen = new Set<string>();
   for (const w of dirs.length ? dirs : [{ text: ".", dynamic: false, glob: false } as ShWord]) {
-    if (w.dynamic) continue;
-    const abs = resolveShellPath(g.cwd, w.text);
+    const abs = w.dynamic ? g.cwd : resolveShellPath(g.cwd, w.text);
     if (!abs) continue;
-    const hit = firstDeniedUnder(g, abs, hiddenToo);
-    if (hit) return { dir: w.text, ...hit };
+    for (const d of (w.glob && !w.dynamic ? expandGlob(abs).filter(isDir) : [abs]).slice(0, 200)) {
+      if (seen.has(d)) continue;
+      seen.add(d);
+      const hit = sweepDir(g, d, opts);
+      if (hit === "unknown") return { dir: w.text, file: "", rule: "" };
+      if (hit) return { dir: w.text, ...hit };
+    }
   }
   return null;
 }
@@ -1637,6 +1708,11 @@ function decideSecretRead(g: GuardInput, cmd: string): GuardDecision | null {
       const gc = parseGit(argv.map((w) => w.text).join(" "));
       const reads = !!gc && /^(show|diff|log|blame|annotate|cat-file|grep|archive|difftool|show-branch|whatchanged|format-patch)$/.test(gc.sub);
       for (const w of argv.slice(1)) if (!w.dynamic && (reads || w.text.includes(":"))) words.push(w);
+      // `git grep --no-index` searches untracked files too, `.env` among them.
+      if (gc?.sub === "grep" && /(^|\s)--no-index(\s|$)/.test(gc.args)) {
+        const hit = sweepDir(g, g.cwd, { hiddenToo: true });
+        if (hit) return secretReadBlock("`git grep --no-index`", hit === "unknown" ? "the whole tree, which is too large to check for environment files" : `the working tree, which holds ${hit.file} (${hit.rule})`);
+      }
     } else if (!NAME_ONLY_VERBS.has(verb)) {
       // The first operand of a search or edit command is its pattern or script, not a file: `grep ".env" src`.
       let patternPending = PATTERN_VERBS.has(verb) && verb !== "perl" && !argv.slice(1).some((w) => /^(-[a-zA-Z]*[ef]|--(regexp|expression|file))/.test(w.text));
@@ -1651,7 +1727,7 @@ function decideSecretRead(g: GuardInput, cmd: string): GuardDecision | null {
       }
     }
     const swept = recursiveSearchHit(g, verb, argv);
-    if (swept) return secretReadBlock(`\`${verb}\``, `${swept.dir} recursively, which holds ${swept.file} (${swept.rule})`);
+    if (swept) return secretReadBlock(`\`${verb}\``, swept.file ? `${swept.dir} recursively, which holds ${swept.file} (${swept.rule})` : `${swept.dir} recursively, and the search is too large to check for environment files. Search a narrower directory, or use \`git grep\` (tracked files only)`);
     for (const w of words) {
       if (w.dynamic || !w.text) continue;
       // `curl -F f=@.env`, `git show HEAD:.env`, `--post-file=.env`: the path can sit after `=`, `@` or `:`.
@@ -1707,7 +1783,7 @@ function decideShellTarget(g: GuardInput, t: ShellWrite, protectedPaths: string[
       if (tamper && (role || tamper !== ".git/" || t.destructive || /^\.git\/hooks(\/|$)/i.test(rel))) {
         return block("tamper-proof", `command writes ${rel}, which only agent-flow tools may change.`);
       }
-      const wiring = protectedPaths.length && !g.allowProtected ? underAny(rel, GUARD_WIRING) : null;
+      const wiring = underAny(rel, GUARD_WIRING);
       if (wiring) return block("guard-wiring", `command writes ${rel}, which is what runs the guard (${wiring}); a human changes it.`);
       const cfg = role && role !== "orchestrator" ? configHit(rel, reviewPathsOf(g.manifest)) : null;
       if (cfg) return block("agent-config", `command writes ${rel}, agent/CI configuration (${cfg}). Escalate to a human.`);

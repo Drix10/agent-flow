@@ -107,8 +107,8 @@ test("guard: agents can't edit what constrains them (agent definitions, skills, 
       assert.equal(call(root, "gardener", "write", { path: p })?.rule, "agent-config", `gardener → ${p}`);
       assert.equal(call(root, "orchestrator", "write", { path: p })?.rule, "agent-config", `orchestrator → ${p}`);
     }
-    // No role: free to edit settings unless protection is configured, when the guard's own wiring is off limits too.
-    assert.equal(decide({ role: null, toolName: "write", input: { path: ".claude/settings.json" }, cwd: root, root, manifest: null }), null);
+    // No role: the guard's own wiring is off limits with or without configured protection (an agent must not rewrite its own hook registration).
+    assert.equal(decide({ role: null, toolName: "write", input: { path: ".claude/settings.json" }, cwd: root, root, manifest: null })?.rule, "guard-wiring");
     assert.equal(call(root, null, "write", { path: ".claude/settings.json" })?.rule, "guard-wiring");
     assert.equal(call(root, "gardener", "write", { path: "AGENTS.md" }), null, "the gardener still edits context");
     assert.equal(call(root, "implementer", "bash", { command: "rm .github/workflows/ci.yml" })?.rule, "agent-config");
@@ -1603,7 +1603,10 @@ test("secret-read: a recursive search sees through option values, build output d
     mkdirSync(join(dir, "build"), { recursive: true });
     writeFileSync(join(dir, "build", ".env"), "KEY=1\n");
     const sh = (command) => decide({ role: null, toolName: "Bash", input: { command }, cwd: dir, root: dir, manifest })?.rule ?? null;
-    for (const c of ["grep -r -d recurse KEY", "grep -rn --include='*.py' KEY .", "rg --hidden -t py KEY", "rg --hidden -g '*.cfg' KEY", "rg --hidden -m 5 KEY", "grep -r KEY build"]) assert.equal(sh(c), "secret-read", c);
+    for (const c of ["grep -r -d recurse KEY", "rg --hidden -t py KEY", "rg --hidden -m 5 KEY", "grep -r KEY build", "grep -rn --include='.env*' KEY .", "grep -rn --include='*.py' --include='*' KEY .", "rg --hidden -g '.env' KEY", "rg -g '*.cfg' -g '.env*' KEY build"]) assert.equal(sh(c), "secret-read", c);
+    // A positive include/glob limits the tool to files whose name matches it; when none can match an env file the search is safe. Excludes and negated globs are never honoured.
+    for (const c of ["grep -rn --include='*.py' KEY .", "rg --hidden -g '*.cfg' KEY"]) assert.equal(sh(c), null, c);
+    assert.equal(sh("grep -rn --exclude='.env' KEY build"), "secret-read", "an exclude never counts: its glob semantics differ from ours");
     // A sweep over a huge tree answers from a bounded look, it doesn't walk the disk.
     const t0 = Date.now();
     sh("grep -r KEY /");
