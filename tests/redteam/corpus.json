@@ -139,7 +139,20 @@
     { "cmd": "git commit -m 'push origin main'", "expect": "allow", "note": "message text is data" },
     { "cmd": "cat <<EOF\r\nhi\r\nEOF\r\ncat .env", "expect": "block", "rule": "secret-read", "note": "CRLF heredoc must not hide the next command (H3)" },
     { "cmd": "cat <<EOF\r\nhi\r\nEOF\r\ngit push origin main", "expect": "block", "rule": "push-default-branch", "note": "CRLF heredoc (H3)" },
-    { "cmd": "cat <<EOF\r\ngit push origin main\r\nEOF\r\n", "expect": "allow", "note": "a CRLF heredoc body is still data" }
+    { "cmd": "cat <<EOF\r\ngit push origin main\r\nEOF\r\n", "expect": "allow", "note": "a CRLF heredoc body is still data" },
+    { "cmd": "git config --show-scope core.hooksPath /dev/null", "expect": "block", "rule": "no-verify", "note": "--show-scope is not a read marker (H5)" },
+    { "cmd": "git config --show-origin core.hooksPath /dev/null", "expect": "block", "rule": "no-verify", "note": "--show-origin is not a read marker (H5)" },
+    { "cmd": "git config --global core.hooksPath /x", "expect": "block", "rule": "no-verify" },
+    { "cmd": "git config alias.ci 'commit --no-verify'", "expect": "block", "rule": "no-verify", "note": "an alias that skips the hook (H5)" },
+    { "cmd": "git config core.hooks''Path /dev/null", "expect": "block", "rule": "no-verify", "note": "quote-split key (H5)" },
+    { "cmd": "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git commit -m x", "expect": "block", "rule": "no-verify", "note": "env form (H5)" },
+    { "cmd": "git --config-env=core.hooksPath=EVIL commit -m x", "expect": "block", "rule": "no-verify", "note": "--config-env (H5)" },
+    { "cmd": "git config core.hooksPath", "expect": "allow", "note": "one positional is a read (live false block, 01a1ba9a #5393)" },
+    { "cmd": "git config --get core.hooksPath", "expect": "allow" },
+    { "cmd": "git config --show-scope --get core.hooksPath", "expect": "allow" },
+    { "cmd": "git config --show-origin --get-all core.hooksPath", "expect": "allow" },
+    { "cmd": "git commit -m \"document core.hooksPath handling\"", "expect": "allow", "note": "message text is data" },
+    { "cmd": "git log --grep=core.hooksPath", "expect": "allow" }
   ],
   "tools": [
     { "tool": "Write", "input": { "file_path": "research/ledger/b.jsonl", "content": "x" }, "expect": "block" },

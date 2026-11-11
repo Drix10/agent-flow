@@ -8,6 +8,7 @@ Guard rebuild (plan in `plan/PHASE5-PLAN.md`), stage 1: close the holes found by
 
 - **A quoted refspec no longer hides a push.** `git push origin 'HEAD~0:main'`, `"HEAD^{commit}:main"` and `'+refs/heads/*:refs/heads/*'` were read as an empty word and allowed. The push is now also read from the lexed words, so quoting changes nothing.
 - **A corrupted manifest keeps the committed floor.** Writing `{` over `CONTEXT_MANIFEST.json` (a role-less write was allowed) made the guard load no manifest, so `deny_read` and protected paths stopped applying and `cat secrets/db.txt` went through. The guard now keeps what HEAD and the default branch committed and still refuses writes until the manifest is fixed.
+- **`git config` is read by what it does.** One positional is a read (`git config core.hooksPath` was blocked: a live false block on the 01a1ba9a run); two or more write; `--show-scope` and `--show-origin` only change printing (`git config --show-scope core.hooksPath /dev/null` was a write the guard allowed). Quote-split keys (`core.hooks''Path`), aliases that carry `--no-verify`, and a mention of `core.hooksPath` in a commit message or `git log --grep` are decided from the words, not the text.
 - **CRLF text is read like LF text.** A heredoc closed by `EOF
 
 ` never matched its terminator, so every command after it (`cat .env`, `git push origin main`) went unchecked. The command is normalised once.

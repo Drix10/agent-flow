@@ -1158,8 +1158,70 @@ function gitPushFromWords(argv: readonly ShWord[]): GitCall | null {
   return { sub: "push", args: args.join(" "), configs: [] };
 }
 
+/** `git config` options that choose what it does, and the options that take a separate value. */
+const CONFIG_READ = ["--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color", "--get-colorbool", "--list"];
+const CONFIG_WRITE = ["--add", "--replace-all", "--unset", "--unset-all", "--edit", "--rename-section", "--remove-section"];
+const CONFIG_VALUE = new Set(["-f", "--file", "--blob", "--type", "-t", "--default", "--comment"]);
+/** git takes any unambiguous prefix of a long option, so `--unset-a` and `--get-reg` count. */
+const isLongOf = (name: string, set: readonly string[]) => name.startsWith("--") && name.length >= 5 && set.some((o) => o.startsWith(name));
+
+/**
+ * What `git config <args>` does to its key. With no action option one positional reads the key and two or more write it;
+ * `--show-scope`, `--show-origin`, `--global`, `-z` and the like change only how it prints or where it looks.
+ */
+function configAction(args: readonly ShWord[]): { write: boolean; key: string; values: string[]; dynamic: boolean } {
+  let read = false;
+  let write = false;
+  const pos: ShWord[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i].text;
+    if (t === "--") {
+      pos.push(...args.slice(i + 1));
+      break;
+    }
+    if (t.startsWith("-") && t.length > 1) {
+      const name = t.split("=")[0];
+      if (name === "-l" || isLongOf(name, CONFIG_READ)) read = true;
+      else if (name === "-e" || isLongOf(name, CONFIG_WRITE)) write = true;
+      else if (CONFIG_VALUE.has(name) && !t.includes("=")) i++;
+      continue;
+    }
+    pos.push(args[i]);
+  }
+  return { write: write || (!read && pos.length >= 2), key: (pos[0]?.text ?? "").toLowerCase(), values: pos.slice(1).map((w) => w.text), dynamic: pos.some((w) => w.dynamic) };
+}
+
+/**
+ * Anything that points git at another hooks directory or an alias that skips them, read from the lexed words: quoting,
+ * a `--show-scope` flag or a mention inside a commit message changes nothing. The raw-text scan stays only for a script
+ * fed on stdin, whose words can't be read.
+ */
+function decideHooksPath(cmd: string): GuardDecision | null {
+  const deny = block("no-verify", "changing core.hooksPath disables the pre-commit hook. Fix the hook failure instead.");
+  for (const sc of lexShell(cmd)) {
+    if (sc.words.some((w) => /^GIT_CONFIG_(KEY_\d+|PARAMETERS)=/i.test(w.text) && /core\.hookspath/i.test(w.text))) return deny;
+    const argv = effectiveArgv(sc.words);
+    if (cmdName(argv[0]) !== "git") continue;
+    let i = 1;
+    while (i < argv.length && argv[i].text.startsWith("-")) {
+      const t = argv[i].text;
+      const name = t.split("=")[0];
+      const val = name === "-c" || name === "--config-env" ? (t.includes("=") && name !== "-c" ? t.slice(t.indexOf("=") + 1) : argv[i + 1]?.text) : undefined;
+      if (val !== undefined && /^core\.hookspath(=|$)/i.test(val)) return deny;
+      i += GIT_GLOBAL_VALUE.has(t) ? 2 : 1;
+    }
+    if (argv[i]?.text.toLowerCase() !== "config") continue;
+    const a = configAction(argv.slice(i + 1));
+    if (!a.write) continue;
+    if (a.key === "core.hookspath" || a.dynamic) return deny;
+    if (a.key.startsWith("alias.") && a.values.some((v) => /no-verify|hookspath/i.test(v))) return block("no-verify", "an alias that skips the pre-commit hook defeats it. Fix the hook failure instead.");
+  }
+  if (OPAQUE_SCRIPT.test(cmd) && /\bgit\b/i.test(cmd) && /\bcore\.hookspath\b/i.test(cmd) && !/\bconfig\s+(--get\S*|--list|-l)\s/i.test(cmd)) return deny;
+  return null;
+}
+
 function decideGit(gc: GitCall, protectedBranches: Set<string>): GuardDecision | null {
-  if (gc.configs.some((c) => /^core\.hookspath=/i.test(c)) || (gc.sub === "config" && /\bcore\.hookspath\b/i.test(gc.args) && !/(^|\s)(--get\S*|--list|-l|--show-\S+)(\s|$)/.test(gc.args))) {
+  if (gc.configs.some((c) => /^core\.hookspath=/i.test(c))) {
     return block("no-verify", "changing core.hooksPath disables the pre-commit hook. Fix the hook failure instead.");
   }
   // `-n` is --no-verify only for commit (for push it's --dry-run, which is harmless).
@@ -1721,9 +1783,8 @@ function decideShellCore(g: GuardInput, cmd: string, protectedPaths: string[], c
 
   // Every session, role or not. Checked on the raw text too: quoting the value
   // (`-c "core.hooksPath=…"`) must not hide it.
-  if (/\bgit\b/i.test(cmd) && /\bcore\.hookspath\b/i.test(cmd) && !/\bconfig\s+(--get\S*|--list|-l|--show-\S+)\s/i.test(cmd)) {
-    return block("no-verify", "changing core.hooksPath disables the pre-commit hook. Fix the hook failure instead.");
-  }
+  const hooks = decideHooksPath(cmd);
+  if (hooks) return hooks;
   const defaultBranch = manifest?.default_branch;
   const protectedBranches = new Set(["main", "master", ...(typeof defaultBranch === "string" && defaultBranch ? [defaultBranch] : [])]);
   for (const seg of segs) {
