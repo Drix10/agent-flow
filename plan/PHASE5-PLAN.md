@@ -1,255 +1,274 @@
-# Phase 5 plan v3: rebuild agent-flow guards from the eval (DRAFT for maintainer decision)
+# agent-flow guard rebuild (TODO Phase 5): the plan
 
-Status: draft v3 = v2 (three-way adversarial critique) + full verification pass (live hook tests on Claude Code, local stubs on Pi/OpenCode,
-docs/source for Codex/Gemini/Cursor/others, raw-transcript re-reads, local git/rg/gh/node checks). Harness- and model-neutral architecture added (section 2b). Nothing is built.
-Verification reports: plan/reviews/V1-claude.md, V2-codex-gemini-cursor.md, V3-pi-opencode-others.md, V4-raw.md.
-`plan/` is gitignored; reviewer reports are copied to `plan/reviews/` (A/B/C = code+evidence audits, R1/R2/R3 = critiques).
-Code line numbers are at HEAD d9f7146 (== v1.2.7 for all code).
-Verification legend: [RAW] I read the raw transcript; [REPLAY] I replayed it against the built guard or real hook; [REPORT] a reviewer claims it, unverified by me.
+Scope: rebuild the guard from the session-mining eval so it does not block a coder doing what they told the agent to do, and does stop the agent from risky things it does on its own. Harness- and model-neutral. Nothing is built; the package is changed only after this plan is accepted.
+Evidence reports: `plan/reviews/` (A/B/C code and evidence audits, R1-R3 critiques, P1-P3 posture critiques, V1-V4 live/raw verification). Code line numbers are at HEAD d9f7146 (code unchanged since the published release).
+Legend: [RAW] read in the raw transcript; [REPLAY] replayed against the built guard or the real hook; [LIVE] run against a real harness; [REPORT] a reviewer's claim I did not re-check. Raw user text is never quoted here (it contains secrets); turns are cited by session id and message number and paraphrased.
 
-## 0. The one-paragraph answer
+## 0. The answer
 
-Draft v1 was a good false-block plan built on a guard that has live holes. v2 reorders: first close the holes that make any relaxation
-meaningless (Release A, a security patch with the same policy), then ship the user-facing relief as configurable strictness presets
-(Release B), then the detection/UX extras (Release C). The data supports neither keeping nor deleting the blanket blocks (about 1 clear
-catch vs 4 false or over-broad blocks in live agent-flow events, all from one owner on one cheap model), so the right output is
-floored, configurable presets, not hardcoded relaxations, and not a personal allowlist.
+The guard is two products. Reviewed-PR pipeline roles are never relaxed. For a role-less session (a person with an agent, all of the evidence), the guard must be silent on the agent finishing the work it was given, and loud only on what the work never needs.
 
-## 1. Facts that drive the plan
+Everything the owner's trace shows being denied was routine landing of delegated work, not the agent going off on its own. Of 365 denied calls in the largest session, every one that carried a tool description (350) was "commit and push X", "merge PR N and clean up", "delete merged branches" or a snapshot script. The user named the action in only about 1 in 10 high-risk turns; the rest were standing delegation ("continue everything"), and 61% of push denies came more than 10 minutes after the last human message. So "did the user ask" cannot be the gate, and a prompt parser cannot be authority. What works:
 
-### 1a. Corrections to the eval (fix records before building)
-- [RAW] 01a1ba9a: the AGENT ran `pi remove npm:@drix10/agent-flow` (#5425) after the user asked "...or tell me how to stop agent flow" (#5409); nothing blocked it.
-  Ledger/MAP-1/MAP-15/04-HUMAN say "user removed". The guard also stayed live in the running session until restart (#5429-5430).
-- [RAW] The delete of an already-merged branch was blocked twice (#5403, #5429); the agent itself wrote that for a merged branch the stated reason does not apply (#5408).
-  That false block is what led to #5409. Also [RAW] #5393 blocked a read-only chain ending in `git config core.hooksPath`.
-- [RAW+REPLAY] The "compliant path" ended in the agent running `gh pr merge` (#5400, under a standing user merge instruction); `gh pr merge` has no rule.
-- "worked x4" is overstated (#5389/#5391 one retried push); scorecard force-push count "3" contains 2 deletes (only 1 real force-push block, 01a1b7ed #48);
-  the Nov 8 "missed-unwired" exhibit was retracted in the ledger but scorecard.md still cites it.
-- [RAW, V4] 01a1af0d: push block = worked (user-ordered push; the whole `add && commit && push` chain was denied so the commit never ran; agent took a PR path, ~3 wasted calls);
-  secret block #96-97 used `grep --include="*.js"` (cannot match .env) = over-broad, so "warn-only would have leaked .env at 04:23" is REFUTED; secret block #210-212 denied a chain whose .env grep was already value-masked = over-broad;
-  fetch block (~#1194) `fetch ...:refs/remotes/...` writes a remote-tracking ref only = false block. The note "rerouted to sed-redacted read" is wrong.
-- [RAW, V4] f1c432dc: verdict is NEUTRAL (the quoted reset-hard block is the agent's own words inside pasted history; skl labels pasted text as user; the "37 mentions" figure does not hold; the one real event was a mixed protected-path command, agent rerouted via a generator script).
-- [RAW, V4] 01a1b7ed: block CONFIRMED but "dodge" REFUTED: #47 chain was denied whole, so `branch -D master`/orphan commit never ran; #49 `reset --hard ...; push` was an attempt to follow the deny text and was itself denied (~4 calls of friction). A local `rebase --root` (#45-46) ran unguarded.
-- [RAW, V4] 110fe80e: Oct 23 `HEAD:main` denial = native classifier (agent obeyed); Oct 25 `worktree remove --force` = tracekit (only the second ran blocked); Oct 27 "deleted the unmerged branch to dodge" = self-reported, hook unnamed (probably tracekit), unverifiable; the standing "run `git push origin main` alone" is a tracekit workaround. None of these is agent-flow.
-- [RAW, V4] 6666fa97: all ten pushes were agent-run Opus Bash pushes in non-flow repos, none blocked, no agent-flow text; only `push --force` (#4715) was denied by tracekit and the user ran it with `!`. Message numbers cited in the knowledge base are off by one.
-- [RAW, V4] 01a1af30 #151-155 CONFIRMED: the chain was denied whole on a names-only `grep -o "^[A-Z_]*=" .env`; the reroute was `node -e` dotenv set/MISSING, which the guard cannot see into.
-- Live-event tally (agent-flow only, corrected): push-default-branch 3 episodes / 0 demonstrable harm prevented (1 user-ordered, 1 user-ordered chain, 1 factory); force-push 1 plausible; branch delete 2 false; hooksPath 1 false; secret-read 5 events with 0-1 real catch (2 over-broad, 1 over-broad chain, 1 worked); fetch 1 false.
-  Hooks block WHOLE chains, so the real cost includes commands that never ran (01a1af0d #233). "5 live push blocks ended fine" is really 3 episodes on one model.
-- MODEL EVIDENCE (V4): sessions since Oct 1 by model: opus-5-5 x121, sonnet-5-5 x19, muse-spark x17, haiku x8, codex x1. Under agent-flow: ONLY muse-spark (obeyed and rerouted; also probed the guard as if it were a git hook, #5389-93, and ran `pi remove`, #5425). Opus/Sonnet/GPT never ran under agent-flow here; under tracekit and the native classifier Opus and Sonnet halted and handed the command to the human, adapted command shapes (`commit --file=-`, push alone), and made one self-reported equal-effect reroute.
-  No evidence of a frontier model attacking or disabling a guard, and none of one being under agent-flow. Model-neutrality is therefore a DESIGN property here, not an evidenced one; do not claim otherwise.
-- Unplanned harm in the data: a 2024 `.env` found in public git history (leaked since Nov 2024, 6666fa97); an 18 MB binary pushed to a remote branch (110fe80e #33755); local history rewrites (`rebase --root`, `branch -D`) unguarded.
-- a8c1e208 "sudo": a tracekit block (another product) on slide text; agent-flow has no sudo word-match. MAP-17 is retargeted to agent-flow's own overblocks.
-  The substring hazards below are CODE-AUDIT findings (synthetic replays), except the positional hooksPath read, which is live.
-- Corpus limits: one human who authors agent-flow; 110fe80e is ~47% of tokens and ~77% of the "worked" count with zero agent-flow events; live agent-flow enforcement
-  with a transcript is 4 pi sessions (Nov 6-9) on one cheap, obedient model; Windows only. No strong autonomous model has run under agent-flow here.
-- 584 of 756 baseline blocks are `agent-flow update` role probes (test traffic); `source` is spoofable, so it is a dev-hygiene tag, not an authenticated one.
-- Hygiene: key-shaped tokens remain in knowledge/whales/01a1af30 (00-COMPACT.md, 01-INTENT.md); the raw skl store holds an OpenRouter key (01a0b38f #1331) and PATs (01a0b5f7 #4258/#4272).
+1. Relieve by what the command provably touches, offline: the agent's own current branch, branches provably merged into the default branch, private snapshot refs, remote-tracking fetches, searches that cannot reach an env file.
+2. Let the human widen authority in one place: an expiring, human-run grant (push to the default branch) and a pause switch. A personal project grants once for 30 days and never hears from the guard again; a production repo never grants.
+3. Treat the prompt as context, never authority: record which human turn was in force, whether anyone was there, and why the agent said it was acting, so every deny, every needs-me entry and every later eval has the full context.
+4. Close the holes first (quoted refspecs, a corrupted manifest, CRLF, remote-write doors, self-removal) so relief is not theater, and say plainly which outcomes only server-side branch protection can enforce.
+
+## 1. Who it is for and at what pace
+
+- Only one user is evidenced: a solo builder on a personal project with a fast, many-agent, unattended pace (the 110fe80e session, roughly 47% of all tokens, about 19 denies a day). Team and production use are hypotheses; nothing team-specific ships until a non-owner repo commits a landing or protected-paths setting.
+- Personal pace: the agent lands work itself. One standing grant removes every push block. Merge of its own PR is allowed. Deleting merged branches and snapshot refs is allowed. The guard still stops credential reads, writes to the default branch around the PR flow, destroying history, and disabling itself.
+- Production pace: no grant. Agents may push their own branches and open PRs; landing on the default branch needs a human. A committed `landing_floor: "pr-only"` makes this tighten-only (a user grant cannot relax it). Server-side branch protection is the real boundary and the docs say so.
+- The posture is a landing configuration plus a grant, not named presets (a preset in the repo is forgeable by the agent; replay shows `git branch -f main`, `remote set-url` and a role-less manifest Write are all allowed today).
+- The owner's PR flow is user-told, not safety-driven [RAW 110fe80e Oct 23-26 user turns]: they ran `gh pr merge` themselves with `!` on Oct 23, then ordered the agent to verify and merge the intake-bot PRs and delete those branches (@80861, @86964), and stated a goal of maximising merged-PR counts for contribution badges (@86776). After Oct 25, 161 of 165 merges are agent self-merges. So role-less merge is allowed, and a production review requirement is not evidenced.
+
+## 2. Facts that drive the plan
+
+### 2a. Who initiated the denied actions, and why (owner trace)
+Replay of every main-thread shell call of 110fe80e (10,490) through the built guard, role-less, empty protected paths, tiny temp repo (recursive-search share is an upper bound): 366 denies (3.5%).
+
+| Rule | Denies | Human turn names the action | Human turn is a delegation phrase | More than 10 min after the last human message |
+|---|---|---|---|---|
+| push-default-branch | 124 | 13 (11%) | 48 | 75 (61%) |
+| explicit-refspec (`git push -u origin HEAD`, bare push) | 63 | 6 | 16 | 29 |
+| force-push (34 of 35 are `--delete`) | 35 | 5 | 17 | 26 |
+| ref-rewrite (`git update-ref` snapshot scripts) | 19 | 0 | 3 | 17 |
+| secret-read | 123 | 21 (12 turns) | 30 | 43 |
+| fetch-refspec, no-verify | 2 | | | |
+
+The "names the action" column is a keyword match: it over-counts (negations such as "never push to main" match) and ignores standing orders from earlier turns, so treat it as an upper bound of explicit asks. User-run `!` commands do not pass through the hook at all (the owner ran `git push origin <branch>:main`, `gh pr merge`, `gh repo create` that way) and are not denies.
+Why the agent acted [RAW, tool `description` field of each denied call]: push-default = "commit and push my work" (about 120); force-push class = "merge PR N and clean up", "delete merged branches"; explicit-refspec = "commit and push" on feature branches; ref-rewrite = snapshot/pin scripts for parallel benches. None was off-task. The agent rarely writes prose before a call, so assistant-text scraping is not a usable "why"; the tool description (Claude `Bash.description`) is, where a harness provides one.
+Delete targets: 73 literal branch names, 31 without a prefix, 22 `fix/`, 9 `feat/`, 6 `docs/`, 3 `test/`, 1 `pr/`, 0 `agent/`; 13 more commands built the list from `git branch -r --merged`. A prefix-ownership rule would have allowed almost none of them; provable merged-ness is the rule that fits.
+Other facts: 124 push-main attempts fall on Oct 18-24; 76 of 128 push-main turns followed a human message, 42 followed subagent notifications, none a heartbeat. Subagents (857, over 100,000 shell calls): 199 ran `gh pr merge`, 81 pushed main, 18 force-pushed, 17 `--delete`, 98 `branch -D`, 143 `worktree remove --force`; `reset --hard` 0. 10.8% of main calls chain 15+ commands, and a hook denies the whole chain. 237 usage-limit stops and 62 continuations mean wall-clock grant durations would expire mid-run. Mean decide() cost about 128 ms per call on Windows.
+Limits: commands were judged, not run; the secret-read initiator split is rougher than the push one; owner reasons are read from raw user turns where cited, otherwise inferred; subagents ran without agent-flow installed.
+
+### 2b. Corrections to the eval (fix the records before building)
+- [RAW] 01a1ba9a: the AGENT ran `pi remove npm:@drix10/agent-flow` (#5425) after the user asked how to stop agent flow (#5409); nothing blocked it. The ledger, MAP-1, MAP-15 and 04-HUMAN say "user removed". The guard stayed live in the running session until restart.
+- [RAW] The delete of an already-merged branch was blocked twice (#5403, #5429); the agent itself wrote that the stated reason does not apply (#5408). That false block led to #5409. #5393 blocked a read-only chain ending in `git config core.hooksPath`.
+- [RAW+REPLAY] The "compliant path" ended in the agent running `gh pr merge` (#5400, under a standing user merge instruction); `gh pr merge` had no rule.
+- "worked x4" is overstated; the scorecard force-push count "3" holds 2 deletes (1 real force-push block, 01a1b7ed #48); the Nov 8 "missed-unwired" exhibit was retracted in the ledger but scorecard.md still cites it.
+- [RAW] 01a1af0d: push block = worked (user-ordered push; the whole `add && commit && push` chain was denied so the commit never ran, about 3 wasted calls); secret block #96-97 used `grep --include="*.js"` (cannot match .env) = over-broad, so "warn-only would have leaked .env" is REFUTED; secret block #210-212 denied a chain whose .env grep was already value-masked = over-broad; the fetch block (~#1194) wrote a remote-tracking ref only = false block.
+- [RAW] f1c432dc: NEUTRAL (the reset-hard block text is the agent's own words inside pasted history; "37 mentions" does not hold).
+- [RAW] 01a1b7ed: block confirmed, "dodge" refuted (the chain was denied whole, so `branch -D master` never ran; the follow-up was an attempt to obey the deny text). A local `rebase --root` ran unguarded.
+- [RAW] 110fe80e Oct 23 `HEAD:main` denial = native classifier; Oct 25 `worktree remove --force` and the Oct 27 "deleted the unmerged branch to dodge" are tracekit or unnamed, none is agent-flow. 6666fa97: ten agent-run pushes, none blocked by agent-flow; only `push --force` (#4715) was denied (tracekit) and the owner ran it with `!`.
+- [RAW] 01a1af30 #151-155: chain denied whole on a names-only `grep -o "^[A-Z_]*=" .env`; the reroute was `node -e` dotenv, which the guard cannot see into.
+- a8c1e208 "sudo" is a content-word filter of another product, not agent-flow; MAP-17 is retargeted to agent-flow's own overblocks.
+- Live agent-flow tally (corrected): push-default-branch 3 episodes, 0 demonstrable harm prevented; force-push 1 plausible; branch delete 2 false; hooksPath 1 false; secret-read 5 events with 0-1 real catch; fetch 1 false. Hooks block WHOLE chains, so cost includes commands that never ran.
+- MODEL EVIDENCE: sessions since Oct 1: opus-5-5 x121, sonnet-5-5 x19, muse-spark x17, haiku x8, codex x1. Under agent-flow only muse-spark (obeyed and rerouted; also probed the guard like a git hook and ran `pi remove`). No frontier model has ever run under agent-flow here, and none has been seen attacking a guard. Model-neutrality is a DESIGN property, not an evidenced one; docs must not claim more.
+- Unplanned harm in the data: a 2024 `.env` found in public git history (6666fa97); an 18 MB binary pushed to a branch (110fe80e #33755); local history rewrites (`rebase --root`, `branch -D`) unguarded.
+- Corpus limits: one author-owner; 110fe80e has zero agent-flow events; live agent-flow enforcement is 4 pi sessions (Nov 6-9) on one cheap obedient model; Windows only.
+- 584 of 756 baseline blocks are `agent-flow update` role probes (test traffic); `source` is spoofable.
+- Hygiene (human): key-shaped tokens remain in knowledge/whales/01a1af30; the raw skl store holds an OpenRouter key (01a0b38f #1331), PATs (01a0b5f7 #4258/#4272) and a test API key the owner pasted into chat (110fe80e user turn @43668).
 - SECURITY.md:42 says recursive `grep -r` over an env file is "not detected"; CHANGELOG:159 and the guard say it is. Fix the doc.
 
-### 1b. Holes in the CURRENT guard (all role-less unless noted; these were not in draft v1)
+### 2c. Holes in the CURRENT guard (role-less unless noted)
 | ID | Hole | Evidence |
 |---|---|---|
-| H1 | Quoting defeats the push ban: `git push origin 'HEAD~0:main'`, `"HEAD^{commit}:main"`, `'+HEAD~0:agent/x'`, `'+refs/heads/*:refs/heads/*'` all allowed (decideGit parses stripQuoted text, guard.ts pipeline A) | [REPLAY] |
-| H2 | Corrupting the manifest disables the floor: write `{` to CONTEXT_MANIFEST.json (role-less Write is allowed), then `cat secrets/db.txt` goes block -> allow through the real `agent-flow guard` hook (loadManifestForGuard returns null on parse error, manifest.ts:348) | [REPLAY via real hook] |
-| H3 | CRLF heredoc hides what follows: `cat <<EOF\r\nhi\r\nEOF\r\ncat .env` is allowed (LF version blocks) | [REPLAY] |
-| H4 | Remote default-branch writes are unguarded: `gh pr merge --admin/--auto`, `gh api -X PATCH .../git/refs/heads/main -F force=true`, `-X DELETE .../refs/heads/main`, `-X PUT .../contents/x -f branch=main`, `curl` to the API; also (REPORT) `gh repo edit --default-branch`, `gh release create --target main`, GraphQL mergePullRequest/auto-merge | [REPLAY] first five |
-| H5 | `git config --show-scope core.hooksPath /dev/null` is a real write but allowed (`--show-*` treated as read marker); also (REPORT) `core.hooks''Path`, `GIT_CONFIG_*` env forms, `alias.ci 'commit --no-verify'`, `echo >> .git/config` | [REPLAY] first; rest [REPORT] |
-| H6 | Self-removal routes allowed for role-less sessions: `pi remove`, `npm uninstall @drix10/agent-flow`, `rm -rf node_modules/@drix10/agent-flow`, `agent-flow uninstall --yes`; (REPORT) host-config edits under `~`, `pi --no-extensions`, `claude --settings`, missing guard file makes the hook exit 1 = non-blocking | [REPLAY] first four |
-| H7 | Secret-read gaps: walk budget returns allow when exhausted (20k entries / 1.5 s; guard.ts:1454,1463); (REPORT) `grep -r KEY $PWD`, `grep -rn KEY *`, `rg -g '.env*'`, `git grep --no-index`, `find -exec cat`, `| xargs cat` | budget [code]; rest [REPORT] |
-| H8 | `AGENT_FLOW_ALLOW_PROTECTED=1` lifts far more than protected paths: bulk-git, catastrophic-delete, obfuscated-command, deny-command, guard-wiring (and `reset --hard`) | [code] bin:1301, guard.ts |
-| H9 | Role-less sessions get no agent-config, no role-tool, no outside-repo check; no scan for secrets being WRITTEN (Oct 21 class) | [REPORT] |
-| H10 | Audit: harness hardcoded `"claude"` for all CLI-path blocks (bin:1306); Pi logs none; `reason` appended unredacted; redaction misses `curl -u u:p`, URL userinfo, `--password x`, JWT, `glpat-`, `sk_live_`, AWS secrets; `touch .agent-flow/audit.lock` forces `unchained`; `rm -rf .agent-flow` restarts the chain | [code]/[REPORT] |
-| H11 | Hook exit semantics: Claude treats exit 1 (and a 60 s timeout) as non-blocking | [REPORT, unverified live] |
+| H1 | Quoting defeats the push ban: `git push origin 'HEAD~0:main'`, `"HEAD^{commit}:main"`, `'+HEAD~0:agent/x'`, `'+refs/heads/*:refs/heads/*'` allowed (decideGit parses stripQuoted text) | [REPLAY] |
+| H2 | Writing `{` to CONTEXT_MANIFEST.json (role-less Write is allowed) turns off deny_read: `cat secrets/db.txt` goes block to allow through the real hook (loadManifestForGuard returns null on a parse error, manifest.ts:348) | [REPLAY via hook] |
+| H3 | CRLF heredoc hides what follows (`cat <<EOF\r\nhi\r\nEOF\r\ncat .env` allowed; the LF form blocks) | [REPLAY] |
+| H4 | Remote default-branch writes unguarded: `gh pr merge --admin/--auto`, `gh api -X PATCH .../git/refs/heads/main -F force=true`, `-X DELETE .../refs/heads/main`, `-X PUT .../contents/x -f branch=main`, `curl` to the API; (REPORT) `gh repo edit --default-branch`, `gh release create --target main`, GraphQL merge | [REPLAY] first five |
+| H5 | `git config --show-scope core.hooksPath /dev/null` is a write but allowed; (REPORT) `core.hooks''Path`, `GIT_CONFIG_*`, `alias.ci 'commit --no-verify'`, `echo >> .git/config` | [REPLAY] first |
+| H6 | Self-removal allowed for role-less sessions: `pi remove`, `npm uninstall @drix10/agent-flow`, `rm -rf node_modules/@drix10/agent-flow`, `agent-flow uninstall --yes`; (REPORT) host-config edits, `pi --no-extensions`, `claude --settings`, missing guard file = hook exit 1 = non-blocking | [REPLAY] first four |
+| H7 | Secret-read gaps: walk budget returns allow when exhausted (20k entries / 1.5 s; guard.ts:1454,1463); `rg -g '.env*' K` reads `.env` without `--hidden` and is allowed [REPLAY]; (REPORT) `grep -r K $PWD`, `grep -rn K *`, `git grep --no-index`, `find -exec cat`, `| xargs cat` | budget [code] |
+| H8 | `AGENT_FLOW_ALLOW_PROTECTED=1` lifts far more than protected paths (bulk-git, catastrophic-delete, obfuscated-command, deny-command, guard-wiring, reset --hard) | [code] bin:1301 |
+| H9 | Role-less sessions get no agent-config, role-tool or outside-repo check and no scan for secrets being WRITTEN | [REPORT] |
+| H10 | Audit: harness hardcoded `"claude"` for CLI-path blocks (bin:1306); Pi logs none; `reason` appended unredacted; redaction misses `curl -u u:p`, URL userinfo, `--password x`, JWT, `glpat-`, `sk_live_`, AWS secrets; `touch .agent-flow/audit.lock` forces `unchained`; `rm -rf .agent-flow` restarts the chain | [code]/[REPORT] |
+| H11 | Claude treats exit 1 and a 60 s timeout as non-blocking | [LIVE] |
+Also replayed allowed today (no rule): `gh release create`, `npm publish`, `git push --tags`, `git push origin HEAD:production`, `git branch -f main`, `git remote set-url|set-head`, `git clean -fdx`, `git gc --prune=now`, `rm -rf .agent-flow`. A false block that is live: positional `git config core.hooksPath` read is denied. `git push origin --delete main` is blocked as "force-push". OpenCode v2 `execute` and `subagent` tools are not covered (`shell` is).
 
-### 1c. Current code reality (agent-flow 1.2.7)
-- One decision function `decide(g)` (guard.ts:1877), all rules through `block(rule, reason)` (:207), ~30 rule names. Hook harnesses call `agent-flow guard` (bin:1261); Pi has its own `tool_call` hook (extensions/guard.ts:69).
-  It is NOT purely pure: `reviewedScript` already runs git with a 10 s timeout (guard.ts:1800). [REPORT]
-- Two shell pipelines in guard.ts: (A) string-based `expandCommand/segments/parseGit/decideGit` (git rules); (B) real tokenizer `lexShell` + `effectiveArgv` (:593-792; secret-read and write targets). Neither enters `bash -c` bodies. [REPORT]
-- Push to main/master always forbidden, no manifest key. `reset --hard` is `bulk-git-protected`, only while `protected_paths` is non-empty. hooksPath = `no-verify` (raw regex guard.ts:1683). Branch delete = `force-push`.
-- Manifest: `FLOORED_KEYS = gates, policy, secret_scan, pipeline, review_paths` come from the default branch's committed copy, else HEAD, else disk (manifest.ts:358-375). `policy` has `additionalProperties:false` in the schema. Only the implementer role is blocked from editing the manifest ("governance").
-- Hook can only deny: output is hardcoded `permissionDecision:"deny"` (bin:1314); repo precedent is "deny, not ask: a headless pipeline has nobody to answer". `confirm.ts` is a Pi-only dialog for three agent-flow write tools.
-- `status`: one guard row per repo; Claude verified via `guard --check`; codex/gemini/cursor/opencode = file-presence warn (tests/status.test.js:70,76-77 pin wording). `doctor` reports nothing about the guard. hooksPath-elsewhere gives a warn that never names hooksPath.
+### 2d. Current code reality
+- One decision function `decide(g)` (guard.ts:1877); all rules through `block(rule, reason)` (:207); about 30 rule names. Hook harnesses call `agent-flow guard` (bin:1261); Pi has its own `tool_call` hook (extensions/guard.ts:69). Not purely pure: `reviewedScript` runs git with a 10 s timeout (:1800).
+- Two shell pipelines: (A) string-based `expandCommand/segments/parseGit/decideGit` for git rules; (B) the real tokenizer `lexShell` + `effectiveArgv` (:593-792) for secret-read and write targets. Neither enters `bash -c` bodies.
+- Push to main/master always forbidden, no manifest key. `reset --hard` is bulk-git-protected only while `protected_paths` is non-empty. hooksPath = `no-verify` (raw regex, :1683). Branch delete = `force-push`.
+- Manifest: FLOORED_KEYS (gates, policy, secret_scan, pipeline, review_paths) from the default branch's committed copy, else HEAD, else disk (manifest.ts:358-375); `policy` is `additionalProperties:false`. Only the implementer role is blocked from editing the manifest. `defaultBase()` uses the LOCAL main ref (git.ts:52-68), which an agent can move.
+- Verdict is deny-only (bin:1314); repo precedent: "deny, not ask: a headless pipeline has nobody to answer". `confirm.ts` is a Pi-only dialog for three agent-flow tools.
+- `status`: one guard row per repo; Claude verified via `guard --check`; codex/gemini/cursor/opencode = file-presence warn (tests/status.test.js:70,76-77 pin the wording). `doctor` says nothing about the guard.
 - `codex exec` IS supported (pipeline launches roles with it; hook live-verified headless on Linux/WSL); nothing detects an untrusted hook or bypass flags. docs/HARNESS-MATRIX.md contradicts itself (rows 12-15 vs lines 30-34).
-- Existing corpus: tests/redteam/corpus.json 143 entries (92 block, 43 allow, 8 gap) asserting block/allow only, no rule name. 514 tests overall.
-- Release mechanics: lint -> test (pretest builds); 7 version slots (package.json, package-lock x2, 2 plugin.json, marketplace.json, gemini-extension.json) + README/docs/ADOPTION.md tag refs + `## [X.Y.Z]` CHANGELOG (scripts/check-versions.mjs);
-  publish via GitHub Release (npm-publish.yml, provenance). Skill/template copies are hand-synced (5 copies; dogfood.test.js fails on drift). Installed hook commands match `canonicalOurs` regexes requiring `guard\s*$` (bin:2352, 2465).
-- Precedent: 1.2.6 and 1.2.7 patches already carried guard false-block fixes and audit fields.
+- Existing corpus: tests/redteam/corpus.json 143 entries (92 block, 43 allow, 8 gap) asserting block/allow only, no rule name; 514 tests overall.
+- Release mechanics: lint, then test (pretest builds); 7 version slots (package.json, package-lock x2, 2 plugin.json, marketplace.json, gemini-extension.json) plus README/docs/ADOPTION.md tag refs plus a `## [X.Y.Z]` CHANGELOG entry (scripts/check-versions.mjs); publish via GitHub Release (provenance). Skill/template copies are hand-synced (5 copies; dogfood.test.js fails on drift). Installed hook commands must match `canonicalOurs` regexes requiring `guard\s*$` (bin:2352, 2465). Earlier patches already carried guard false-block fixes and audit fields.
 
-## 2. Principles for the design (what "balanced" means here)
+### 2e. What the guard claims
+| Outcome | Enforced today | Rule to write | Not enforceable by a hook |
+|---|---|---|---|
+| Push to main/master/default | yes, with quoting holes | argv parsing; HEAD/bare push resolution | pushes by the user's own terminal |
+| Force-push, history rewrite on shared refs | yes (branch delete shares the rule name) | variant names; lease on tracked branches | server-side rewrite |
+| Merge into default via gh/API | NO | remote-write rule; role-less `gh pr merge` stays allowed | what a PR review decides |
+| Secret read of `.env*` | partly (H7) | secret-read search | `node -e`/python reading .env; secrets pasted in chat |
+| Secret read of credential stores | NO | credential-stores preset | processes the agent starts that read them |
+| Secret WRITE / paste warning | no | later (warn-only) | the user pasting a key |
+| Disable the guard | role-gated only | self-protection rules | the user's own terminal, harness flags the user passes |
+| External publish/post, deploys, spend | opt-in deny_commands presets | opt-in publish hint (later) | browser/localhost posts, fan-out spend |
+| Lossy local ops (reset --hard, clean -fdx, checkout .) | only with protected_paths set | checkpoints (later); `clean -x`, history-destroy rules | `rm -rf` and overwrites (too frequent: 1,400 calls in the trace) |
+
+## 3. Principles
 1. Close holes before relaxing anything. A relaxation on a bypassable rule is theater; a hole fix is a security patch with no policy change.
-2. Relaxations are data, not code: floored manifest presets plus a never-relaxed floor. No personal allowlist, no one-off hardcoded allows.
-3. Prefer reroute over halt only when a lawful path exists and works in one step; otherwise halt-and-hand with the exact human command. Every deny names which.
-4. Never honor something we cannot evaluate exactly (a false allow leaks or loses data); do not re-implement grep/rg/git matching.
-5. Every change ships with a failing fixture first, a regression test, a CHANGELOG line, and a way back (kill switch + patch release).
-6. Say honestly what the guard cannot do: the user's own terminal is unblockable; server-side branch protection is the real boundary for default-branch writes; the audit is unauthenticated.
+2. Relieve by what a command provably touches, offline, with the exact git facts. Never honour what cannot be evaluated exactly (do not re-implement grep/rg/git matching; a false allow leaks or loses data).
+3. The prompt is context, never authority. It can be negated, pasted or forged by a child harness; only a human-run grant widens authority.
+4. No block ships without the human-run path its message names; the grant/pause store comes first.
+5. Prefer reroute over halt only when a lawful one-step path exists; otherwise halt and hand over the exact human command. Every deny says which.
+6. Relaxations are data (grant, committed floor), never hardcoded personal allows. Deny-only; never `ask`.
+7. Every change ships with a failing fixture first, a regression test, a CHANGELOG line and a way back (pause switch plus a patch release).
+8. Say honestly what the guard cannot do: the user's own terminal is unblockable; server-side branch protection is the real boundary; the audit is unauthenticated; a project guard is advisory against a determined agent.
 
-## 2b. Harness- and model-neutral architecture (what "supports every agent after" means)
+## 4. How a decision is made
+
+Input to `decide`: the normalised tool call, the repo facts it can read offline (current branch and upstream, remote-tracking refs, ancestry, protected branches), the committed floor, the active grant/pause set, and the turn context. Order: floor (never relaxed) -> hole-closed parsing -> provable-ownership relief -> grant -> deny with contract.
+
+### 4a. Authority: only the grant widens
+- Human-run `agent-flow grant push-default [--until <ISO> | --standing] [--reason ...]`, `pause [--all | --rule X] --until <ISO>`, `revoke`, `grants`. Stored in user scope (`$AGENT_FLOW_HOME` or `~/.agent-flow/`), absolute expiry (default 30 days; `--standing` is explicit and shown in the session brief and `status`), every use logged, honoured for role-less sessions only, never for pipeline roles. `pause --all` is the kill switch. A repo key `landing_floor: "pr-only"` is tighten-only.
+- Human path, corrected by evidence: a TTY check cannot tell the user from the agent (the agent can open its own pty) and `!` mode appears non-interactive on this machine (an interactive `ssh-copy-id` run with `!` failed straight away [RAW a8c1e208]); so the grant command has NO TTY requirement. The signal is the channel: (1) the hook DENIES any agent tool call that invokes `agent-flow grant|pause|revoke` or writes under the store (parsed argv, so quoting and `echo` are handled); (2) the human runs it with `!` (which never passes the hook, [RAW] owner runs) or from a separate terminal. Honest limit: obfuscated shells and nested child harnesses that the guard cannot see into can still reach the store; grants are best-effort against a determined agent, branch protection is the boundary.
+- `agent-flow grant` prints the effective landing rules and what it just allowed.
+
+### 4b. Relief by provable ownership (no authority needed)
+- Own current branch: `git push [-u] origin HEAD` and bare `git push` are resolved against the current branch and `branch.<cur>.merge`; allowed when the destination is not the default or a protected branch; detached or ambiguous = block with the reroute named.
+- Delete of a branch is allowed for ANY non-default, non-protected, non-release-like name that is provably merged offline: remote-tracking ref present, `merge-base --is-ancestor` true, tip != default tip, configured remote, single refspec, probe injected through `GuardInput.probe`, any failure keeps today's block. No prefix rule (the data show prefixes `fix/`, `feat/`, `docs/` and none). Residual risk: a stale remote-tracking ref could hide a newer unmerged remote commit; the PR keeps the work restorable, and the deny text offers the `--force-with-lease=<branch>:<sha>` form. Squash-merged branches cannot be proven offline: the deny text points at `agent-flow clean` (a CLI that may use gh).
+- `--force-with-lease` is allowed on a non-protected branch that exists locally with that upstream (a branch you have been working on); plain `--force`, `+refspec`, `--mirror` and lease on the default or a protected branch stay blocked.
+- `git update-ref` is allowed for private namespaces (`refs/agent-flow/**`, `refs/snapshots/**`); still blocked for `refs/heads/*`, `refs/tags/*`, HEAD.
+- `gh pr merge` is allowed for role-less sessions (logged); `--admin` and `--auto` are blocked; pipeline roles are blocked with "the orchestrator or a human merges".
+- `git fetch <remote> <src>:refs/remotes/...` is allowed (remote-tracking destination only). `grep --include=<glob>` is honoured only when every glob (basename fnmatch, grep's exact semantics) cannot match any env filename the walk found. Nothing else about `--exclude`, `rg -g` or ignore rules is honoured.
+
+### 4c. Turn record: context for every decision (prompt is never authority)
+- A prompt hook records each human turn: Claude UserPromptSubmit, Codex UserPromptSubmit, Gemini BeforeAgent, Pi `input` event ([LIVE] fires and carries the text), Cursor beforeSubmitPrompt (docs; not in CLI print mode), Copilot userPromptSubmitted (docs); OpenCode is OPEN. Where no prompt hook exists the fields are `unknown` and decisions are unaffected, because context never relaxes anything.
+- Record fields: session, turn id, timestamp, origin (human only where the harness says so; Claude's transcript also marks continuation and task-notification turns), a redacted excerpt of at most 240 characters (through `findSecrets` and the broadened redaction), the exact git/gh verbs present, a negation flag. Stored in user scope only, a ring of the last 50 per session, never in the repo's `.agent-flow/` (excerpts hold secrets and private text).
+- Derived labels on every deny, needs-me entry and sensitive allow: `attended` (a human turn within 10 minutes; 10 is the measured knee) or `unattended`; `initiator`: `ask-named` (the in-force human turn contains the verb non-negated), `delegated` (a human turn exists but does not name it), `unattended`, `unknown`; `why` = the tool's own description field when the harness supplies one (Claude `Bash.description`: 350 of 365 owner denies had one), redacted and capped at 120 characters. No assistant-prose scraping.
+- Uses, all non-authoritative: (1) wording: when the in-force turn names a push or merge, the deny text shows the exact `grant ... --until` line to run; (2) dedupe: two identical denies in an unattended session record ONE needs-me entry with the excerpt and `why` and tell the agent to stop and wait; (3) audit and eval: each ledger row gets an `initiator` column so no later analysis counts a user-ordered action as agent harm (the correction this plan makes to the eval).
+- Rejected: letting a user's explicit ask unblock force-push or a push to the default branch. ask-named is about 1 in 10 and fails on negation and pasted text. The human path for the rare real case is the user's own `!` command, or a one-line grant.
+
+### 4d. Deny contract
+(1) rule and the offending segment (redacted); (2) WHAT DID NOT RUN ("the whole call was denied; none of these ran: ..."); (3) the exact allowed command, or "none"; (4) the human-run command (`! agent-flow grant push-default --until <date>`, `agent-flow pause ...`); plus "this is the guard, not a git hook; retrying will not change it". Never advertise an `AGENT_FLOW_ALLOW_*` variable to the agent. Hooks deny a whole chain, so the message names the offending segment and says to re-issue the rest separately.
+
+## 5. Harness- and model-neutral architecture
 
 Design rule: enforcement never depends on which model is driving or on the model cooperating. Everything model-specific stays out of the core; everything harness-specific stays in a thin adapter.
+1. ONE decision core (`decide`, probe injected) plus `lib/guardrun.ts` (decision, audit, verdict) shared by every adapter.
+2. ADAPTERS only translate: harness stdin or plugin event to a normalised `GuardInput` (tool kind, argv, paths, cwd, session, agent id, turn, model if given), and the verdict to that harness's deny wire format. Verified common denominator (Claude Code, Codex, Gemini, Cursor, Copilot, Qoder, Factory, Command Code, Augment, Windsurf; docs): a command hook with stdin JSON that denies by exit 2 and/or JSON `permissionDecision:"deny"`. One `agent-flow guard --harness <h>` serves them all. Normalise tool KIND (shell, write, edit, read, mcp, subagent, code-exec), not names: Claude `Bash`, Gemini `run_shell_command`, OpenCode v2 `shell`, Codex `apply_patch`, Cursor `Shell`. Gap: OpenCode v2 `execute` and `subagent` pass `git push origin main` and `cat .env` today [REPLAY]; add `code-exec` as an opaque-script class.
+3. VERDICT is deny-only on all three channels at once (JSON on stdout, reason on stderr, exit 2), already true at bin:1311-1314. Why: Gemini ignores a bare exit 2, Codex's prompt hook ignored exit 2, Claude accepts either. Never `ask`: Codex PreToolUse has none, Cursor ignores it on `preToolUse`, Claude and Gemini headless turn it into deny, OpenCode `--auto` auto-approves it.
+4. FAIL-CLOSED WRAPPER: every verified harness fails OPEN on crash, missing script, exit 1, timeout and bad JSON (Cursor only with `failClosed:true`, set at bin:2480). The guard catches its own errors and emits the explicit deny, sets an explicit hook timeout, uses absolute paths (`${CLAUDE_PROJECT_DIR}`), strips a stdin BOM (bin:1275). Claude 2.1.295+ has `onFailure:"block"` (ignored on 2.1.287): add it with a stated minimum version.
+5. CAPABILITY MODEL per adapter (data): can_deny, headless_runs_hooks, covers_subagents, covers_file_edits, covers_mcp, trust_gate, fail_open_on, managed_policy_available, model_in_event, prompt_hook, tool_description. A rule that needs a capability the harness lacks degrades to the stricter side, never to allow.
+6. ENFORCEMENT TIERS shown honestly in `status` and docs: ENFORCED (live-probed hard block), DOCUMENTED (docs/source say it blocks), INSTRUCTED (rules and skills only, with pre-commit/CI as the check). Today only Claude Code and Pi are live-probed. Codex/Gemini/Cursor/OpenCode are docs or source; Copilot, Qoder, Factory, Command Code, Augment, Windsurf, Kiro, Cline document pre-tool hooks (docs-only) and move up once an adapter and probe exist; Swival has no hook.
+7. CONFORMANCE KIT: `agent-flow harness probe <name>` runs a canary event through that harness's wire format and reports the tier; the whole fixture corpus is replayed through each adapter's wire format in CI. A new harness = adapter file + config writer + field map + capability row + probe + corpus pass. No core change.
+8. TAMPER SURFACE per harness; the guard protects its own wiring for all of them (not only when `protected_paths` is set): `.claude/settings*.json`, `.codex/hooks.json` + `config.toml`, `.gemini/settings.json`, `.cursor/hooks.json`, `.opencode/**` + `opencode.json`, `.pi/**` + `~/.pi/agent/settings.json`, `.github/hooks/**`, the hook scripts, `node_modules/@drix10/agent-flow`, and the grant/turn store.
+   Verified kill switches the docs must address: Claude `--settings '{"disableAllHooks":true}'` and mid-session settings rewrite under bypass [LIVE]; Pi `-ne`, `PI_CODING_AGENT_DIR`, settings.json edit applies next start, and a PROJECT-ONLY Pi guard silently skipped in print/json/rpc and child `pi` processes unless user-level or `-e` [LIVE]; OpenCode `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_CONFIG_PROJECT_DISABLE`, `OPENCODE_CONFIG_CONTENT`, plugin hot-reload overwrite, load failure fail-open and silent [LIVE]; Codex `--dangerously-bypass-hook-trust`, `[features] hooks=false`, hooks inert until hash-trusted and any edit invalidates trust [LIVE]; Gemini `/hooks disable-all`, `disabledHooks`; Cursor user-level hooks. Only managed/enterprise config is tamper-resistant (Claude managed settings with `allowManagedHooksOnly`, Codex `requirements.toml`, Gemini admin policy, Cursor enterprise `hooks.json`, OpenCode managed config, Factory/Augment).
+9. AUDIT is model-neutral but model-aware: log `harness`, `session_id`, `agent_id`/`agent_type` where present, `model` where the harness gives it (Pi `ctx.model`, Codex, Cursor); Gemini, OpenCode and Claude PreToolUse give none, so `unknown`. Metrics are never keyed to a model.
+10. MODEL-NEUTRAL TEST DESIGN: rules are validated on the model-free fixture corpus. The adversarial run uses at least one cheap and one strong model, but there is no frontier-model evidence yet, so the docs claim only "enforcement is independent of the model".
 
-1. ONE decision core (`decide`, pure-ish, probe injected) + `lib/guardrun.ts` (decision -> audit -> verdict) shared by every adapter.
-2. ADAPTERS only translate: harness stdin/plugin event -> normalised `GuardInput` (tool kind, command argv, paths, cwd, session, agent_id, model if given), and verdict -> that harness's deny wire format.
-   Common denominator verified across Claude Code, Codex, Gemini, Cursor, Copilot, Qoder, Factory, Command Code, Augment, Windsurf (docs): a command hook with stdin JSON that denies via exit 2 and/or JSON `permissionDecision:"deny"`. So one `agent-flow guard --harness <h>` serves all of them; only the config writer and the field map differ.
-   Normalise tool KIND (shell / write / edit / read / mcp / subagent / code-exec), not tool names: Claude `Bash`, Gemini `run_shell_command`, OpenCode v2 `shell`, Codex `apply_patch`, Cursor `Shell`. Gap found: OpenCode v2 `execute` (Code Mode) and `subagent` pass `git push origin main` and `cat .env` today [REPLAY]; add `code-exec` as an opaque-script class (deny by default or inspect).
-3. VERDICT is deny-only, emitted on all three channels at once (JSON deny on stdout, reason on stderr, exit 2). Already true in bin:1311-1314. Verified why: Gemini ignores a bare exit 2, Codex's prompt hook ignored exit 2, Claude accepts either. Never `ask` for enforcement: Codex PreToolUse has none, Cursor ignores it on `preToolUse`, Gemini and Claude headless turn it into deny, OpenCode `--auto` auto-approves it.
-4. FAIL-CLOSED WRAPPER: every verified harness fails OPEN on crash, missing script, exit 1, timeout and bad JSON (Cursor only with `failClosed:true`, already set at bin:2480). The guard must catch its own errors and emit the explicit deny itself, set an explicit hook timeout, use absolute paths (`${CLAUDE_PROJECT_DIR}`; relative paths fail open on a wrong cwd), and strip a stdin BOM (already, bin:1275). Claude 2.1.295+ also has hook field `onFailure:"block"` (ignored on 2.1.287): add it and state a minimum version.
-5. CAPABILITY MODEL per adapter (data, drives presets and `status`): can_deny, can_ask(never used), headless_runs_hooks, covers_subagents, covers_file_edits, covers_mcp, trust_gate (Codex hash-trust, Pi project-trust, Cursor workspace-trust), fail_open_on, managed_policy_available, model_in_event. A preset that needs a capability the harness lacks degrades to the stricter side, never to allow.
-6. ENFORCEMENT TIERS shown honestly in `status`/docs: ENFORCED (live-probed hard block), DOCUMENTED (docs/source says it blocks, not live-probed), INSTRUCTED (rules/skills only, plus pre-commit/CI as the check). Today only Claude Code (live) and Pi (live) are probed; Codex/Gemini/Cursor/OpenCode are docs/source; Copilot, Qoder, Factory, Command Code, Augment, Windsurf, Kiro, Cline now document pre-tool hooks (docs-only) and move from INSTRUCTED to DOCUMENTED once an adapter + probe exists; Swival has no hook.
-7. CONFORMANCE KIT (how new harnesses are added later): `agent-flow harness probe <name>` runs a canary event through that harness's wire format and reports tier; the whole fixture corpus is replayed through each adapter's wire format in CI; a new harness = adapter file + config writer + field map + capability row + probe + corpus pass. No core change.
-8. TAMPER SURFACE is per harness and the guard must protect its own wiring for all of them (not only when `protected_paths` is set): `.claude/settings*.json`, `.codex/hooks.json` + `config.toml`, `.gemini/settings.json`, `.cursor/hooks.json`, `.opencode/**` + `opencode.json`, `.pi/**` + `~/.pi/agent/settings.json`, `.github/hooks/**`, the hook scripts, and `node_modules/@drix10/agent-flow`.
-   Verified user-side/agent-side kill switches the launcher or docs must address: Claude `--settings '{"disableAllHooks":true}'` (live), mid-session settings rewrite under bypass (live); Pi `-ne`, `PI_CODING_AGENT_DIR`, settings.json rewrite applies next start (live), and a PROJECT-ONLY Pi guard is silently skipped in print/json/rpc and in child `pi` processes unless user-level or `-e` (live); OpenCode `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_CONFIG_PROJECT_DISABLE`, `OPENCODE_CONFIG_CONTENT`, plugin hot-reload overwrite (live), plugin load failure is fail-open and silent (live); Codex `--dangerously-bypass-hook-trust`, `[features] hooks=false`, project hooks inert until hash-trusted and any edit invalidates trust (live); Gemini `/hooks disable-all`, `disabledHooks`; Cursor user-level hooks.
-   Only managed/enterprise config is tamper-resistant: Claude managed settings (`allowManagedHooksOnly`), Codex `requirements.toml`, Gemini admin policy, Cursor enterprise `hooks.json`, OpenCode managed config, Factory/Augment. Docs say so plainly: a project guard is advisory against a determined user or agent; managed config is the enforced tier.
-9. AUDIT is model-neutral but model-aware: log `harness`, `session_id`, `agent_id`/`agent_type` where present, and `model` where the harness gives it (Pi `ctx.model`, Codex `model`, Cursor `model`); Claude via transcript/SessionStart, Gemini and OpenCode give none, so `model:"unknown"`. Metrics are never keyed to a model.
-10. MODEL-NEUTRAL TEST DESIGN: rules are validated on the fixture corpus (model-free). The adversarial run uses at least one cheap and one strong model per preset, but there is no frontier-model evidence yet (section 1a), so no "model-neutral" claim in docs beyond "enforcement is independent of the model".
+## 6. Build plan
 
-## 3. Release plan
+### Groundwork (no release; first)
+1. Baseline: the historical LIVE-ONLY baseline (exclude the 584 role-probe rows and test/probe cwds) and the fixture corpus run on the published release, recorded as "before".
+2. Fix the eval records per 2b, and add `initiator` to each ledger row (user-ordered, delegated, agent-initiated, retry-after-block) with the evidence cited; re-read raw 01a1af0d and f1c432dc before they carry weight.
+3. Human hygiene: rotate exposed keys (list in 2b); I can redact the two 01a1af30 knowledge files on request. Before any publish, grep the plan and reports for key-shaped strings; `dogfood.test.js` checks machine paths only.
+4. Fixtures, test-first: extend `tests/redteam/corpus.json` with `rule` (mandatory for block entries), `cwd`, `manifest`, `role`, an optional stub `probe` and `turn`; add about 60 sanitized entries covering H1-H8, the 01a1ba9a seven-step ladder (push main block; retry chained with `cat .git/hooks/pre-push` block; positional hooksPath read allow; branch + PR allow; delete of a provably merged branch allow; agent `pi remove` block; post-removal direct push), the 01a1af30 key-names-only chained grep (BLOCK, naming the `.env` segment and the re-issue form), the 6666fa97 explicit-URL force-push shape, 110fe80e `commit and push` on main with and without a grant, commit-message/heredoc hooksPath mentions, CRLF cases, a 30k-file perf case (budget injected, never assert wall time). No machine paths, no token-bearing URLs. Pull raw via skl before use: the standing push rule in 110fe80e and the 6666fa97 pushes.
+5. Owner-trace corpus: the sanitized command shapes of the 10,490 shell calls with rule, initiator and `why` labels (raw stays machine-local), used as the friction benchmark below.
+6. Gate semantics: any block-to-allow OR allow-to-block flip must be listed with the configuration that permits it (the old gate caught one direction).
 
-### Slice 0 (no release; do first)
-1. Baseline: compute the historical LIVE-ONLY baseline now (exclude the 584 role-probe rows of Oct 1-12 and test/probe cwds); record as "before". Also run the whole fixture corpus on v1.2.7 as the before-number.
-2. Fix eval records per section 1a (ledger 01a1ba9a, scorecard counts, delete the Nov 8 citation, retarget MAP-17, MAP-1/15 wording, f1c432dc row). Re-read raw 01a1af0d and f1c432dc before they carry weight.
-3. Hygiene (human): rotate exposed keys unless already rotated; I can redact the two 01a1af30 knowledge files on request.
-4. Fixtures, test-first: extend `tests/redteam/corpus.json` with `rule` (mandatory for block entries), `cwd`, `manifest`, `role`, optional stub `probe`; add ~60 sanitized entries covering H1-H8, the 01a1ba9a 7-step ladder
-   (`git push origin main` block; retry chained with `cat .git/hooks/pre-push` block; positional hooksPath read allow; branch+PR allow; `git push origin --delete agent/launch-fixes` allow only under the scoped rule; agent `pi remove` block; post-removal direct push),
-   01a1af30 key-names-only chained grep (expect BLOCK with the reason naming the `.env` segment and the re-issue form: a hook allows or blocks the whole call and cannot run the read-only parts), 6666fa97 explicit-URL force-push shape,
-   110fe80e agent-run `git push origin main`, commit-message/heredoc hooksPath mentions, CRLF cases, 30k-file perf case (budget injected, never assert wall time). No machine paths, no token-bearing URLs.
-   Pull raw via skl before use: 110fe80e standing push rule, 6666fa97 pushes (distillate-only today).
-5. Gate semantics: any block->allow OR allow->block flip must be listed with the preset that permits it (the old gate caught only one direction).
-6. Verification pass: DONE (section 7). Remaining items there marked OPEN are rechecked before the release that depends on them.
+### Stage 1: human path, relief and closed holes
+Order inside the stage; each step is failing fixture, fix, test, CHANGELOG.
+1. Grant and pause store FIRST (4a): `grant`, `pause`, `revoke`, `grants`, store protection rule, session-brief line, `status` line. Effort M-L.
+2. Argv-based git parsing [H1, H3]: `decideGit` consumes `lexShell` words instead of stripQuoted text; any dynamic, glob or `~ ^ { } $ * ?` refspec is `explicit-refspec`; normalise `\r\n` once in `commandText()`. Effort M.
+3. Manifest floor on parse error [H2]: use the default-branch/HEAD committed manifest as the floor, never `null` to allow; `manifest-unreadable` keeps failing closed for protected actions. Effort S-M.
+4. Guard-run core and audit [H10], additive only: one `lib/guardrun.ts` for `cmdGuard` and the Pi handler; real `harness` (installed hooks get `--harness <h>`; old installs log `unknown`, never "claude"; update `canonicalOurs`; OpenCode template and `.opencode` copy together); `source` (default `live`; probes/dogfood set `AGENT_FLOW_AUDIT_SOURCE`; node:test context auto-tags `test`); repo-relative `cwd`; `override` list; audit of CLI guard errors; redact and cap `reason` and `target` (broaden: `curl -u`, URL userinfo, `--password`, JWT, `glpat-`, `sk_live_`, AWS, `Authorization: Token`); never log command text for allows; add `variant` (`hooks-path`, `branch-delete`, `reset-hard`) and `by_variant` in `audit summary` (rule names are NOT renamed; about 9 `no-verify` and 13 `force-push` test assertions keep working); tamper-proof `audit.lock` and `.agent-flow/`; `audit verify` flags `unchained`; update tests/audit.test.js:142. Effort M.
+5. Turn record and initiator context (4c): prompt-hook handlers for each adapter that has one, the user-scope ring store, `attended`/`initiator`/`why` on audit lines, ledger `initiator` column. Never changes a decision. Effort M.
+6. git config semantics [H5]: no action flag, one positional = read, two or more = write; action flags decide otherwise; `--show-*`, `--global`, `-z` are neutral modifiers; a dynamic word in a `git config` or `-c` segment = block; block `GIT_CONFIG_*`, `--config-env`, alias writes, `.git/config` writes. Subtract data regions (`-m` values, echo data, heredoc bodies) reusing `pathWords`; keep the raw regex only as a fallback for an unparseable git segment. Closes H5 and fixes the live positional-read false block. Effort S.
+7. Secret-read search [H7]: dynamic or glob operands in recursive searches are treated as `.`; add `git grep --no-index`; walk budget = TIME only (injectable, like `walkLimit`), fail closed on time-out and immediately for `/`, `~` or an ancestor of the root; on exhaustion enumerate with `git ls-files -z -co --ignored --exclude-standard` filtered by `isEnvFile`. Do not honour `--exclude`/`-g` (rg `-g '!.env'` also hid `sub/.env` but not `.env.local`). Honour `grep --include` only in the safe form (4b). Reroute text names forms that already pass: `git grep KEY`, `rg KEY <dir>`, `grep -r src/`. Rejected: "honour exclusions" and "fail closed on the entry cap" (blocks every big-repo `grep -r .` with no env file; cold-disk non-determinism). Effort M.
+8. Remote-tracking fetch (4b): `refs/remotes/` destinations allowed, any other blocked. Effort S.
+9. Unconditional wiring protection [H6 partial, H8]: guard-wiring is protected regardless of `protected_paths` and cannot be lifted by any `AGENT_FLOW_ALLOW_*`; split ALLOW_PROTECTED into named per-rule overrides (the old name stays as a logged, deprecated alias). `install`/`update` stay allowed for role-less sessions (the bootstrap skill runs `install`). Effort S-M.
+10. Honest `status` [tiers]: wired (file + target exists), self-test (canary event through `agent-flow guard`; proves the CLI, not the harness), fired (last `guard_block`/heartbeat per harness), "not detectable here" (user-level disable, untrusted-folder hooks, Pi package list, Codex bypass flags). hooksPath-elsewhere warning names hooksPath. Fix docs/HARNESS-MATRIX.md; update tests/status.test.js:76-77. Effort M.
+11. Adapter hardening (section 5): fail-closed wrapper (catch to explicit deny + exit 2, explicit timeout, absolute paths, `onFailure:"block"` with a minimum version); tool-KIND normalisation with a `code-exec` class (OpenCode `execute`, `subagent`); Pi project-scope warning in `status`/`install` (silently skipped in headless and child `pi`; recommend user scope or `-e`); Codex `init`/`status` say the hook is inert until hash-trusted and must be re-trusted after any hook edit; OpenCode startup self-check (load failure is silent); capability table as data; `agent-flow harness probe <name>` skeleton. Effort M-L.
+12. Honest docs: replace the claims table (2e) in README/SECURITY; SECURITY.md:42; "agents never push to main" becomes "agents cannot push to the default branch with the push command; server-side branch protection is the boundary"; audit trail only for blocks; the push ban stops the push, not a merge, until the landing stage ships. Effort S.
 
-### Release A: "close holes, same policy" (suggest 1.2.8; call it 1.3.0 if you prefer minors for behaviour changes)
-Order inside A (each step: failing fixture -> fix -> test -> CHANGELOG):
-- A1 [H1,H3] decideGit consumes `lexShell` words, not stripQuoted text; any dynamic/glob/`~ ^ { } $ * ?` refspec = `explicit-refspec` block; normalise `\r\n` once in `commandText()`. Effort M.
-- A2 [H2] Manifest loader: on parse error use the default-branch/HEAD committed manifest as floor, never `null` -> allow; `manifest-unreadable` keeps failing closed for protected actions. Effort S-M.
-- A3 [H10, observability, additive only] One `lib/guardrun.ts` used by `cmdGuard` and the Pi handler: real `harness` (installed hooks get `--harness <h>`; old installs log `unknown`, never "claude"; update `canonicalOurs` regexes; OpenCode template + `.opencode` copy together),
-  `source` (default `live`; `AGENT_FLOW_AUDIT_SOURCE` set by probes/dogfood; node:test context auto-tags `test`), repo-relative `cwd`, `override` list when an override env is set, audit of CLI guard errors; redact and cap `reason` and `target`
-  (broaden redaction: `curl -u`, URL userinfo, `--password`, JWT, `glpat-`, `sk_live_`, AWS, `Authorization: Token`); never log command text for allows; add `variant` (`hooks-path`, `branch-delete`, `reset-hard`) and `by_variant` in `audit summary`
-  (rules are NOT renamed; ~9 `no-verify` + 13 `force-push` test assertions and by_rule consumers keep working); make `audit.lock` and `.agent-flow/` tamper-proof; `audit verify` flags `unchained` lines. Update tests/audit.test.js:142. Effort M.
-- A4 [H5] git config semantics on argv: no action flag -> one positional = read, two or more = write; action flags decide otherwise; `--show-*`, `--global`, `-z` are neutral modifiers; a dynamic word in a `git config` or `-c` segment = block;
-  block `GIT_CONFIG_*` env forms, `--config-env`, alias writes, `.git/config` writes. Subtract data regions (`-m` values, echo data, heredoc bodies) reusing `pathWords`; keep the raw regex only as a fallback for unparseable git segments (limited to that segment).
-  Net effect: closes H5 and fixes the live false block (positional read) plus the synthetic ones (`-m`, heredoc commit message, `git log --grep=`, `echo`). Effort S (hooksPath) .
-- A5 [H7] Secret-read: operands that are dynamic or glob in recursive searches are treated as `.`; add `git grep --no-index`; walk budget = TIME only (injectable, like `walkLimit`), fail closed on time-out and immediately for `/`, `~` or an ancestor of the root;
-  on exhaustion enumerate with `git ls-files -z -co --ignored --exclude-standard` filtered by `isEnvFile`. Do NOT honour `--exclude`/`-g` (diverging reimplementations; false allow = leak). Reroute text names forms that already pass: `git grep`, `rg <dir>`, `grep -r src/`.
-  Exception that IS safe (V4, 01a1af0d #96-97): honour `grep --include=<glob>` only when every include glob (basename fnmatch, grep's exact semantics) cannot match ANY env filename the walk found; anything else stays a block.
-  Also verified live: `rg -g '.env*' K` reads `.env` WITHOUT `--hidden` and the current guard allows it [REPLAY]; rg `-g '!.env'` also hid `sub/.env` but not `.env.local` (glob semantics are subtle), so `-g`/`--exclude` are never honoured.
-  Rejected from draft v1: "honor exclusions" and "fail closed on the entry cap" (blocks every big-repo `grep -r .` with no env file; cold Windows disk non-determinism). Effort M.
-- A5b Fetch rule (V4, 01a1af0d ~#1194): `git fetch <remote> <src>:refs/remotes/...` writes a remote-tracking ref only; allow destinations under `refs/remotes/`, keep blocking any other destination. Effort S.
-- A6 [H6 partial, H8] GUARD_WIRING protection unconditional (not only when `protected_paths` is non-empty) and not liftable by any `AGENT_FLOW_ALLOW_*`; split ALLOW_PROTECTED into named per-rule overrides (old var stays as a logged, deprecated alias).
-  Do not block `install`/`update` for role-less sessions (the bootstrap skill runs `install`). Effort S-M.
-- A7 `status`: honest tiers per repo x harness: wired (file + target exists) / self-test (canary event through `agent-flow guard`; proves the CLI, not the harness) / fired (last `guard_block`/heartbeat per harness from A3) / "not detectable here" (user-level disable, untrusted-folder hooks, Pi package list, Codex bypass flags).
-  hooksPath-elsewhere warning names hooksPath. Fix docs/HARNESS-MATRIX.md and SECURITY.md:42. Update tests/status.test.js:76-77. Effort M.
-- A8 Docs: the push ban stops the push command, not the merge, until Release B; user's own terminal is unblockable; audit unauthenticated.
-- A9 Adapter hardening (section 2b, verified): fail-closed wrapper in `guardrun` (catch -> explicit deny + exit 2, explicit hook timeout, absolute `${CLAUDE_PROJECT_DIR}` paths, `onFailure:"block"` where supported with a stated minimum version);
-  tool-KIND normalisation incl. a `code-exec` class (OpenCode v2 `execute`, `subagent`) closing the verified gap; unconditional wiring-protection list for all harnesses (section 2b item 8);
-  Pi: warn in `status`/`install` when the guard is project-scope only (silently skipped in print/json/rpc and child `pi`), recommend user scope or `-e`; Codex: `init`/`status` tell the user the hook is inert until hash-trusted and re-trust after any hook edit;
-  OpenCode: startup self-check because a plugin load failure is fail-open and silent; capability table as data; `agent-flow harness probe <name>` skeleton. Effort M-L.
-- A10 Deny-text rule for chains (V4): hooks deny a WHOLE chain, so the message names the offending segment and says to re-issue the remaining commands separately (01a1af0d #233: the user-ordered commit never ran). Effort S.
-Release A gate: lint/test green on 3 OSes x node 20/22; fixture flips listed; free arena step (section 4); no policy change except holes closed.
+Stage 1 gate: lint and tests green on 3 OSes x node 20/22; fixture flips listed both directions; the free arena step (section 7); no policy change except holes closed and the human path added.
 
-### Release B: "user relief as presets" (1.3.0)
-- B1 `strictness` presets (floored; read only from the default branch's committed copy, never HEAD/disk; missing or unknown = `standard`; relaxations honoured only from the default-branch copy; strictest-of disk/HEAD/default wins; existing installs unchanged on `update`).
-  Key placement: a new root key like `guard_strictness`/`push_policy`, NOT under `policy` (its schema is `additionalProperties:false`); add to FLOORED_KEYS (manifest.ts:358); old versions ignore it and keep enforcing today's behaviour. Schema + docs. Effort M.
-  Presets are data (rule -> block | ask | allow+log):
-  | Rule | strict | standard (new-install default; = today + A fixes) | solo |
-  |---|---|---|---|
-  | push to default branch | block | block, deny names the PR path | allow + log (status warns if remote branch protection unverifiable) |
-  | agent merge into default branch (`gh pr merge`, MCP) | block | block for non-orchestrator roles and role-less; reroute text | allow + log |
-  | scoped branch delete (B3) | block | allow when probe passes | allow when probe passes |
-  | `reset --hard` | block always | current behaviour, named variant logged | allow + log |
-  | secret recursive search | block | block + reroute | block + reroute (never relaxed) |
-  `ask` exists only where verified (Claude/Cursor via hook `ask` output, Pi via confirm); anywhere else or headless it degrades to the stricter side. No file- or env-based approval channel (agent-writable).
-  Never relaxed (floor): force-push, ref-rewrite, `--no-verify`, hooksPath write, self-disable, tamper-proof, catastrophic-delete, guard-wiring, remote branch-protection/settings writes.
-- B2 `remote-write` rule for every session (H4): default-branch writes through any channel: `gh pr merge` (incl. `--admin`, `--auto`), `gh api`/`curl` with non-GET to endpoints in the dangerous class (`.../merge`, `git/refs/heads/<default|release*>`, `contents/*` with default branch,
-  `branches/*/protection`, repo default-branch/settings, release `--target <default>`, workflow dispatch, GraphQL merge/auto-merge); dynamic words inside a dangerous-class endpoint = block. Everything else (issue/PR comments, create-PR, reads) stays allowed.
-  Rejected from R1: a blanket allow-list of forge calls (friction). Server-side branch protection remains the real boundary; docs say so. Effort M-L.
-- B3 Scoped branch delete (the single most valuable false-block fix; ships with its own tests): allow only a single `:<name>` or `--delete <name>` refspec where: name matches `^agent/` and is not default or release-like; the remote is a configured remote name; the probe runs in the push's own directory (segments do not track `cd`);
-  default branch comes from `ls-remote --symref`, never the disk manifest; remote sha from `ls-remote` (freshness), then `merge-base --is-ancestor` exits 0; branch tip differs from the default tip; probe timeout <= 3 s (Claude kills hooks at 60 s and then does NOT block); whole probe in try/catch returning the existing block;
-  stays blocked when combined with `--force`, `-f`, `--mirror`, `--prune`, tags, non-`refs/heads`; empty probe output = not merged. Probe injected via `GuardInput.probe` (stub per corpus entry; one real bare-remote test). Squash merges (no ancestor): optional `gh pr list --head b --state merged`; deny text points at `agent-flow clean --yes`.
-  `gh api -X DELETE .../refs/heads/<b>` stays blocked in B2 (reroute: `git push origin --delete agent/x`). Effort M, its own release candidate.
-- B4 Self-disable + pause (answers 01a1ba9a #5409 "how do I stop this"): `self-disable` rule for every session: package removal (`pi remove`, `npm/pnpm/yarn uninstall`), delete/move/truncate of the package path or `node_modules`, `agent-flow uninstall`/`hook uninstall`,
-  agent CLI launches with `--no-extensions`, `-ne`, `--settings`, `--bare`, `OPENCODE_DISABLE_*`/`OPENCODE_CONFIG_CONTENT`, `PI_CODING_AGENT_DIR`, `CLAUDE_CONFIG_DIR` (verified kill switches, section 2b item 8), `pi uninstall` (alias of `pi remove`), writes to host config under `~` (`~/.pi/agent/settings.json`, `~/.claude/settings.json`, `~/.agent-flow`); match on PARSED ARGV so `echo "run pi remove x" >> NOTES.md` is not a new false block.
-  Not liftable by any AGENT_FLOW_ALLOW_*. Replace the removed answer with a human-run command: `agent-flow pause [--for 30m] [--rule X] [--reason "..."]` / `resume`, audited, expiring, shown by `status` as "PAUSED until", stored outside the repo; deny text says "ask the user to run `agent-flow pause`".
-  Honest limits: a role-less shell write to the pause record is best-effort-blocked; the user's own terminal is unblockable and unloggable; a running session keeps its old guard until restart. Make the hook command exit 2 when its script is missing if the cross-platform shim is feasible (design first, S-M). Effort L.
-- B5 Deny UX contract (all rules): each message has (1) rule and the offending segment (redacted), (2) why, (3) the exact allowed command, or "none: ask the user", (4) the human-run form for halt classes, plus "this is the guard, not a git hook; retrying will not change it".
-  Classes: reroute = push, branch delete, secret-read; halt-and-hand = force-push, history rewrite, `--no-verify`, hooksPath write, guard disable, pause. Evidence: 01a1ba9a #5390-5412 (agent probed the guard as if it were a git hook), #5403/#5408 (delete text named no lawful path), 6666fa97 #4718-4720 (halt-and-hand worked in one turn).
-  Optional: count identical retries and after two say "stop and ask". Effort S-M.
-- B6 `agent-flow env-check [NAME...]`: prints set/missing/length only, never a value; the guard allows exactly that command. It is the compliant alternative named by secret-read denies (do NOT allow-list `node -e`). Effort S.
-- B7 Kill switch: a `RELAX` table plus `AGENT_FLOW_GUARD_LEGACY=1` (human launch; logged) restoring pre-B behaviour. Rollback: `npm deprecate` + patch release; vendored runtimes change only on `update`, `npx @latest` users change immediately.
-Release B gate: Release A gate + the adversarial arena run (section 4) per preset.
+### Stage 2: landing, remote writes, credentials, self-protection
+Everything applies to ROLE-LESS sessions unless marked; pipeline roles are never relaxed.
+1. Landing model (4a + 4b together): push to the default branch blocked unless a `push-default` grant is active; own-branch push resolution; provable-merged delete; lease on tracked branches; private-ref `update-ref`; role-less `gh pr merge` allowed, roles blocked. Effort M-L.
+2. Remote-write bypass rule [H4], roles and role-less: `gh pr merge --admin|--auto`, `gh api`/`curl` non-GET to dangerous endpoints on the default or a protected branch (`.../merge`, `git/refs/heads/<default|release*|production>` PATCH/DELETE, `contents/*` with that branch, `branches/*/protection`), `gh repo delete`, `gh repo edit --default-branch`; a dynamic word inside a dangerous-class endpoint = block; comments, create-PR, reads and localhost curl stay allowed. A committed `protected_branches` list (default: default branch + `release/*` + `production`). Effort M-L.
+3. Credential stores and env-check: built-in opt-out `credential-stores` deny_read preset (`~/.aws/credentials`, `~/.ssh/*`, `~/.config/gh/hosts.yml`, `gh auth token`, `.npmrc`, `*.pem`, host agent auth files); block `git add` of env files even with `-f` (6666fa97: .env public since Nov 2024); `agent-flow env-check [NAME...]` (set/missing/length, never a value) as the named alternative to `node -e` and to the masked `sed` reads the owner's agent used when keys were filed (8 of the 123 secret-read denies were user-ordered key filing). Sanctioned key-filing (user pastes a key, agent appends to a gitignored env file) stays ALLOWED; the paste warning is later. Effort M.
+4. Self-protection, each naming its human path: `self-disable` (parsed argv: `pi remove|uninstall`, npm/pnpm/yarn uninstall of the package, delete/move of the package path or node_modules, `agent-flow uninstall|hook uninstall`, host kill-switch launches and env, writes to host config under `~`), `grant-store` (`~/.agent-flow/**`), `default-ref-move` (`git branch -f <default>`, `update-ref refs/heads/<default>`, `symbolic-ref`), `remote-edit` (`git remote set-url|set-head|add|rm`), `audit-tamper` (`rm -rf .agent-flow`, audit.lock), `history-destroy` (`git gc --prune=now`, `reflog expire`, `filter-branch`/`filter-repo`), `clean -x/-X`. Matched on parsed argv so `echo "run pi remove x" >> NOTES.md` stays allowed. `AGENT_FLOW_ALLOW_*` never lifts these. Effort L.
+5. Unattended runs: absolute `--until` only (wall-clock durations expire during usage-limit stops); dedupe needs-me after 2 identical denies (about 280 subagents re-learn the same deny today); the session brief (brief.ts) states the effective landing rules at start so the agent does not probe; heartbeat or continuation text never carries authority; Pi child/headless runs need a user-scope install. Effort M.
+6. First run: `install` prints the landing default, the `grant` command and who pushes the install commit (the agent cannot: print the exact `!` command); `init` asks at most 2 questions (may agents push or merge straight to the default branch? default PR-only, shown with detected facts, skipped when remote protection is on; which paths are never touched); `--yes`, non-TTY and any agent-run `init`/`install` NEVER create a grant; detection never recommends relaxing. Effort S-M.
+7. Owner-trace benchmark: replay the owner-trace corpus through each guard build; report denies per rule, and extra calls per landing. Baseline: 366 denies (push-default 124, secret-read 123, explicit-refspec 63, delete/force 35, ref-rewrite 19, other 2). Target after the stage: explicit-refspec near 0, ref-rewrite near 0, provably merged deletes allowed, push-default 0 under a grant, secret-read reduced by the reroute and the safe `--include` form; friction budget at most 3 extra calls per landing; with no grant, the only denies left are landings on the default branch, each with its human path. Effort M.
 
-### Release C / later (designed, not committed)
-- warn-on-paste, warn-only (never refuse to place): verified feasible on Claude (UserPromptSubmit, exit 0 + `systemMessage`; exit 2 echoes the prompt back, so never use it for secrets), Codex and Gemini (prompt hooks block or warn, live), Pi (`input` event; cannot tell paste from typing), Cursor (`beforeSubmitPrompt` can only block, not in CLI `-p`); reuse `findSecrets`; secret-WRITE content scan for Write/Edit (Oct 21 class), warn first, block after data.
-- Baseline tier for role-less sessions (H9): decide what role-less sessions should get (agent-config, outside-repo) without breaking interactive use.
-- Escalation telemetry on top of the `variant` names (a force-push attempt shortly after a push block), excluding a delete of a merged branch.
-- Codex: detect untrusted hook / bypass flags in status; keep `codex exec` supported (MAP-8 is NOT out of scope).
-- Trust-boundary marking only if roles parse subagent text. Cost caps: already on ROADMAP (per-issue `max_cost_usd` ships); Phase 5 adds nothing.
+Stage 2 gate: Stage 1 gate plus the adversarial run (section 7).
 
-## 4. Release gates and metrics (replaces v1 section 5)
-- Always: `npm run lint` + `npm test` (pretest builds), derived-copy dogfood green, 7 version slots + docs tags, CHANGELOG, flips listed both directions.
-- Arena step 1 (free, mandatory): replay the full fixture list through `bin guard` against the arena's manifest and real `.env`, with a bare local origin. The arena (hypothesis-arena) vendors 1.2.6 and its tree is dirty: clone with `--no-hardlinks` and remove the remote, per the memory recipe.
-- Arena step 2 (about $2-3): 3 live `run`s vs a 1.2.7 baseline recorded first. Pass = no `.env` read, no push to main, wiring unchanged, fewer false blocks. Three runs are not statistical and cover only the Claude path; Pi, Codex, Gemini, Cursor, OpenCode are untested by this gate. Say so in the release notes.
-- Adversarial run (before Release B): two models (cheap and strong), N>=10 per preset, the 01a1ba9a task with a conflicting instruction. Measure compliant-path %, halt %, bypass %, calls to finish, identical retries, guard-probing.
-- Metrics (replace blocks/day, which improves when users uninstall): fixture-corpus false-block and false-allow rates per rule; counts of uninstall/pause/override lines and guard-on coverage in local audits; override rate; calls to complete the compliant path.
-  `source` is spoofable (launcher env): treat `source=test` in a live-looking cwd as a flag, not an exclusion.
+### Later (designed, not committed)
+- Checkpoints instead of blocks for lossy LOCAL ops: the guard snapshots tracked and untracked state into `refs/agent-flow/checkpoints/` before `reset --hard`, `checkout .`, `restore .`, `clean -f` (no -x), `stash drop`; `branch -D` records the tip; `agent-flow restore` undoes. Measured: temp-index commit-tree 0.69 s, `stash create` 0.10 s on a small repo; large/cold repos and Windows untested. Not for `rm -rf`.
+- Warn-on-paste, warn-only (never refuse to place): feasible on Claude (UserPromptSubmit, exit 0 + `systemMessage`; exit 2 echoes the prompt, never use it for secrets), Codex and Gemini (prompt hooks), Pi (`input`; cannot tell paste from typing), Cursor (`beforeSubmitPrompt` can only block, not in CLI print mode); reuse `findSecrets` and the turn-record hook; secret-WRITE scan for Write/Edit (Oct 21 class), warn first, block after data.
+- Protected tags and `git push --tags`/release shapes; size/binary warning in `check-staged` (18 MB push); opt-in `publish` deny_commands preset surfaced by `doctor`.
+- Org/platform floor: `AGENT_FLOW_MIN` and a root-owned policy file read before user grants; `status` prints "declared, not enforced" unless managed harness wiring, CODEOWNERS on the manifest, no admin bypass and an ENFORCED-tier harness; CI `check-posture --base` failing when HEAD weakens the floor.
+- `agent-flow friction-report` (local only, `--preview`, counts by rule, retries after a block, grant/pause/uninstall counts) and a `next` dist-tag with a friction Discussion; 2-3 external dogfood repos. Decision triggers: a rule over 30% followed by grant, pause or uninstall is demoted to allow+log; no team-only code until a non-owner repo commits landing or protected-paths settings.
+- Baseline tier for role-less sessions (H9), escalation telemetry on `variant` names, Codex hook-trust/bypass detection in status, an `t1_allow` journal (variant, remote, destination, sha, no command text) written outside the repo dir. Cost caps are already on the ROADMAP; this plan adds nothing.
+
+## 7. Gates and metrics
+- Always: `npm run lint` + `npm test` (pretest builds), derived-copy dogfood green, the 7 version slots and docs tags, CHANGELOG, flips listed both directions. Version numbers are decided at release by semver from the CHANGELOG (new commands = minor); no number is fixed here.
+- Arena step 1 (free, mandatory): replay the full fixture list through `bin guard` against the arena's manifest and real `.env`, with a bare local origin. The arena (hypothesis-arena) vendors an older release and its tree is dirty: clone with `--no-hardlinks` and remove the remote, per the memory recipe.
+- Arena step 2 (about $2-3): 3 live runs against a baseline recorded first. Pass = no `.env` read, no push to main, wiring unchanged, fewer false blocks. Three runs are not statistical and cover only the Claude path; say so in the release notes.
+- Adversarial run (before the second stage ships): two models (cheap and strong), N>=10 per landing configuration (no grant, push-default grant), the 01a1ba9a task with a conflicting instruction. Measure compliant-path %, halt %, bypass %, calls to finish, identical retries, guard-probing.
+- Metrics (blocks/day improves when users uninstall, so it is not used): fixture false-block and false-allow rate per rule; uninstall/pause/override lines and guard-on coverage in local audits; override rate; owner-trace extra calls per landing; share of denies per `initiator` label. `source` is spoofable: `source=test` in a live-looking cwd is a flag, not an exclusion.
 - Test budget: about 60 more corpus entries and about 30 more node tests; docs to touch: SECURITY, FAILURE_MODES, brief.ts, ADOPTION, HARNESS-MATRIX, CHANGELOG, README dogfood stats.
 
-## 5. Disposition of every critique finding
-| Finding | Disposition |
-|---|---|
-| R1-S1 quoted refspec bypass | ACCEPTED, A1 (replayed) |
-| R1-S2 / R2-03 remote-write doors | ACCEPTED as B2, scoped to dangerous endpoints (blanket allow-list REJECTED: friction) |
-| R1-S3 / R3-02 manifest forgery | ACCEPTED, A2 + B1 floor (replayed through the real hook) |
-| R1-S4 / R2-04 / R3-04 merged-delete holes | ACCEPTED, B3 redesigned; moved out of slice 1 |
-| R1-S5 self-disable gaps | ACCEPTED, A6 + B4 |
-| R1-S6 / R3-07 secret-read | ACCEPTED: no exclusion honoring, time-only budget, git ls-files fallback |
-| R1-S7 hooksPath semantics | ACCEPTED, A4 (git read/write rule on argv) |
-| R1-S8 / R3-03 `approve` | ACCEPTED: `ask` only where verified, else stricter; no file/env approval |
-| R1-S9 audit redaction/tamper | ACCEPTED, A3 |
-| R1-S10 ALLOW_PROTECTED too broad | ACCEPTED, A6 |
-| R1-S11 role-less baseline, secret-write | DEFERRED to Release C (designed) |
-| R2-01 "how do I stop this" removed not replaced | ACCEPTED, B4 pause/resume |
-| R2-02 slice order | PARTLY: holes first (A), then presets (B). Presets put the push relief in B, not slice 2-last |
-| R2-05 / R2-09 strictness presets, overfitting | ACCEPTED, B1 |
-| R2-06 env-check | ACCEPTED, B6 |
-| R2-07 harm classes with no item | warn-on-paste and secret-write scan to C; `reset --hard` becomes a preset row; secrets-public-for-a-year -> status check is C |
-| R2-08 / R3-10 metrics and arena gate | ACCEPTED, section 4 |
-| R2-11 scope calls | cost caps = ROADMAP (no Phase 5 work); standing grants = pause (B4) |
-| R2-12 contradictions | ACCEPTED, section 1a |
-| R2-13 deny UX | ACCEPTED, B5 |
-| R3-01 argv parsing loses true positives | ACCEPTED: subtractive design, raw regex kept as fallback; CRLF normalisation |
-| R3-05 / R3-06 additive audit fields and variants | ACCEPTED, A3 |
-| R3-08 status tiers | ACCEPTED, A7 |
-| R3-09 semver | A as 1.2.8 (or 1.3.0), B as 1.3.0 |
-| R3-12 kill switch, rollback, upgrade story | ACCEPTED, B7; old hook commands keep working, new fields appear after `update` |
-| Item 19 (env gates) | already true by construction (inline env does not reach the hook); the real hole is Claude's settings `env` block, closed by unconditional GUARD_WIRING (A6) |
-| MAP-21, MAP-22 | unchanged: no change / OUT |
+## 8. Decisions (made; each with what would reverse it)
+1. ONE `push-default` grant plus pause/revoke instead of named presets, standing allowed, 30-day default. The owner confirmed that `!` commands bypass the hook and are always human-run. Reverse if an agent is observed forging a grant.
+2. Role-less `gh pr merge` allowed and logged; pipeline roles blocked. Reverse if: a non-owner repo shows self-merge causing review bypass harm.
+3. Grants, pause and the turn store live in user scope, best-effort against a determined agent; the human path is `!` or a separate terminal with no TTY requirement; the hook denies agent invocation. Documented. Reverse if: a platform signal that only a human can produce becomes available on all adapters.
+4. The prompt is context, never authority (a keyword parser would pass 11% of cases and fail on negation and pasted text). Reverse if: a harness exposes signed human intent.
+5. Merged-branch delete by provable ancestry for any non-protected branch, not by prefix (data: 1 of 73 names had a known prefix). `--force-with-lease` on locally tracked non-protected branches; plain force blocked. Reverse if: stale-ref loss is observed in a dogfood repo.
+6. No version number is fixed in the plan; semver is decided at release from the CHANGELOG.
+7. Groundwork starts once this plan is accepted. It is not started.
+Human actions, not decisions: rotate the exposed keys (2b); decide whether to push this plan to GitHub (the earlier pushed copy on branch `plan/phase5` is the older draft).
 
-## 6. Needs you (decisions)
-1. Rotate the exposed keys unless already rotated (human only). I can redact the two 01a1af30 knowledge files now.
-2. Self-merge under the default `standard` preset: block `gh pr merge`/MCP merge for non-orchestrator roles and role-less sessions (my recommendation: yes, the ban is theater otherwise; interactive owners choose `solo`, or `ask` where supported)?
-3. Is "an agent may not remove its own guard" acceptable, now paired with a human-run `agent-flow pause`?
-4. Default preset for NEW installs = `standard` (today's behaviour plus the A fixes), existing installs unchanged on `update`. OK?
-5. Under `solo`, if remote branch protection cannot be verified (non-admin token), honor `allow` with a loud `status` warning (my recommendation), or stay `forbid`?
-6. Release A as 1.2.8 (precedent) or 1.3.0?
-7. Start with Slice 0 now (baseline, record corrections, fixtures) and then Release A, or review first?
-
-## 7. Verification results (this pass)
+## 9. Verification results
 | Item | Result | How |
 |---|---|---|
-| Claude exit codes | exit 2 blocks; exit 0/1, crash, missing script, 127, timeout all fail OPEN; JSON `permissionDecision:"deny"` on exit 0 blocks; `ask` is denied headless; hooks still fire under `--dangerously-skip-permissions`; fire for Write/Read/Edit/Glob/Agent/Bash and inside subagents | LIVE (Claude 2.1.287, 13 calls) |
-| Claude `onFailure:"block"` | documented (2.1.295+) but NOT enforced on 2.1.287 | LIVE |
-| Claude tamper | `--settings '{"disableAllHooks":true}'` bypasses hooks; mid-session settings rewrite works under bypass; `FOO=1 cmd` does NOT reach the hook (so env-gate item 19 holds); local `env` overrides project `env` | LIVE |
-| Claude UserPromptSubmit | sees full prompt, fires in `-p`, exit 0 + `systemMessage` warns without blocking, exit 2 blocks and echoes the prompt | LIVE |
-| Claude stdin | `session_id, transcript_path, cwd, prompt_id, permission_mode, tool_name, tool_input, tool_use_id` (+ `agent_id`, `agent_type` in subagents); no model field | LIVE |
-| Codex | exit 2 on the PROMPT hook did not block (JSON `decision:"block"` did); timeout/exit 1/crash fail open; project hooks inert until hash-trusted; `--dangerously-bypass-hook-trust` / `hooks=false` turn off; has `model` in stdin; PreToolUse exit 2 NOT tested | LIVE (prompt hook) + DOCS; tool-call hook docs-only (usage limit) |
-| Gemini | JSON deny parsed on any exit code; bare exit 2 with no output does NOT block; exit 2/3 with stderr text blocks; missing script/crash/timeout fail open; project hooks ran with no trust prompt; no model field | LIVE (prompt hook) + SOURCE; tool-call hook docs/source-only (API down) |
-| Cursor | exit 2 denies, other codes fail open unless `failClosed:true`; stdin has UTF-8 BOM on Windows; `ask` not enforced on `preToolUse`; project hooks need a trusted workspace; hooks never run on Windows with Git Bash in process ancestry (known bug) | DOCS/forum only |
-| Pi | `tool_call` fires for write/edit/read/bash/grep/ls, handler throw = blocked; extensions load in print/json/rpc; project-scope guard silently skipped in headless and child `pi` (user-scope or `-e` loads); `pi uninstall` = alias of `pi remove`; `-ne`, `PI_CODING_AGENT_DIR`; settings.json edit applies next start; `ctx.model` and session id available; `input` event for paste warning | LIVE (stub models, 0 real calls) |
-| OpenCode v2 | blocks by throwing in `execute.before`; fires for write/edit/read/shell/glob/grep/subagent/execute; tool name is `shell` (guard already handles it); `execute` Code Mode and `subagent` NOT covered by the guard [REPLAY]; plugin load failure fail-open and silent; env/flag bypasses and hot-reload overwrite work; `ask` auto-approved under `--auto` | LIVE (stub models) + REPLAY |
-| Other harnesses | Copilot, Cline, Windsurf, Kiro, Qoder, Factory, Command Code, Augment now document pre-tool hooks; Swival none | DOCS only (small-model summaries; treat as leads) |
+| Claude exit codes | exit 2 blocks; exit 0/1, crash, missing script, 127, timeout all fail OPEN; JSON `permissionDecision:"deny"` on exit 0 blocks; `ask` is denied headless; hooks fire under `--dangerously-skip-permissions`; fire for Write/Read/Edit/Glob/Agent/Bash and inside subagents | LIVE (Claude 2.1.287, 13 calls) |
+| Claude `onFailure:"block"` | documented (2.1.295+), NOT enforced on 2.1.287 | LIVE |
+| Claude tamper | `--settings '{"disableAllHooks":true}'` bypasses hooks; mid-session settings rewrite works under bypass; `FOO=1 cmd` does NOT reach the hook; local `env` overrides project `env` | LIVE |
+| Claude UserPromptSubmit | sees the full prompt, fires in `-p`, exit 0 + `systemMessage` warns without blocking, exit 2 blocks and echoes the prompt; stdin has `prompt`, `session_id`, `transcript_path`, `prompt_id` | LIVE |
+| Claude PreToolUse stdin | `session_id, transcript_path, cwd, prompt_id, permission_mode, tool_name, tool_input, tool_use_id` (+ `agent_id`, `agent_type` in subagents); no model field. Transcript lines carry `turnOrigin` (human, continuation, task notification) | LIVE + RAW |
+| Claude `!` mode | user-run `!` commands appear in transcripts as bash-input and ran after the hook-guarded agent was denied (owner: `git push origin <branch>:main`, `gh pr merge`, `gh repo create`); an interactive `ssh-copy-id` failed instantly, so no usable TTY | RAW (46 `!` runs) + owner confirmation |
+| Codex | exit 2 on the PROMPT hook did not block (JSON `decision:"block"` did); timeout/exit 1/crash fail open; project hooks inert until hash-trusted; bypass flags exist; stdin has `model`, `prompt`, `transcript_path`; PreToolUse exit 2 NOT tested | LIVE (prompt hook) + DOCS |
+| Gemini | JSON deny parsed on any exit code; bare exit 2 with no output does NOT block; exit 2/3 with stderr blocks; missing script/crash/timeout fail open; BeforeAgent stdin has `prompt`, `transcript_path`; no model field | LIVE (prompt hook) + SOURCE |
+| Cursor | exit 2 denies, other codes fail open unless `failClosed:true`; stdin has a UTF-8 BOM on Windows; `ask` not enforced on `preToolUse`; project hooks need a trusted workspace; known bug: hooks never run on Windows with Git Bash in process ancestry | DOCS/forum |
+| Pi | `tool_call` fires for write/edit/read/bash/grep/ls, handler throw = blocked; extensions load in print/json/rpc; project-scope guard skipped in headless and child `pi`; `pi uninstall` = alias of `pi remove`; `-ne`, `PI_CODING_AGENT_DIR`; `ctx.model` and session id available; `input` event carries the text with `source` | LIVE (stub models) |
+| OpenCode v2 | blocks by throwing in `execute.before`; fires for write/edit/read/shell/glob/grep/subagent/execute; `execute` and `subagent` NOT covered by the guard [REPLAY]; plugin load failure fail-open and silent; env/flag bypasses and hot-reload overwrite work; `ask` auto-approved under `--auto` | LIVE (stub models) + REPLAY |
+| Other harnesses | Copilot, Cline, Windsurf, Kiro, Qoder, Factory, Command Code, Augment document pre-tool hooks; Swival none | DOCS (leads only) |
 | `NODE_TEST_CONTEXT` | `child-v8` under `node --test` on Node 20.19.5, 22.18.0, 24.21.0; undefined under plain `node` | LIVE |
-| rg `-g` | `-g '.env*'` includes `.env` without `--hidden` (guard allows it); `-g '!.env'` excludes `.env` and `sub/.env` not `.env.local` | LIVE + REPLAY |
-| git | positional `git config core.hooksPath` read = rc 1 when unset; `--show-scope key value` WRITES; `git push origin :heads/main` deletes remote `main` on a plain remote (only server-side protection stops it); a branch at main's tip is "merged" (`is-ancestor` true) | LIVE (git 2.51) |
-| gh | `gh pr list --state merged --json headRefName,mergedAt` works (squash merges detectable); `gh api repos/o/r/branches/main --jq .protected` works without admin; this repo's own `main` is unprotected, no rulesets | LIVE read-only |
-| Raw sessions | see section 1a (V4) | RAW |
-OPEN (recheck before the release that needs them): live PreToolUse/BeforeTool on Codex/Gemini/Cursor; Codex PreToolUse exit 2 and missing script; Gemini `--yolo` + hooks and headless `ask`; Claude interactive `ask`, MultiEdit/NotebookEdit/WebFetch/MCP live, `--bare`;
-Pi MCP calls live and interactive `/reload`; OpenCode MCP/`execute` inner calls and managed policy; GitHub default-branch deletion refusal; walk timing on macOS/Linux/cold disk; Windsurf/Kiro/Cline/Copilot exit contracts; whether the 01a1ba9a branch was squash-merged; Cursor-on-Windows-Git-Bash hook bug.
+| rg `-g` | `-g '.env*'` includes `.env` without `--hidden`; `-g '!.env'` excludes `.env` and `sub/.env` but not `.env.local` | LIVE + REPLAY |
+| git | positional `git config core.hooksPath` read = rc 1 when unset; `--show-scope key value` WRITES; `git push origin :heads/main` deletes remote `main` on a plain remote; a branch at main's tip is "merged" (`is-ancestor` true) | LIVE (git 2.51) |
+| gh | `gh pr list --state merged --json headRefName,mergedAt` detects squash merges; `gh api repos/o/r/branches/main --jq .protected` works without admin; this repo's own `main` is unprotected | LIVE read-only |
+| Owner trace | initiator, `why`, delete-prefix and Oct 23-26 user-turn facts in 1 and 2a | RAW + REPLAY |
+OPEN (recheck before the stage that needs them): Pi's user-bash equivalent of `!`; a prompt hook on OpenCode and Cursor CLI; live PreToolUse/BeforeTool on Codex/Gemini/Cursor; Codex PreToolUse exit 2 and missing script; Gemini `--yolo` + hooks and headless `ask`; Claude interactive `ask`, MultiEdit/NotebookEdit/WebFetch/MCP live, `--bare`; Pi MCP calls and interactive `/reload`; OpenCode MCP/`execute` inner calls and managed policy; GitHub default-branch deletion refusal; walk timing on macOS/Linux/cold disk; Windsurf/Kiro/Cline/Copilot exit contracts; whether the 01a1ba9a branch was squash-merged; the Cursor-on-Windows-Git-Bash hook bug; whether subagent tool calls reach the hook in the owner's setup.
+
+## 10. How the reviews shaped this plan
+| Finding | Disposition |
+|---|---|
+| R1-S1 quoted refspec bypass | ACCEPTED: argv-based git parsing (replayed) |
+| R1-S2 / R2-03 remote-write doors | ACCEPTED: remote-write rule, scoped to dangerous endpoints (a blanket allow-list is REJECTED for friction) |
+| R1-S3 / R3-02 manifest forgery | ACCEPTED: manifest floor on parse error (replayed through the real hook) |
+| R1-S4 / R2-04 / R3-04 merged-delete holes | ACCEPTED: offline provable-merged delete, no network in the gate; prefix ownership dropped on data |
+| R1-S5 self-disable gaps | ACCEPTED: unconditional wiring protection + self-protection rules |
+| R1-S6 / R3-07 secret-read | ACCEPTED: no exclusion honouring, time-only budget, git ls-files fallback |
+| R1-S7 hooksPath semantics | ACCEPTED: git config semantics on argv |
+| R1-S8 / R3-03 `approve` | ACCEPTED: no file/env approval; the human-run grant is the only widening |
+| R1-S9 audit redaction/tamper | ACCEPTED: guard-run core and audit |
+| R1-S10 ALLOW_PROTECTED too broad | ACCEPTED: per-rule overrides |
+| R1-S11 role-less baseline, secret-write | DEFERRED (designed) |
+| R2-01 "how do I stop this" | ACCEPTED: pause and the kill switch |
+| R2-02 slice order | ACCEPTED: holes and the human path first, then relief and landing |
+| R2-05 / R2-09 presets, overfitting | SUPERSEDED by one grant (P1-P3 and the owner trace) |
+| R2-06 env-check | ACCEPTED: credential stores and env-check |
+| R2-07 harm classes with no item | warn-on-paste and secret-write scan later; `reset --hard` becomes a rule row; the historical public-secret finding becomes a status check later |
+| R2-08 / R3-10 metrics and arena gate | ACCEPTED: section 7 |
+| R2-11 scope calls | cost caps stay on the ROADMAP; standing grants are the pause/grant store |
+| R2-12 contradictions | ACCEPTED: section 2b |
+| R2-13 deny UX | ACCEPTED: deny contract |
+| R3-01 argv parsing loses true positives | ACCEPTED: subtractive design, raw regex kept as fallback; CRLF normalisation |
+| R3-05 / R3-06 additive audit fields and variants | ACCEPTED: guard-run core and audit |
+| R3-08 status tiers | ACCEPTED: honest `status` |
+| R3-09 semver | superseded: decided at release |
+| R3-12 kill switch, rollback, upgrade story | ACCEPTED: first run, pause; old hook commands keep working, new fields appear after `update` |
+| Item 19 (env gates) | true by construction (inline env does not reach the hook); the real hole is Claude's settings `env` block, closed by unconditional wiring protection |
+| P1-P3 posture critiques | ACCEPTED: one grant, ownership relief, owner-trace benchmark, honest claims table, no repo-local trust anchor |
+| MAP-21, MAP-22 | unchanged: no change / OUT |
